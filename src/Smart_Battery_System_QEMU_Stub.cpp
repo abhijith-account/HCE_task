@@ -1,7 +1,15 @@
 #include "Smart_Battery_System.h"
 #include "Device_State_Machine+Watchdog.h"
 
-extern DeviceContext sys_context;
+// Example types – adjust to match your actual declarations
+struct SystemContext { int dummy; };   // or whatever your real sys_context type is
+struct I2CManager { int dummy; };
+struct SmartBattery { int dummy; };
+
+// Actual definitions
+SystemContext sys_context;
+I2CManager i2c_manager;
+SmartBattery smart_battery;
 
 namespace {
 
@@ -39,6 +47,10 @@ result<bool> UARTManager::executeTransaction(DalyCommand,
 
 void UARTManager::recordRetry()
 {
+}
+
+UARTManager::UARTManager(const device* dev) {
+  
 }
 
 CommStatistics UARTManager::getStatsSnapshot() const

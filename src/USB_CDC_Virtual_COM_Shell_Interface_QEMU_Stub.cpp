@@ -4,8 +4,15 @@
 #include <array>
 #include <string_view>
 
-extern DeviceContext sys_context;
-extern SbsBattery smart_battery;
+// Example types – adjust to match your actual declarations
+struct SystemContext { int dummy; };   // or whatever your real sys_context type is
+struct I2CManager { int dummy; };
+struct SmartBattery { int dummy; };
+
+// Actual definitions
+SystemContext sys_context;
+I2CManager i2c_manager;
+SmartBattery smart_battery;
 
 UsbShell diag_shell(&sys_context, &smart_battery);
 
