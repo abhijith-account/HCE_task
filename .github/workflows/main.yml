@@ -441,5 +441,3 @@ jobs:
             build_nucleo/zephyr/zephyr.hex
             build_nucleo/zephyr/zephyr.bin
             firmware/zephyr.bin
-        env:
-          GI
