@@ -1,0 +1,27 @@
+{
+  "projects": {
+    "proj": {
+      "rel_path": "",
+      "name": "proj",
+      "buildConfigs": {
+        "build/nucleo_f446re/stm32f446xx": {
+          "relBoardDir": "boards",
+          "relBoardSubDir": "../../zephyr-workspace/zephyr/boards/st/nucleo_f446re",
+          "board": "nucleo_f446re/stm32f446xx",
+          "name": "build/nucleo_f446re/stm32f446xx",
+          "westBuildArgs": [],
+          "westBuildCMakeArgs": [],
+          "confFiles": {
+            "config": [],
+            "overlay": []
+          }
+        }
+      },
+      "twisterConfigs": {},
+      "confFiles": {
+        "config": [],
+        "overlay": []
+      }
+    }
+  }
+}

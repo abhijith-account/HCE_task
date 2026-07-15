@@ -1,0 +1,58 @@
+/ {
+    aliases {
+        cdc-acm-uart0 = &uart0;
+    };
+
+    /* The Golden Stub: We map all missing hardware to the I2C test driver */
+    i2c1: fake_i2c@40001000 {
+        compatible = "vnd,i2c";
+        reg = <0x40001000 0x1000>;
+        status = "okay";
+        #address-cells = <1>;
+        #size-cells = <0>;
+    };
+
+    iwdg: fake_watchdog@40002000 {
+        compatible = "vnd,i2c";
+        reg = <0x40002000 0x1000>;
+        status = "okay";
+        #address-cells = <1>;
+        #size-cells = <0>;
+    };
+
+    rtc: fake_rtc@40003000 {
+        compatible = "vnd,i2c";
+        reg = <0x40003000 0x1000>;
+        status = "okay";
+        #address-cells = <1>;
+        #size-cells = <0>;
+    };
+
+    /* Simulated Flash Drive for NVS */
+    sim_flash: sim_flash@50000000 {
+        compatible = "zephyr,sim-flash";
+        reg = <0x50000000 0x8000>;
+        #address-cells = <1>;
+        #size-cells = <1>;
+        erase-value = <0xff>;
+
+        flash_sim0: flash_sim@0 {
+            status = "okay";
+            compatible = "soc-nv-flash";
+            erase-block-size = <1024>;
+            write-block-size = <4>;
+            reg = <0x00000000 0x8000>;
+
+            partitions {
+                compatible = "fixed-partitions";
+                #address-cells = <1>;
+                #size-cells = <1>;
+
+                storage_partition: partition@6000 {
+                    label = "storage";
+                    reg = <0x00006000 0x00002000>;
+                };
+            };
+        };
+    };
+};

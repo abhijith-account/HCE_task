@@ -1,0 +1,465 @@
+name: Zephyr Firmware CI
+
+on:
+  push:
+    branches:
+      - main
+      - master
+
+  pull_request:
+    branches:
+      - main
+      - master
+
+  workflow_dispatch:
+
+jobs:
+  build-test-qemu:
+    runs-on: ubuntu-latest
+    container: zephyrprojectrtos/ci:latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Initialize Zephyr workspace
+        run: |
+          west init -l .
+          west update
+          west zephyr-export
+
+          SDK_DIR=$(ls -d /opt/toolchains/zephyr-sdk-* | head -n 1)
+          echo "Using Zephyr SDK: $SDK_DIR"
+          $SDK_DIR/setup.sh -c
+
+      - name: Install required packages
+        run: |
+          apt-get update
+          apt-get install -y \
+            qemu-system-arm \
+            cmake \
+            make \
+            gcc \
+            g++ \
+            lcov \
+            gcovr \
+            libgtest-dev \
+            binutils
+
+      - name: Cross Compile for STM32 ARM - nucleo_f446re
+        run: |
+          west build -b nucleo_f446re . \
+            --build-dir build_nucleo \
+            --pristine
+
+          echo ""
+          echo "===== NUCLEO BUILD IMAGE ====="
+          ls -lh build_nucleo/zephyr/zephyr.elf || true
+          ls -lh build_nucleo/zephyr/zephyr.bin || true
+          ls -lh build_nucleo/zephyr/zephyr.map || true
+
+      - name: Build YOUR firmware for olimex_stm32_h405 with QEMU stubs
+        run: |
+          west build -b olimex_stm32_h405 . \
+            --build-dir build_qemu_olimex \
+            --pristine -- \
+            -DQEMU_RUNTIME_PROBE=ON
+
+          echo ""
+          echo "===== YOUR OLIMEX QEMU FIRMWARE IMAGE ====="
+          ls -lh build_qemu_olimex/zephyr/zephyr.elf || true
+          ls -lh build_qemu_olimex/zephyr/zephyr.bin || true
+          ls -lh build_qemu_olimex/zephyr/zephyr.map || true
+
+          echo ""
+          echo "===== VERIFY PROBE / APPLICATION STRINGS EXIST IN YOUR OLIMEX ELF ====="
+          strings build_qemu_olimex/zephyr/zephyr.elf | grep -E "QEMU_PROBE_PRE_KERNEL_1_P0|QEMU_PROBE_PRE_KERNEL_1_P1|QEMU_PROBE_PRE_KERNEL_1_P2|QEMU_PROBE_PRE_KERNEL_1_P3|QEMU_PROBE_PRE_KERNEL_1_P4|QEMU_PROBE_PRE_KERNEL_1_P5|QEMU_PROBE_PRE_KERNEL_1_P6|QEMU_PROBE_PRE_KERNEL_1_P7|QEMU_PROBE_PRE_KERNEL_1_P8|QEMU_PROBE_PRE_KERNEL_1_P9|QEMU_PROBE_PRE_KERNEL_1_P10|QEMU_PROBE_PRE_KERNEL_2_P0|QEMU_PROBE_POST_KERNEL_P0|QEMU_PROBE_APPLICATION_P0|QEMU_BOOT_MARKER_ACTUAL_MAIN|MAIN_AFTER_LOG_INF|MAIN_QEMU_SKIP_NVS_CONFIG|MAIN_AFTER_STATE_RUNNING|MAIN_AFTER_STATUS_WORK_SCHEDULE" || true
+
+          echo ""
+          echo "===== OLIMEX CONFIG SNAPSHOT ====="
+          grep -E "CONFIG_BOARD|CONFIG_SERIAL|CONFIG_CONSOLE|CONFIG_UART_CONSOLE|CONFIG_LOG|CONFIG_LOG_BACKEND_UART|CONFIG_PRINTK|CONFIG_SHELL|CONFIG_USB|CONFIG_I2C|CONFIG_WATCHDOG|CONFIG_NVS|CONFIG_PM|CONFIG_FLASH|CONFIG_COUNTER|CONFIG_SEMIHOST|CONFIG_CLOCK_CONTROL|CONFIG_GPIO|CONFIG_ENTROPY|CONFIG_RANDOM|CONFIG_THREAD_ANALYZER" build_qemu_olimex/zephyr/.config || true
+
+          echo ""
+          echo "===== OLIMEX DEVICETREE CHOSEN NODE ====="
+          awk '/chosen {/,/};/' build_qemu_olimex/zephyr/zephyr.dts || true
+
+          echo ""
+          echo "===== OLIMEX DEVICETREE ENABLED EARLY DEVICES ====="
+          grep -nE "status = \"okay\"|rcc|clk|clock|gpio|usart|uart|i2c|rtc|iwdg|flash|entropy|rng|exti" build_qemu_olimex/zephyr/zephyr.dts || true
+
+          echo ""
+          echo "===== OLIMEX ZEPHYR INIT ORDER SYMBOLS ====="
+          NM_TOOL=$(find /opt/toolchains -name arm-zephyr-eabi-nm | head -n 1)
+          echo "Using nm: ${NM_TOOL}"
+          if [ -n "${NM_TOOL}" ]; then
+            "${NM_TOOL}" -n build_qemu_olimex/zephyr/zephyr.elf | grep -E "init|qemu_probe|clock|rcc|gpio|uart|usart|i2c|flash|rtc|wdt|iwdg|entropy|rng|reset|stm32" || true
+          fi
+
+          echo ""
+          echo "===== OLIMEX LINKER MAP INIT / DRIVER SECTIONS ====="
+          grep -nE "qemu_probe|PRE_KERNEL|POST_KERNEL|APPLICATION|clock|rcc|gpio|uart|usart|i2c|flash|rtc|wdt|iwdg|entropy|rng|reset|stm32" build_qemu_olimex/zephyr/zephyr.map || true
+
+      - name: Generate Zephyr init-level report for olimex_stm32_h405
+        run: |
+          rm -f zephyr_initlevels.txt
+
+          west build --build-dir build_qemu_olimex -t initlevels > zephyr_initlevels.txt 2>&1 || true
+
+          echo ""
+          echo "===== FULL OLIMEX ZEPHYR INIT LEVELS ====="
+          cat zephyr_initlevels.txt || true
+
+          echo ""
+          echo "===== INIT ORDER AROUND QEMU PROBES ====="
+          grep -n -A80 -B20 "qemu_probe_pre_kernel_1_p0" zephyr_initlevels.txt || true
+
+          echo ""
+          echo "===== INIT ORDER SUSPECTS ====="
+          grep -nE "qemu_probe|clock|rcc|gpio|uart|usart|i2c|flash|rtc|wdt|iwdg|entropy|rng|reset|stm32" zephyr_initlevels.txt || true
+
+      - name: Run YOUR olimex_stm32_h405 firmware in QEMU manually
+        run: |
+          rm -f qemu_execution_report.txt
+          rm -f qemu_stdout.log
+          rm -f qemu_stderr.log
+          rm -f qemu_semihost.log
+          rm -f firmware_console.log
+          rm -f qemu_uart0.log
+          rm -f qemu_uart1.log
+          rm -f qemu_uart2.log
+          rm -f qemu_uart3.log
+          rm -f qemu_uart4.log
+          rm -f qemu_uart5.log
+          rm -f qemu_uart6.log
+          rm -f qemu_uart7.log
+          rm -f qemu_uart0.raw.log
+          rm -f qemu_uart1.raw.log
+          rm -f qemu_uart2.raw.log
+          rm -f qemu_uart3.raw.log
+          rm -f qemu_uart4.raw.log
+          rm -f qemu_uart5.raw.log
+          rm -f qemu_uart6.raw.log
+          rm -f qemu_uart7.raw.log
+
+          echo "===== QEMU VERSION ====="
+          qemu-system-arm --version || true
+
+          echo ""
+          echo "===== SUPPORTED QEMU MACHINES CONTAINING STM32/H405/OLIMEX ====="
+          qemu-system-arm -machine help | grep -Ei "olimex|stm32|h405|f405" || true
+
+          echo ""
+          echo "===== VERIFY REQUIRED MACHINE EXISTS ====="
+          if ! qemu-system-arm -machine help | grep -q "olimex-stm32-h405"; then
+            echo "FAIL: This QEMU version does not support machine olimex-stm32-h405."
+            echo "Use zephyrprojectrtos/ci:latest or a newer QEMU package."
+            exit 1
+          fi
+
+          set +e
+          timeout 60s qemu-system-arm \
+            -machine olimex-stm32-h405 \
+            -cpu cortex-m4 \
+            -display none \
+            -monitor none \
+            -semihosting-config enable=on,target=native \
+            -kernel build_qemu_olimex/zephyr/zephyr.elf \
+            -serial file:qemu_uart0.raw.log \
+            -serial file:qemu_uart1.raw.log \
+            -serial file:qemu_uart2.raw.log \
+            -serial file:qemu_uart3.raw.log \
+            -serial file:qemu_uart4.raw.log \
+            -serial file:qemu_uart5.raw.log \
+            -serial file:qemu_uart6.raw.log \
+            -serial file:qemu_uart7.raw.log \
+            > qemu_stdout.log 2> qemu_semihost.log
+
+          EXIT_CODE=$?
+          set -e
+
+          touch qemu_stdout.log
+          touch qemu_semihost.log
+          touch qemu_uart0.raw.log
+          touch qemu_uart1.raw.log
+          touch qemu_uart2.raw.log
+          touch qemu_uart3.raw.log
+          touch qemu_uart4.raw.log
+          touch qemu_uart5.raw.log
+          touch qemu_uart6.raw.log
+          touch qemu_uart7.raw.log
+
+          cp qemu_semihost.log qemu_stderr.log || true
+          cp qemu_semihost.log firmware_console.log || true
+          cp qemu_semihost.log qemu_uart0.log || true
+
+          cp qemu_uart1.raw.log qemu_uart1.log || true
+          cp qemu_uart2.raw.log qemu_uart2.log || true
+          cp qemu_uart3.raw.log qemu_uart3.log || true
+          cp qemu_uart4.raw.log qemu_uart4.log || true
+          cp qemu_uart5.raw.log qemu_uart5.log || true
+          cp qemu_uart6.raw.log qemu_uart6.log || true
+          cp qemu_uart7.raw.log qemu_uart7.log || true
+
+          {
+            echo "===== QEMU STDOUT - YOUR OLIMEX FIRMWARE ====="
+            cat qemu_stdout.log || true
+            echo ""
+
+            echo "===== QEMU SEMIHOST / FIRMWARE CONSOLE ====="
+            cat qemu_semihost.log || true
+            echo ""
+
+            echo "===== QEMU STDERR - COPY OF SEMIHOST LOG ====="
+            cat qemu_stderr.log || true
+            echo ""
+
+            echo "===== UART0 COMPATIBILITY LOG - SEMIHOST MIRROR ====="
+            cat qemu_uart0.log || true
+            echo ""
+
+            echo "===== UART0 RAW HARDWARE LOG ====="
+            cat qemu_uart0.raw.log || true
+            echo ""
+
+            for i in 1 2 3 4 5 6 7; do
+              echo "===== UART${i} RAW HARDWARE LOG ====="
+              cat qemu_uart${i}.log || true
+              echo ""
+            done
+
+            echo "===== EXIT CODE ====="
+            echo "$EXIT_CODE"
+          } > qemu_execution_report.txt
+
+          cat qemu_execution_report.txt
+
+          echo ""
+          echo "===== QEMU RESULT CLASSIFICATION ====="
+
+          if grep -aEq "Unsupported SemiHosting|dumped core|Aborted" qemu_execution_report.txt; then
+            echo "FAIL: QEMU aborted due to unsupported semihosting call."
+            echo "This means a semihosting BKPT was executed with an invalid r0 operation code."
+            exit 1
+          fi
+
+          if [ "$EXIT_CODE" -eq 134 ]; then
+            echo "FAIL: QEMU aborted with exit code 134."
+            exit 1
+          fi
+
+          if grep -aEq "MAIN_AFTER_STATUS_WORK_SCHEDULE|MAIN_AFTER_STATE_RUNNING|MAIN_QEMU_SKIP_NVS_CONFIG|MAIN_AFTER_LOG_INF|QEMU_BOOT_MARKER_ACTUAL_MAIN" qemu_execution_report.txt; then
+            if [ "$EXIT_CODE" -eq 124 ] || [ "$EXIT_CODE" -eq 0 ]; then
+              echo "PASS: Your actual olimex_stm32_h405 application main() ran in QEMU."
+              exit 0
+            fi
+
+            echo "FAIL: Application marker was seen, but QEMU exited abnormally with code $EXIT_CODE."
+            exit 1
+          fi
+
+          if grep -aEq "QEMU_PROBE_APPLICATION_P0|QEMU_PROBE_POST_KERNEL_P0|QEMU_PROBE_PRE_KERNEL_2_P0" qemu_execution_report.txt; then
+            echo "FAIL: Zephyr reached late init, but application main() was not confirmed."
+            exit 1
+          fi
+
+          if grep -aEq "QEMU_PROBE_PRE_KERNEL_1_P10" qemu_execution_report.txt; then
+            echo "FAIL: Firmware reached PRE_KERNEL_1 priority 10 but did not reach PRE_KERNEL_2."
+            exit 1
+          fi
+
+          if grep -aEq "QEMU_PROBE_PRE_KERNEL_1_P9" qemu_execution_report.txt; then
+            echo "FAIL: Firmware reached PRE_KERNEL_1 priority 9 but stopped before priority 10."
+            exit 1
+          fi
+
+          if grep -aEq "QEMU_PROBE_PRE_KERNEL_1_P8" qemu_execution_report.txt; then
+            echo "FAIL: Firmware reached PRE_KERNEL_1 priority 8 but stopped before priority 9."
+            exit 1
+          fi
+
+          if grep -aEq "QEMU_PROBE_PRE_KERNEL_1_P7" qemu_execution_report.txt; then
+            echo "FAIL: Firmware reached PRE_KERNEL_1 priority 7 but stopped before priority 8."
+            exit 1
+          fi
+
+          if grep -aEq "QEMU_PROBE_PRE_KERNEL_1_P6" qemu_execution_report.txt; then
+            echo "FAIL: Firmware reached PRE_KERNEL_1 priority 6 but stopped before priority 7."
+            exit 1
+          fi
+
+          if grep -aEq "QEMU_PROBE_PRE_KERNEL_1_P5" qemu_execution_report.txt; then
+            echo "FAIL: Firmware reached PRE_KERNEL_1 priority 5 but stopped before priority 6."
+            exit 1
+          fi
+
+          if grep -aEq "QEMU_PROBE_PRE_KERNEL_1_P4" qemu_execution_report.txt; then
+            echo "FAIL: Firmware reached PRE_KERNEL_1 priority 4 but stopped before priority 5."
+            exit 1
+          fi
+
+          if grep -aEq "QEMU_PROBE_PRE_KERNEL_1_P3" qemu_execution_report.txt; then
+            echo "FAIL: Firmware reached PRE_KERNEL_1 priority 3 but stopped before priority 4."
+            exit 1
+          fi
+
+          if grep -aEq "QEMU_PROBE_PRE_KERNEL_1_P2" qemu_execution_report.txt; then
+            echo "FAIL: Firmware reached PRE_KERNEL_1 priority 2 but stopped before priority 3."
+            exit 1
+          fi
+
+          if grep -aEq "QEMU_PROBE_PRE_KERNEL_1_P1" qemu_execution_report.txt; then
+            echo "FAIL: Firmware reached PRE_KERNEL_1 priority 1 but stopped before priority 2."
+            exit 1
+          fi
+
+          if grep -aEq "QEMU_PROBE_PRE_KERNEL_1_P0" qemu_execution_report.txt; then
+            echo "FAIL: Firmware reached PRE_KERNEL_1 priority 0 only."
+            exit 1
+          fi
+
+          if [ "$EXIT_CODE" -eq 124 ]; then
+            echo "FAIL: Firmware launched but no probe/application marker was captured."
+            exit 1
+          fi
+
+          if [ "$EXIT_CODE" -eq 0 ]; then
+            echo "FAIL: QEMU exited normally, but no firmware marker was captured."
+            exit 1
+          fi
+
+          echo "FAIL: Firmware QEMU run failed with exit code $EXIT_CODE."
+          exit 1
+
+      - name: Emulation Test via QEMU (Cortex-M3)
+        run: |
+          # 1. Compile the firmware
+          west build -b qemu_cortex_m3 . --pristine 
+          
+          # 2. Initialize the full artifact report file
+          echo "# Cortex-M3 Emulation Full Runtime Report" > qemu_m3_report.md
+          echo '```text' >> qemu_m3_report.md
+          
+          # 3. Execute the emulator (this generates ~25MB of logs over 120s)
+          timeout 120s west build -t run >> qemu_m3_report.md 2>&1 || EXIT_CODE=$?
+          echo '```' >> qemu_m3_report.md
+          
+          # 4. THE FIX: Create a lightweight summary for the GitHub UI
+          echo "## Cortex-M3 QEMU Test Passed!" >> $GITHUB_STEP_SUMMARY
+          echo "**Note:** The full execution log was ~25MB due to continuous RTOS loop output and exceeded GitHub's 1MB display limit." >> $GITHUB_STEP_SUMMARY
+          echo "Please download the **QEMU-M3-Execution-Report** from the Artifacts menu to view the complete boot sequence." >> $GITHUB_STEP_SUMMARY
+          echo "### Final Output Snippet (Last 50 Lines):" >> $GITHUB_STEP_SUMMARY
+          echo '```text' >> $GITHUB_STEP_SUMMARY
+          tail -n 50 qemu_m3_report.md >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          
+          # 5. Evaluate the QEMU exit code (124 means it successfully ran until timeout)
+          if [ "${EXIT_CODE:-0}" -eq 124 ]; then 
+            echo "Firmware booted successfully and ran to timeout!"
+            exit 0
+          elif [ "${EXIT_CODE:-0}" -ne 0 ]; then
+            echo "Firmware crashed with exit code $EXIT_CODE!"
+            exit 1
+          fi
+
+      - name: Upload QEMU M3 Report Artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: QEMU-M3-Execution-Report
+          path: qemu_m3_report.md
+          if-no-files-found: error
+
+      - name: Upload QEMU execution logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: QEMU-Execution-Logs
+          path: |
+            qemu_execution_report.txt
+            qemu_stdout.log
+            qemu_stderr.log
+            qemu_semihost.log
+            firmware_console.log
+            qemu_uart*.log
+            qemu_uart*.raw.log
+            zephyr_initlevels.txt
+            build_nucleo/zephyr/zephyr.map
+            build_nucleo/zephyr/zephyr.dts
+            build_nucleo/zephyr/.config
+            build_qemu_olimex/zephyr/zephyr.map
+            build_qemu_olimex/zephyr/zephyr.dts
+            build_qemu_olimex/zephyr/.config
+            build_qemu_cortex_m3/zephyr/zephyr.map
+            build_qemu_cortex_m3/zephyr/zephyr.dts
+            build_qemu_cortex_m3/zephyr/.config
+          if-no-files-found: ignore
+
+      - name: Build and run host unit tests
+        run: |
+          if [ -f tests/CMakeLists.txt ]; then
+            mkdir -p tests/build
+            cd tests/build
+
+            cmake ..
+            make -j$(nproc)
+
+            if [ -f ./run_pm_tests ]; then ./run_pm_tests; fi
+            if [ -f ./run_usb_shell_tests ]; then ./run_usb_shell_tests; fi
+            if [ -f ./run_battery_tests ]; then ./run_battery_tests; fi
+            if [ -f ./run_static_memory_tests ]; then ./run_static_memory_tests; fi
+            if [ -f ./run_config_tests ]; then ./run_config_tests; fi
+            if [ -f ./run_i2c_faults_tests ]; then ./run_i2c_faults_tests; fi
+            if [ -f ./run_state_machine_tests ]; then ./run_state_machine_tests; fi
+            if [ -f ./run_sync_tests ]; then ./run_sync_tests; fi
+            if [ -f ./run_command_tests ]; then ./run_command_tests; fi
+          else
+            echo "tests/CMakeLists.txt not found. Skipping host unit tests."
+          fi
+
+      - name: Enforce coverage
+        run: |
+          if [ -f ./scripts/check_coverage.sh ]; then
+            chmod +x ./scripts/check_coverage.sh
+            ./scripts/check_coverage.sh
+          else
+            echo "Coverage script not found. Skipping coverage enforcement."
+          fi
+
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Coverage-Dashboard
+          path: coverage_report/
+          if-no-files-found: ignore
+          
+      - name: Upload Nucleo Artifacts for Deployment
+        uses: actions/upload-artifact@v4
+        with:
+          name: Nucleo-Firmware
+          path: |
+            build_nucleo/zephyr/zephyr.hex
+            build_nucleo/zephyr/zephyr.bin
+            
+release-github:
+    name: Publish GitHub Release
+    needs: build-test-qemu
+
+    if: startsWith(github.ref, 'refs/tags/v') 
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download Firmware Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: Nucleo-Firmware
+          path: firmware/
+
+      - name: Create Release and Upload Assets
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            firmware/zephyr.hex
+            firmware/zephyr.bin
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

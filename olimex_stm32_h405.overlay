@@ -1,0 +1,103 @@
+/* olimex_stm32_h405.overlay */
+
+/ {
+    chosen {
+        zephyr,console = &usart2;
+        zephyr,shell-uart = &usart2;
+    };
+
+    aliases {
+        serial0 = &usart2;
+
+        /*
+         * Your USB_CDC_Virtual_COM_Shell_Interface.cpp uses:
+         * DEVICE_DT_GET(DT_ALIAS(cdc_acm_uart0))
+         *
+         * USB is disabled in QEMU, so map this alias to USART2.
+         */
+        cdc-acm-uart0 = &usart2;
+    };
+};
+
+/*
+ * QEMU-safe clock configuration.
+ * Use HSI instead of external HSE/PLL.
+ */
+&clk_hsi {
+    status = "okay";
+};
+
+&clk_hse {
+    status = "disabled";
+};
+
+&pll {
+    status = "disabled";
+};
+
+&rcc {
+    clocks = <&clk_hsi>;
+    clock-frequency = <16000000>;
+    ahb-prescaler = <1>;
+    apb1-prescaler = <1>;
+    apb2-prescaler = <1>;
+};
+
+&usart2 {
+    status = "okay";
+    current-speed = <115200>;
+    pinctrl-0 = <&usart2_tx_pa2 &usart2_rx_pa3>;
+    pinctrl-names = "default";
+};
+
+&usbotg_fs {
+    status = "disabled";
+};
+
+/*
+ * Keep I2C enabled in DTS if your full firmware expects i2c1 device.
+ * Your I2CManager already mocks reads/writes for CONFIG_BOARD_OLIMEX_STM32_H405.
+ */
+&i2c1 {
+    status = "okay";
+    pinctrl-0 = <&i2c1_scl_pb6 &i2c1_sda_pb7>;
+    pinctrl-names = "default";
+};
+
+&rtc {
+    status = "okay";
+};
+
+&iwdg {
+    status = "okay";
+};
+
+/*
+ * Required by Persistent_Configuration_System.cpp:
+ * DT_NODELABEL(storage_partition)
+ */
+&flash0 {
+    partitions {
+        compatible = "fixed-partitions";
+        #address-cells = <1>;
+        #size-cells = <1>;
+
+        storage_partition: partition@E0000 {
+            label = "storage";
+            reg = <0x000E0000 0x00020000>;
+        };
+    };
+};
+
+/*
+ * QEMU mode:
+ * Disable STM32 EXTI and RNG/entropy nodes because they depend on
+ * stm32_clock_control_init / RCC, which hangs under olimex-stm32-h405 QEMU.
+ */
+&exti {
+    status = "disabled";
+};
+
+&rng {
+    status = "disabled";
+};
