@@ -13,12 +13,12 @@ void FailSafeStrategy::executeRecovery(const device* /* i2c_dev */)
 {
 }
 
-void FailSafeStrategy::updateLastGood(uint8_t val)
+void FailSafeStrategy::updateLastGood(uint64_t val)
 {
     last_known_good_value = val;
 }
 
-uint8_t FailSafeStrategy::getLastGood() const
+uint64_t FailSafeStrategy::getLastGood() const
 {
     return last_known_good_value;
 }

@@ -38,7 +38,7 @@ static void qemu_write0(const char *s)
         :
         : [msg] "r" (s)
         : "r0", "r1", "r2", "memory"
-    );grep -Rn "sys_context" include src
+    );
 }
 #else
 static void qemu_write0(const char * /* s */)

@@ -54,18 +54,18 @@ void UsbShell::dispatchCommand(std::string_view /* cmd */)
 {
 }
 
-void UsbShell::cmdStatus()
-{
-}
-
 void UsbShell::cmdSetRate(std::string_view /* args */)
 {
 }
 
-void UsbShell::cmdLogDump()
+void UsbShell::cmdStatus(std::string_view) noexcept
 {
 }
 
-void UsbShell::cmdReboot()
+void UsbShell::cmdLogDump(std::string_view) noexcept
+{
+}
+
+void UsbShell::cmdReboot(std::string_view) noexcept
 {
 }

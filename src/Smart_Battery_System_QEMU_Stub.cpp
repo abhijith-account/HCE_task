@@ -3,41 +3,111 @@
 
 extern DeviceContext sys_context;
 
-const device* i2c_hardware = nullptr;
-I2CManager i2c_bus_manager(i2c_hardware);
-SbsBattery smart_battery(&i2c_bus_manager, &sys_context);
+namespace {
 
-SbsBattery::SbsBattery(I2CManager* bus, DeviceContext* context)
-    : i2c_bus(bus),
+const struct device* uart_hardware = nullptr;
+static UARTManager uart_bus_manager(uart_hardware);
+static SbsBattery smart_battery(&uart_bus_manager, &sys_context);
+
+}
+
+SbsBattery* getSmartBatteryInstance()
+{
+    return &smart_battery;
+}
+
+UARTManager* getUartBusManagerInstance()
+{
+    return &uart_bus_manager;
+}
+
+/* -------------------------------------------------------------------------- */
+/* UARTManager Stub                                                            */
+/* -------------------------------------------------------------------------- */
+
+bool UARTManager::init()
+{
+    return true;
+}
+
+result<bool> UARTManager::executeTransaction(DalyCommand,
+                                             DalyProtocol::Payload& payload_out)
+{
+    payload_out.fill(0U);
+    return result<bool>::Ok(true);
+}
+
+void UARTManager::recordRetry()
+{
+}
+
+CommStatistics UARTManager::getStatsSnapshot() const
+{
+    return {};
+}
+
+/* -------------------------------------------------------------------------- */
+/* SbsBattery Stub                                                             */
+/* -------------------------------------------------------------------------- */
+
+SbsBattery::SbsBattery(UARTManager* bus,
+                       DeviceContext* context,
+                       WatchdogFeedHook hook)
+    : uart_bus(bus),
       sys_context(context),
       current_state(BatteryFSM::IDLE),
-      full_charge_logged(false)
+      cache_mutex{},
+      full_charge_logged(false),
+      last_valid_comm_time(0U),
+      consecutive_comm_failures(0U),
+      cache{},
+      watchdog_feed_hook(hook)
 {
+    k_mutex_init(&cache_mutex);
 }
 
-Result<uint16_t> SbsBattery::getVoltage()
+void SbsBattery::setWatchdogFeedHook(WatchdogFeedHook hook)
 {
-    return Result<uint16_t>::Ok(12000);
+    watchdog_feed_hook = hook;
 }
 
-Result<int16_t> SbsBattery::getCurrent()
+void SbsBattery::pollHardwareAndUpdateCache()
 {
-    return Result<int16_t>::Ok(0);
+    cache.valid = true;
+    cache.last_error = CommFault::NONE;
+
+    cache.voltage = Millivolts{12000};
+    cache.current = Milliamps{0};
+    cache.soc = Percent{95};
+    cache.temperature = Kelvin{2980};
+    cache.capacity = MilliAmpHours{3000};
+
+    cache.timestamp_ms = k_uptime_get_32();
 }
 
-Result<uint8_t> SbsBattery::getStateOfCharge()
+result<Millivolts> SbsBattery::getVoltage() const
 {
-    return Result<uint8_t>::Ok(95);
+    return result<Millivolts>::Ok(Millivolts{12000});
 }
 
-Result<uint16_t> SbsBattery::getTemperature()
+result<Milliamps> SbsBattery::getCurrent() const
 {
-    return Result<uint16_t>::Ok(250);
+    return result<Milliamps>::Ok(Milliamps{0});
 }
 
-Result<uint16_t> SbsBattery::getCapacity()
+result<Percent> SbsBattery::getStateOfCharge() const
 {
-    return Result<uint16_t>::Ok(3000);
+    return result<Percent>::Ok(Percent{95});
+}
+
+result<Kelvin> SbsBattery::getTemperature() const
+{
+    return result<Kelvin>::Ok(Kelvin{2980});
+}
+
+result<MilliAmpHours> SbsBattery::getCapacity() const
+{
+    return result<MilliAmpHours>::Ok(MilliAmpHours{3000});
 }
 
 void SbsBattery::processFSM()
@@ -48,4 +118,9 @@ void SbsBattery::processFSM()
 BatteryFSM SbsBattery::getState() const
 {
     return current_state;
+}
+
+CommStatistics SbsBattery::getStats() const
+{
+    return {};
 }
