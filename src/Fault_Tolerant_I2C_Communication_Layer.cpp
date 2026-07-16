@@ -26,7 +26,18 @@ struct CacheEntry {
 
 static StaticPool<CacheEntry, MAX_CACHED_REGISTERS> cache_pool;
 static CacheEntry* active_entries[MAX_CACHED_REGISTERS] = {nullptr};
-const struct device *i2c_hardware =DEVICE_DT_GET(DT_NODELABEL(i2c1));
+#ifdef CONFIG_BOARD_QEMU_CORTEX_M3
+
+const struct device *i2c_hardware = nullptr;
+
+#else
+
+const struct device *i2c_hardware =
+    DEVICE_DT_GET(DT_NODELABEL(i2c1));
+
+#endif
+
+I2CManager i2c_manager(i2c_hardware);
 I2CManager i2c_manager(i2c_hardware);
 // Fixed: Bypassing K_MUTEX_DEFINE macro to ensure compatibility with host-based Google Tests
 static struct k_mutex cache_tracker_mutex;
@@ -38,8 +49,6 @@ void ensure_mutex_initialized() {
         cache_mutex_init = true;
     }
 }
-
-#ifndef CONFIG_BOARD_QEMU_CORTEX_M3
 
 static I2CFault classify_i2c_error(int err) {
     switch (err) {
@@ -54,7 +63,7 @@ static I2CFault classify_i2c_error(int err) {
 static void update_cache(uint32_t key, uint64_t value, bool calibrated = true) {
     ensure_mutex_initialized();
     k_mutex_lock(&cache_tracker_mutex, K_FOREVER);
-    int64_t now = k_uptime_get_32();
+    int64_t now = k_uptime_get();
     
     for (size_t i = 0; i < MAX_CACHED_REGISTERS; i++) {
         if (active_entries[i] != nullptr && active_entries[i]->key == key) {
@@ -91,7 +100,7 @@ static void update_cache(uint32_t key, uint64_t value, bool calibrated = true) {
         new_entry->key = key;
         new_entry->raw_value = value;
         new_entry->timestamp = now;
-        new_entry->reliability_score = 100;
+        new_entry->reliability_score = CACHE_RELIABILITY_MAX;
         new_entry->is_calibrated = calibrated;
         new_entry->sample_count = 1U;
         active_entries[free_index] = new_entry;
@@ -107,7 +116,7 @@ static bool get_cached_value(uint32_t key, uint64_t* out_val, uint32_t max_age_m
     
     ensure_mutex_initialized();
     k_mutex_lock(&cache_tracker_mutex, K_FOREVER);
-    const uint32_t now = k_uptime_get_32();
+    const int64_t now = k_uptime_get();
     
     for (size_t i = 0; i < MAX_CACHED_REGISTERS; i++) {
        if ((active_entries[i] != nullptr) && (active_entries[i]->key == key)) {
@@ -145,7 +154,6 @@ static bool get_cached_value(uint32_t key, uint64_t* out_val, uint32_t max_age_m
 static bool is_recoverable_with_bus_reset(I2CFault fault) {
     return (fault == I2CFault::TIMEOUT) || (fault == I2CFault::BUS_BUSY);
 }
-#endif
  
 void RetryStrategy::executeRecovery(const device* /* i2c_dev */) {
     LOG_WRN("I2C Fault Detected. Executing Exponential Backoff Retry...");
