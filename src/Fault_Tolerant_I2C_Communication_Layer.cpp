@@ -50,16 +50,6 @@ void ensure_mutex_initialized() {
     }
 }
 
-static I2CFault classify_i2c_error(int err) {
-    switch (err) {
-        case -ETIMEDOUT: return I2CFault::TIMEOUT;
-        case -EBUSY:     return I2CFault::BUS_BUSY;
-        case -EAGAIN:    return I2CFault::ARBITRATION_LOST;
-        case -ENODEV:    return I2CFault::DEVICE_NOT_READY;
-        default:         return I2CFault::NACK; 
-    }
-}
-
 static void update_cache(uint32_t key, uint64_t value, bool calibrated = true) {
     ensure_mutex_initialized();
     k_mutex_lock(&cache_tracker_mutex, K_FOREVER);
@@ -109,6 +99,8 @@ static void update_cache(uint32_t key, uint64_t value, bool calibrated = true) {
     k_mutex_unlock(&cache_tracker_mutex);
 }
 
+#ifndef CONFIG_BOARD_QEMU_CORTEX_M3
+
 static bool get_cached_value(uint32_t key, uint64_t* out_val, uint32_t max_age_ms) {
     if (out_val == nullptr) {
         return false;
@@ -154,6 +146,18 @@ static bool get_cached_value(uint32_t key, uint64_t* out_val, uint32_t max_age_m
 static bool is_recoverable_with_bus_reset(I2CFault fault) {
     return (fault == I2CFault::TIMEOUT) || (fault == I2CFault::BUS_BUSY);
 }
+
+static I2CFault classify_i2c_error(int err) {
+    switch (err) {
+        case -ETIMEDOUT: return I2CFault::TIMEOUT;
+        case -EBUSY:     return I2CFault::BUS_BUSY;
+        case -EAGAIN:    return I2CFault::ARBITRATION_LOST;
+        case -ENODEV:    return I2CFault::DEVICE_NOT_READY;
+        default:         return I2CFault::NACK; 
+    }
+}
+
+#endif
  
 void RetryStrategy::executeRecovery(const device* /* i2c_dev */) {
     LOG_WRN("I2C Fault Detected. Executing Exponential Backoff Retry...");
