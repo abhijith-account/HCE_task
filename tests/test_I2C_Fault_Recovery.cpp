@@ -752,3 +752,51 @@ TEST_F(I2CFaultRecoveryTestSuite, ResetCachePoolWithNullBlocks) {
     // This exercises the 'false' branch of: if (exhausted_blocks[i] != nullptr)
     EXPECT_NO_FATAL_FAILURE(resetI2CCachePool());
 }
+
+TEST_F(I2CFaultRecoveryTestSuite, ReadRegisterTestEnvForceErrno) {
+    g_i2c_force_errno = -ETIMEDOUT;
+    I2CManager mgr(mock_dev);
+    
+    auto r = mgr.readRegister(1, 2);
+    
+    EXPECT_FALSE(r.success);
+    EXPECT_EQ(r.error, I2CFault::TIMEOUT);
+    
+    g_i2c_force_errno = 0;   // reset for subsequent tests
+}
+
+TEST_F(I2CFaultRecoveryTestSuite, WriteRegisterTestEnvForceErrno) {
+    g_i2c_force_errno = -EIO;
+    I2CManager mgr(mock_dev);
+    
+    auto r = mgr.writeRegister(1, 2, 0xFF);
+    
+    EXPECT_FALSE(r.success);
+    EXPECT_EQ(r.error, I2CFault::NACK);
+    
+    g_i2c_force_errno = 0;   // reset
+}
+
+TEST_F(I2CFaultRecoveryTestSuite, ReadWordTestEnvForceErrno) {
+    g_i2c_force_errno = -EBUSY;
+    I2CManager mgr(mock_dev);
+    
+    auto r = mgr.readWord(1, 2);
+    
+    EXPECT_FALSE(r.success);
+    EXPECT_EQ(r.error, I2CFault::BUS_BUSY);
+    
+    g_i2c_force_errno = 0;   // reset
+}
+
+TEST_F(I2CFaultRecoveryTestSuite, Read24BitTestEnvForceErrno) {
+    g_i2c_force_errno = -EAGAIN;
+    I2CManager mgr(mock_dev);
+    
+    auto r = mgr.read24Bit(1, 2);
+    
+    EXPECT_FALSE(r.success);
+    EXPECT_EQ(r.error, I2CFault::ARBITRATION_LOST);
+    
+    g_i2c_force_errno = 0;   // reset
+}
