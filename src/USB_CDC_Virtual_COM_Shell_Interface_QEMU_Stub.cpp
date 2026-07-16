@@ -1,31 +1,48 @@
 #include "USB_CDC_Virtual_COM_Shell_Interface.h"
 #include "Device_State_Machine+Watchdog.h"
 #include "Smart_Battery_System.h"
+
 #include <array>
 #include <string_view>
 
-// Example types – adjust to match your actual declarations
-struct SystemContext { int dummy; };   // or whatever your real sys_context type is
-struct I2CManager { int dummy; };
-struct SmartBattery { int dummy; };
+/* -------------------------------------------------------------------------- */
+/* Global Objects                                                             */
+/* -------------------------------------------------------------------------- */
 
-// Actual definitions
-SystemContext sys_context;
-I2CManager i2c_manager;
-SmartBattery smart_battery;
+DeviceContext device_context;
 
-UsbShell diag_shell(&sys_context, &smart_battery);
+UARTManager uart_bus_manager(nullptr);
 
-UsbCdcFacade::UsbCdcFacade()
-    : dtr_ready(false),
+SbsBattery smart_battery(
+    &uart_bus_manager,
+    &device_context
+);
+
+UsbShell diag_shell(
+    &device_context,
+    &smart_battery
+);
+
+/* -------------------------------------------------------------------------- */
+/* UsbCdcFacade                                                               */
+/* -------------------------------------------------------------------------- */
+
+UsbCdcFacade::UsbCdcFacade() noexcept
+    : dev(nullptr),
+      dtr_ready(false),
+      initialized(false),
+      line_ctrl_get_failed_logged(false),
       rx_head(0),
-      rx_tail(0)
+      rx_tail(0),
+      overflow_logged(false),
+      dropped_bytes(0),
+      overflow_count(0)
 {
-    dev = nullptr;
 }
 
 bool UsbCdcFacade::init()
 {
+    initialized = true;
     return true;
 }
 
@@ -34,20 +51,34 @@ bool UsbCdcFacade::isConnected()
     return false;
 }
 
-void UsbCdcFacade::transmit(std::string_view /* data */)
+void UsbCdcFacade::transmit(std::string_view /*data*/) noexcept
 {
 }
 
-void UsbCdcFacade::uartInterruptHandler(const device* /* dev */, void* /* user_data */)
+void UsbCdcFacade::uartInterruptHandler(const device*,
+                                       void*)
 {
 }
 
-bool UsbCdcFacade::readLine(std::array<char, MAX_CMD_LEN>& /* out_line */)
+bool UsbCdcFacade::readLine(CommandBuffer&) noexcept
 {
     return false;
 }
 
-UsbShell::UsbShell(DeviceContext* ctx, SbsBattery* bat)
+/* -------------------------------------------------------------------------- */
+/* UsbShell                                                                    */
+/* -------------------------------------------------------------------------- */
+
+const std::array<UsbShell::Command, UsbShell::CommandCount>
+UsbShell::kCommandTable{{
+    {"status",  false, &UsbShell::cmdStatus},
+    {"setrate", true,  &UsbShell::cmdSetRate},
+    {"logdump", false, &UsbShell::cmdLogDump},
+    {"reboot",  false, &UsbShell::cmdReboot},
+}};
+
+UsbShell::UsbShell(DeviceContext* ctx,
+                   SbsBattery* bat) noexcept
     : sys_ctx(ctx),
       battery(bat)
 {
@@ -57,11 +88,11 @@ void UsbShell::process()
 {
 }
 
-void UsbShell::dispatchCommand(std::string_view /* cmd */)
+void UsbShell::dispatchCommand(std::string_view)
 {
 }
 
-void UsbShell::cmdSetRate(std::string_view /* args */)
+void UsbShell::cmdSetRate(std::string_view) noexcept
 {
 }
 
@@ -74,5 +105,20 @@ void UsbShell::cmdLogDump(std::string_view) noexcept
 }
 
 void UsbShell::cmdReboot(std::string_view) noexcept
+{
+}
+
+UsbShell::StatusSnapshot UsbShell::collectStatus() const
+{
+    return {};
+}
+
+std::size_t UsbShell::formatStatus(const StatusSnapshot&,
+                                   StatusBuffer&)
+{
+    return 0U;
+}
+
+void shell_thread(void)
 {
 }
