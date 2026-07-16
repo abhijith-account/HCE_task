@@ -30,10 +30,10 @@ extern I2CManager i2c_manager;
 extern PowerManager pwr_manager;
 extern void resetRtosCommandTestState() noexcept;
 extern void resetI2CCacheForTests() noexcept;   
-
 static const struct device dummy_dev;
+
 __attribute__((weak)) DeviceContext sys_context;
-__attribute__((weak)) I2CManager i2c_manager(&dummy_dev);
+I2CManager i2c_manager(&dummy_dev);
 __attribute__((weak)) PowerManager pwr_manager(&dummy_dev, &dummy_dev);
 
 // -----------------------------------------------------------------------
@@ -90,6 +90,7 @@ protected:
     g_i2c_fail_on_call_n = 0;    // add this line
     g_device_ready_override = true;
 }
+
 };
 
 // 1. Verify Command Life-cycle
@@ -222,8 +223,10 @@ std::string_view out(raw_out);
 TEST_F(RTOSCommandsTestSuite, SensorReadCmdTripleAndWordSuccess) {
     SensorReadCmd triple(SensorID::LPS22HB, SensorReg::LPS_P_DESC.reg, ReadLength::Triple);
     triple.execute();
+    
     SensorReadCmd word(SensorID::LPS22HB, SensorReg::LPS_T_DESC.reg, ReadLength::Word);
     word.execute();
+    
     EXPECT_GT(g_queueStats.commandsCreated, 0u);
 }
 
@@ -261,15 +264,18 @@ TEST_F(RTOSCommandsTestSuite, MockDataGenerationBranches) {
 }
 
 // --- SensorReadCmd::execute(): compute-queue-full branch ---
+// --- SensorReadCmd::execute(): compute-queue-full branch ---
 TEST_F(RTOSCommandsTestSuite, SensorReadCmdComputeQueueFullLogsError) {
     for (int i = 0; i < QueueConfig::Depth; i++) {
         ASSERT_TRUE(enqueueCommand<PreemptionTestCmd>(PROCESSOR_Q, i));  
     }
     SensorReadCmd cmd(SensorID::BME280, SensorReg::BME280_DATA_START, ReadLength::Block);
     testing::internal::CaptureStdout();
+    
     cmd.execute(); 
+    
     const auto raw_out = testing::internal::GetCapturedStdout();
-std::string_view out(raw_out);
+    std::string_view out(raw_out);
     EXPECT_NE(out.find("Compute queue full"), std::string_view::npos);
 }
 
@@ -548,17 +554,18 @@ TEST_F(RTOSCommandsTestSuite, ProducerThreadLPSPartialEnqueue) {
 }
 
 // Forces LOGGER_Q to be full exactly when ComputeCmd executes to catch the false returns of printMeasurement
+// Forces LOGGER_Q to be full exactly when ComputeCmd executes to catch the false returns of printMeasurement
 TEST_F(RTOSCommandsTestSuite, ComputeCmdBME280PrintsFailWhenQueueFull) {
     // Fill LOGGER_Q
     for (int i = 0; i < QueueConfig::Depth; i++) {
-    EXPECT_TRUE(enqueueCommand<PreemptionTestCmd>(LOGGER_Q, i));
+        EXPECT_TRUE(enqueueCommand<PreemptionTestCmd>(LOGGER_Q, i));
     }
     
     ComputeCmd cmd(SensorID::BME280, SensorReg::BME280_DATA_START, 0x000100010001ULL);
     testing::internal::CaptureStdout();
     cmd.execute();
     const auto raw_out = testing::internal::GetCapturedStdout();
-std::string_view out(raw_out);
+    std::string_view out(raw_out);
     
     EXPECT_NE(out.find("Logger queue full"), std::string_view::npos);
 }
@@ -623,4 +630,30 @@ std::string_view out(raw_out);
     
     EXPECT_NE(out.find("Failed to initialize BME280"), std::string_view::npos);
     g_i2c_fail_on_call_n = 0;
+}
+
+TEST_F(RTOSCommandsTestSuite, DiagnosticI2C) {
+    // 1. Is the manager’s device pointer valid?
+    const device* dev = SystemObjects::i2c().i2c_dev;
+    ASSERT_NE(dev, nullptr) << "i2c_dev is nullptr!";
+
+    // 2. Does device_is_ready() return true?
+    ASSERT_TRUE(device_is_ready(dev))
+        << "device_is_ready() returned false. g_device_ready_override = "
+        << g_device_ready_override;
+
+    // 3. Direct I²C read call – does it succeed?
+    const uint16_t addr = static_cast<uint16_t>(SensorID::LPS22HB);
+    auto res = SystemObjects::i2c().read24Bit(addr, SensorReg::LPS_P_DESC.reg);
+    ASSERT_TRUE(res.isOk())
+        << "read24Bit failed. Error = " << static_cast<int>(res.error);
+}
+
+TEST_F(RTOSCommandsTestSuite, PinpointI2cFailure) {
+    const device* dev = SystemObjects::i2c().i2c_dev;
+    ASSERT_NE(dev, nullptr) << "i2c_dev is nullptr!";
+    ASSERT_TRUE(device_is_ready(dev))
+        << "device_is_ready() returns false. g_device_ready_override = "
+        << g_device_ready_override;
+    SUCCEED();
 }

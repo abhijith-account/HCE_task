@@ -26,18 +26,6 @@ struct CacheEntry {
 
 static StaticPool<CacheEntry, MAX_CACHED_REGISTERS> cache_pool;
 static CacheEntry* active_entries[MAX_CACHED_REGISTERS] = {nullptr};
-#ifdef CONFIG_BOARD_QEMU_CORTEX_M3
-
-const struct device *i2c_hardware = nullptr;
-
-#else
-
-const struct device *i2c_hardware =
-    DEVICE_DT_GET(DT_NODELABEL(i2c1));
-
-#endif
-
-I2CManager i2c_manager(i2c_hardware);
 
 // Fixed: Bypassing K_MUTEX_DEFINE macro to ensure compatibility with host-based Google Tests
 static struct k_mutex cache_tracker_mutex;
@@ -193,6 +181,12 @@ Result<uint8_t> I2CManager::readRegister(uint16_t sensor_addr, uint8_t reg_addr)
     failsafe_strategy.updateLastGood(mock_data);
     return Result<uint8_t>::Ok(mock_data);
 #else
+#ifdef IS_TEST_ENVIRONMENT
+    extern int g_i2c_force_errno;
+    if (g_i2c_force_errno != 0) {
+        return Result<uint8_t>::Err(classify_i2c_error(g_i2c_force_errno));
+    }
+#endif
     if ((i2c_dev == nullptr) || (!device_is_ready(i2c_dev))) {
         return Result<uint8_t>::Err(I2CFault::DEVICE_NOT_READY);
     }
@@ -227,6 +221,12 @@ Result<bool> I2CManager::writeRegister(uint16_t sensor_addr, uint8_t reg_addr, u
     k_msleep(10);
     return Result<bool>::Ok(true);
 #else
+#ifdef IS_TEST_ENVIRONMENT
+    extern int g_i2c_force_errno;
+    if (g_i2c_force_errno != 0) {
+       return Result<bool>::Err(classify_i2c_error(g_i2c_force_errno));
+    }
+#endif
     if ((i2c_dev == nullptr) || (!device_is_ready(i2c_dev))) {
         return Result<bool>::Err(I2CFault::DEVICE_NOT_READY);
     }
@@ -257,6 +257,12 @@ Result<uint16_t> I2CManager::readWord(uint16_t sensor_addr, uint8_t reg_addr) {
     failsafe_strategy.updateLastGood(mock_val);
     return Result<uint16_t>::Ok(mock_val);
 #else
+#ifdef IS_TEST_ENVIRONMENT
+    extern int g_i2c_force_errno;
+    if (g_i2c_force_errno != 0) {
+        return Result<uint16_t>::Err(classify_i2c_error(g_i2c_force_errno));
+    }
+#endif
     if ((i2c_dev == nullptr) || (!device_is_ready(i2c_dev))) {
         return Result<uint16_t>::Err(I2CFault::DEVICE_NOT_READY);
     }
@@ -297,6 +303,12 @@ Result<uint32_t> I2CManager::read24Bit(uint16_t sensor_addr, uint8_t reg_addr) {
     failsafe_strategy.updateLastGood(mock_val);
     return Result<uint32_t>::Ok(mock_val);
 #else
+#ifdef IS_TEST_ENVIRONMENT
+    extern int g_i2c_force_errno;
+    if (g_i2c_force_errno != 0) {
+        return Result<uint32_t>::Err(classify_i2c_error(g_i2c_force_errno));
+    }
+#endif
     if ((i2c_dev == nullptr) || (!device_is_ready(i2c_dev))) {
         return Result<uint32_t>::Err(I2CFault::DEVICE_NOT_READY);
     }
@@ -336,12 +348,12 @@ Result<uint64_t> I2CManager::read64Bit(uint16_t sensor_addr, uint8_t reg_addr) {
     failsafe_strategy.updateLastGood(mock_val);
     return Result<uint64_t>::Ok(mock_val); 
 #else
-    #ifdef IS_TEST_ENVIRONMENT
-        extern int g_i2c_force_errno;
-        if (g_i2c_force_errno != 0) {
-            return Result<uint64_t>::Err(classify_i2c_error(g_i2c_force_errno));
-        }
-    #endif
+#ifdef IS_TEST_ENVIRONMENT
+    extern int g_i2c_force_errno;
+    if (g_i2c_force_errno != 0) {
+        return Result<uint64_t>::Err(classify_i2c_error(g_i2c_force_errno));
+    }
+#endif
     if ((i2c_dev == nullptr) || (!device_is_ready(i2c_dev))) {
         return Result<uint64_t>::Err(I2CFault::DEVICE_NOT_READY);
     }
