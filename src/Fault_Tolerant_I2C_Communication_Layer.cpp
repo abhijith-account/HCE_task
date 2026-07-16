@@ -38,7 +38,7 @@ const struct device *i2c_hardware =
 #endif
 
 I2CManager i2c_manager(i2c_hardware);
-I2CManager i2c_manager(i2c_hardware);
+
 // Fixed: Bypassing K_MUTEX_DEFINE macro to ensure compatibility with host-based Google Tests
 static struct k_mutex cache_tracker_mutex;
 static bool cache_mutex_init = false;

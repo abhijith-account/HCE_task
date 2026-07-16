@@ -1,8 +1,8 @@
 {
   "projects": {
-    "proj": {
+    "HCE_task": {
       "rel_path": "",
-      "name": "proj",
+      "name": "HCE_task",
       "buildConfigs": {
         "build/nucleo_f446re/stm32f446xx": {
           "relBoardDir": "boards",
