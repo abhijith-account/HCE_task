@@ -39,6 +39,8 @@ void ensure_mutex_initialized() {
     }
 }
 
+#ifndef CONFIG_BOARD_QEMU_CORTEX_M3
+
 static I2CFault classify_i2c_error(int err) {
     switch (err) {
         case -ETIMEDOUT: return I2CFault::TIMEOUT;
@@ -143,6 +145,7 @@ static bool get_cached_value(uint32_t key, uint64_t* out_val, uint32_t max_age_m
 static bool is_recoverable_with_bus_reset(I2CFault fault) {
     return (fault == I2CFault::TIMEOUT) || (fault == I2CFault::BUS_BUSY);
 }
+#endif
  
 void RetryStrategy::executeRecovery(const device* /* i2c_dev */) {
     LOG_WRN("I2C Fault Detected. Executing Exponential Backoff Retry...");
