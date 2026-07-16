@@ -9,14 +9,11 @@
 /* Global Objects                                                             */
 /* -------------------------------------------------------------------------- */
 
-DeviceContext device_context;
+extern DeviceContext device_context;
 
-UARTManager uart_bus_manager(nullptr);
+extern UARTManager uart_bus_manager;
 
-SbsBattery smart_battery(
-    &uart_bus_manager,
-    &device_context
-);
+extern SbsBattery smart_battery;
 
 UsbShell diag_shell(
     &device_context,

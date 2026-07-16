@@ -8,7 +8,8 @@
  * Global objects
  *---------------------------------------------------------------------------*/
 
-DeviceContext device_context;
+DeviceContext sys_context;
+DeviceContext& device_context = sys_context;
 
 static const struct device* uart_hw = nullptr;
 
