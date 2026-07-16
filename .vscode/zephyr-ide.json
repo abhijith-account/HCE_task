@@ -4,11 +4,11 @@
       "rel_path": "",
       "name": "HCE_task",
       "buildConfigs": {
-        "build/qemu_cortex_m3/ti_lm3s6965": {
+        "build/nucleo_f446re/stm32f446xx": {
           "relBoardDir": "boards",
-          "relBoardSubDir": "../../zephyr-workspace/zephyr/boards/qemu/cortex_m3",
-          "board": "qemu_cortex_m3/ti_lm3s6965",
-          "name": "build/qemu_cortex_m3/ti_lm3s6965",
+          "relBoardSubDir": "../../zephyr-workspace/zephyr/boards/st/nucleo_f446re",
+          "board": "nucleo_f446re/stm32f446xx",
+          "name": "build/nucleo_f446re/stm32f446xx",
           "westBuildArgs": [],
           "westBuildCMakeArgs": [],
           "confFiles": {

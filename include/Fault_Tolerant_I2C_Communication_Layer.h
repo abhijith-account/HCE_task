@@ -6,20 +6,7 @@
 
 enum class I2CFault{NONE,NACK,TIMEOUT,BUS_BUSY,ARBITRATION_LOST,DEVICE_NOT_READY};
 
-#ifdef CONFIG_BOARD_QEMU_CORTEX_M3
 
-const struct device *i2c_hardware = nullptr;
-
-#elif !defined(IS_TEST_ENVIRONMENT)
-
-const struct device *i2c_hardware =
-    DEVICE_DT_GET(DT_NODELABEL(i2c1));
-
-#endif
-
-#ifndef IS_TEST_ENVIRONMENT
-I2CManager i2c_manager(i2c_hardware);
-#endif
 
 template <typename T>
 struct Result{

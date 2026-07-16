@@ -7,7 +7,7 @@
  * Global I2C Manager
  *---------------------------------------------------------------------------*/
 
-extern I2CManager i2c_manager(nullptr);
+I2CManager i2c_manager(nullptr);
 
 /*----------------------------------------------------------------------------
  * RetryStrategy

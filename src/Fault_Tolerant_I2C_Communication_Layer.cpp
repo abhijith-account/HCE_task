@@ -31,6 +31,21 @@ static CacheEntry* active_entries[MAX_CACHED_REGISTERS] = {nullptr};
 static struct k_mutex cache_tracker_mutex;
 static bool cache_mutex_init = false;
 
+#ifdef CONFIG_BOARD_QEMU_CORTEX_M3
+
+const struct device *i2c_hardware = nullptr;
+
+#elif !defined(IS_TEST_ENVIRONMENT)
+
+const struct device *i2c_hardware =
+    DEVICE_DT_GET(DT_NODELABEL(i2c1));
+
+#endif
+
+#ifndef IS_TEST_ENVIRONMENT
+I2CManager i2c_manager(i2c_hardware);
+#endif
+
 void ensure_mutex_initialized() {
     if (!cache_mutex_init) {
         k_mutex_init(&cache_tracker_mutex);
