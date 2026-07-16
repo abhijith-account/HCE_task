@@ -548,7 +548,7 @@ CommStatistics SbsBattery::getStats() const {
 UARTManager* uart_bus_manager = nullptr;
 SbsBattery* smart_battery = nullptr;
 namespace {
-static const device* uart_hardware = DEVICE_DT_GET(DT_NODELABEL(DT_CHOSEN(zephyr_console)));
+static const device* uart_hardware = DEVICE_DT_GET(DT_CHOSEN(zephyr_console));
 static UARTManager static_uart_manager(uart_hardware);
 static SbsBattery static_smart_battery(&static_uart_manager, &sys_context, daly_watchdog_feed_hook);
 static bool bms_objects_initialized = false;
