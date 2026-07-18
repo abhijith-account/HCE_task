@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 #include "Fault_Tolerant_I2C_Communication_Layer.h"
 #include "Static_Memory+MISRA_Compliance_Layer.h"
+#include "Power_Management_System.h"
 #include <new>
 #include <string>
 #include <string_view>
@@ -799,4 +800,66 @@ TEST_F(I2CFaultRecoveryTestSuite, Read24BitTestEnvForceErrno) {
     EXPECT_EQ(r.error, I2CFault::ARBITRATION_LOST);
     
     g_i2c_force_errno = 0;   // reset
+}
+
+TEST_F(I2CFaultRecoveryTestSuite, PowerObserverAndSleepGating) {
+    I2CManager mgr(mock_dev);
+    mock_i2c_err_code = 0;
+    
+    // 1. Initial call triggers ensure_power_observer_registered() true branch (Registers observer)
+    mgr.readRegister(1, 2);
+    // 2. Second call triggers ensure_power_observer_registered() false branch
+    mgr.readRegister(1, 2);
+    
+    // 3. Trigger sleep state (Covers I2CPowerObserver::beforeSleep and true branch of isSleeping)
+    PowerManager::getInstance().notifyBeforeSleep();
+    
+    // 4. Test write in sleep state (Unconditionally rejected)
+    // 4. Test write in sleep state (Unconditionally rejected)
+    auto w_res = mgr.writeRegister(1, 2, 0xFF);
+    EXPECT_FALSE(w_res.success);
+    EXPECT_EQ(w_res.error, I2CFault::DEVICE_NOT_READY);
+    
+    // Clear the cache populated by Steps 1 & 2 to enforce the "NO cache" condition
+    resetI2CCacheForTests();
+    
+    // 5. Test reads in sleep state with NO cache -> Should return DEVICE_NOT_READY
+    EXPECT_FALSE(mgr.readRegister(1, 2).success);
+    EXPECT_FALSE(mgr.readWord(1, 3).success);
+    EXPECT_FALSE(mgr.read24Bit(1, 4).success);
+    EXPECT_FALSE(mgr.read64Bit(1, 5).success);
+    
+    // 6. Populate cache via shim for the specific sleeping keys
+    test_update_cache((1U << 8) | 2U, 0xAA, true);
+    test_update_cache((1U << 8) | 3U, 0xAABB, true);
+    test_update_cache((1U << 8) | 4U, 0xAABBCC, true);
+    test_update_cache((1U << 8) | 5U, 0x1122334455667788ULL, true);
+    
+    // 7. Test reads in sleep state WITH valid cache (Graceful fallback)
+    auto r8 = mgr.readRegister(1, 2);
+    EXPECT_TRUE(r8.success);
+    EXPECT_EQ(r8.value, 0xAA);
+    
+    auto r16 = mgr.readWord(1, 3);
+    EXPECT_TRUE(r16.success);
+    EXPECT_EQ(r16.value, 0xAABB);
+    
+    auto r24 = mgr.read24Bit(1, 4);
+    EXPECT_TRUE(r24.success);
+    EXPECT_EQ(r24.value, 0xAABBCC);
+    
+    auto r64 = mgr.read64Bit(1, 5);
+    EXPECT_TRUE(r64.success);
+    EXPECT_EQ(r64.value, 0x1122334455667788ULL);
+    
+    // 8. Wake up (Covers I2CPowerObserver::afterWakeup)
+    PowerManager::getInstance().notifyAfterWakeup();
+    EXPECT_TRUE(mgr.writeRegister(1, 2, 0xFF).success); // Should succeed now that it's awake
+    
+    // 9. Abort sleep (Covers I2CPowerObserver::sleepAborted)
+    PowerManager::getInstance().notifyBeforeSleep(); 
+    EXPECT_FALSE(mgr.writeRegister(1, 2, 0xFF).success); // Verify asleep again
+    
+    PowerManager::getInstance().notifySleepAborted(); 
+    EXPECT_TRUE(mgr.writeRegister(1, 2, 0xFF).success); // Verify awake again
 }

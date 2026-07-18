@@ -1,6 +1,7 @@
 #include <zephyr/logging/log.h>
 #include <zephyr/kernel.h>
 #include "Smart_Battery_System.h"
+#include "Power_Management_System.h"
 #include <zephyr/device.h>
 #include <array>
 #include <new>
@@ -337,6 +338,18 @@ void SbsBattery::feedWatchdog() const {
     watchdog_feed_hook();
 }
 
+void SbsBattery::notifySystemWakeup() {
+    k_mutex_lock(&cache_mutex, K_FOREVER);
+    const uint32_t now = k_uptime_get_32();
+    // Shift timestamps forward after sleeping so the watchdog doesn't mistakenly
+    // treat the deep sleep duration as a communication failure.
+    last_valid_comm_time = now;
+    if (cache.valid) {
+        cache.timestamp_ms = now; 
+    }
+    k_mutex_unlock(&cache_mutex);
+}
+
 result<bool> SbsBattery::fetchWithRetry(DalyCommand cmd, DalyProtocol::Payload& payload) {
     result<bool> response = result<bool>::Err(CommFault::RX_TIMEOUT);
     uint32_t backoff_ms = INITIAL_BACKOFF_MS;
@@ -547,22 +560,42 @@ CommStatistics SbsBattery::getStats() const {
 
 UARTManager* uart_bus_manager = nullptr;
 SbsBattery* smart_battery = nullptr;
+
 namespace {
-static const device* uart_hardware = DEVICE_DT_GET(DT_CHOSEN(zephyr_console));
-static UARTManager static_uart_manager(uart_hardware);
-static SbsBattery static_smart_battery(&static_uart_manager, &sys_context, daly_watchdog_feed_hook);
-static bool bms_objects_initialized = false;
+    static const device* uart_hardware = DEVICE_DT_GET(DT_CHOSEN(zephyr_console));
+    static UARTManager static_uart_manager(uart_hardware);
+    static SbsBattery static_smart_battery(&static_uart_manager, &sys_context, daly_watchdog_feed_hook);
+    static bool bms_objects_initialized = false;
 
-K_SEM_DEFINE(bms_objects_ready_sem, 0, 1);
+    // Power Observer to safely halt BMS polling when the OS transitions to Sleep
+    class BmsPowerObserver final : public IPowerObserver {
+    private:
+        atomic_t is_sleeping;
+    public:
+        BmsPowerObserver() { atomic_set(&is_sleeping, 0); }
+        void beforeSleep() override { atomic_set(&is_sleeping, 1); }
+        void afterWakeup() override { 
+            atomic_set(&is_sleeping, 0); 
+            if (smart_battery != nullptr) {
+                smart_battery->notifySystemWakeup();
+            }
+        }
+        void sleepAborted() override { atomic_set(&is_sleeping, 0); }
+        bool isSleeping() const noexcept { return atomic_get(&is_sleeping) != 0; }
+    };
+    static BmsPowerObserver g_bmsPowerObserver;
 
-static void initializeBmsObjects() {
-    if (!bms_objects_initialized) {
-        uart_bus_manager = &static_uart_manager;
-        smart_battery = &static_smart_battery;
-        bms_objects_initialized = true;
+    K_SEM_DEFINE(bms_objects_ready_sem, 0, 1);
+
+    static void initializeBmsObjects() {
+        if (!bms_objects_initialized) {
+            uart_bus_manager = &static_uart_manager;
+            smart_battery = &static_smart_battery;
+            bms_objects_initialized = true;
+        }
     }
 }
-}
+
 SbsBattery* getSmartBatteryInstance() {
     initializeBmsObjects();
     return smart_battery;
@@ -581,9 +614,15 @@ void bms_comm_thread(void) {
         return;
     }
 
+    // Register observer so we know when to stop utilizing the UART bus
+    PowerManager::getInstance().registerObserver(&g_bmsPowerObserver);
+
     do {
        if (smart_battery != nullptr) {
-           smart_battery->pollHardwareAndUpdateCache();
+           // Gate the poll based on the deep sleep state
+           if (!g_bmsPowerObserver.isSleeping() && sys_context.getState() != SystemState::SAFE_HALT) {
+               smart_battery->pollHardwareAndUpdateCache();
+           }
        }
        k_msleep(1000);
     } while(THREAD_LOOP_CONDITION);
@@ -597,12 +636,16 @@ void battery_monitor_thread(void) {
     
     do {
         if (smart_battery != nullptr) {
-            smart_battery->processFSM();
-        
-            if (smart_battery->getState() == BatteryFSM::DISCHARGING) {
-                const auto soc = smart_battery->getStateOfCharge();
-                if (soc.success) {
-                    LOG_INF("Battery Discharging: %u%% remaining", soc.value.value);
+            // Processing FSM logic must halt during sleep to prevent 
+            // reacting to stale cache variables just as we transition states
+            if (!g_bmsPowerObserver.isSleeping()) {
+                smart_battery->processFSM();
+            
+                if (smart_battery->getState() == BatteryFSM::DISCHARGING) {
+                    const auto soc = smart_battery->getStateOfCharge();
+                    if (soc.success) {
+                        LOG_INF("Battery Discharging: %u%% remaining", soc.value.value);
+                    }
                 }
             }
         }

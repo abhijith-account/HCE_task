@@ -14,6 +14,7 @@
 #include "Device_State_Machine+Watchdog.h"
 #include "Smart_Battery_System.h"
 #include "Persistent_Configuration_System.h"
+#include "Power_Management_System.h"
 #define MOCK_UART_DTR_CTRL 1
 static std::array<char,512> mock_tx_buffer;
 static size_t mock_tx_index=0;
@@ -899,4 +900,55 @@ TEST_F(UsbShellTestSuite, SetRateThresholdExhaustiveBranches) {
     mock_tx_index = 0; mock_tx_buffer.fill(0);
     shell.dispatchCommand("set_rate 1001 81");
     EXPECT_NE(std::string_view(mock_tx_buffer.data(), mock_tx_index).find("exceeds alarm threshold"), std::string_view::npos);
+}
+
+TEST_F(UsbShellTestSuite, PowerObserverAndSafeHaltGating) {
+    DeviceContext ctx; 
+    UARTManager uart(dummy_uart_dev); 
+    SbsBattery battery(&uart, &ctx);
+    UsbShell shell(&ctx, &battery);
+    
+    mock_dtr_state = 1;
+    mock_tx_index = 0;
+    
+    // 1. Run once to initialize USB and register the observer
+    run_thread_once = true;
+    shell.process();
+
+    // 2. Simulate Deep Sleep (Covers ShellPowerObserver::beforeSleep and true branch of isSleeping)
+    PowerManager::getInstance().notifyBeforeSleep();
+    
+    inject_mock_uart_data("status\n");
+    run_thread_once = true;
+    shell.process();
+    EXPECT_EQ(mock_tx_index, 0u) << "Shell should ignore input while sleeping";
+
+    // 3. Wake up (Covers ShellPowerObserver::afterWakeup)
+    PowerManager::getInstance().notifyAfterWakeup();
+    
+    run_thread_once = true;
+    shell.process();
+    EXPECT_GT(mock_tx_index, 0u) << "Shell should process queued input after waking up";
+    
+    // 4. Sleep Aborted (Covers ShellPowerObserver::sleepAborted)
+    PowerManager::getInstance().notifyBeforeSleep();
+    PowerManager::getInstance().notifySleepAborted();
+    
+    mock_tx_index = 0;
+    inject_mock_uart_data("log dump\n");
+    run_thread_once = true;
+    shell.process();
+    EXPECT_GT(mock_tx_index, 0u) << "Shell should resume if sleep is aborted";
+
+    // 5. SAFE_HALT gating (Covers the false branch of sys_ctx->getState() != SAFE_HALT)
+    ctx.current_state = SystemState::SAFE_HALT;
+    
+    mock_tx_index = 0;
+    inject_mock_uart_data("status\n");
+    run_thread_once = true;
+    shell.process();
+    EXPECT_EQ(mock_tx_index, 0u) << "Shell should halt processing in SAFE_HALT state";
+    
+    // Restore context for hygiene
+    ctx.current_state = SystemState::RUNNING;
 }

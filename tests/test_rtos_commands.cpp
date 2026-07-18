@@ -34,7 +34,7 @@ static const struct device dummy_dev;
 
 __attribute__((weak)) DeviceContext sys_context;
 I2CManager i2c_manager(&dummy_dev);
-__attribute__((weak)) PowerManager pwr_manager(&dummy_dev, &dummy_dev);
+__attribute__((weak)) PowerManager pwr_manager;
 
 // -----------------------------------------------------------------------
 // Mock Command for Testing the Dispatcher
@@ -196,7 +196,7 @@ TEST_F(RTOSCommandsTestSuite, ICommandOperatorDeleteAndQueueDelay) {
 
 // --- SystemObjects::power() ---
 TEST_F(RTOSCommandsTestSuite, SystemObjectsPowerAccessor) {
-    EXPECT_EQ(&SystemObjects::power(), &pwr_manager);
+    EXPECT_EQ(&SystemObjects::power(), &PowerManager::getInstance());
 }
 
 // --- readHardwareData: non-BME280 + Block => Err(NACK), pure software branch ---
@@ -656,4 +656,41 @@ TEST_F(RTOSCommandsTestSuite, PinpointI2cFailure) {
         << "device_is_ready() returns false. g_device_ready_override = "
         << g_device_ready_override;
     SUCCEED();
+}
+
+// -----------------------------------------------------------------------
+// Power Observer & Deep Sleep Integration Coverage
+// -----------------------------------------------------------------------
+TEST_F(RTOSCommandsTestSuite, PowerObserverIntegration) {
+    // Run once to ensure the observer is registered by the producer thread
+    test_iterations_remaining = 1;
+    producer_thread();
+
+    // 1. Simulate entering Deep Sleep (hits ThreadSystemPowerObserver::beforeSleep)
+    SystemObjects::power().notifyBeforeSleep();
+    
+    // Execute producer_thread - it should skip hardware I/O and queuing
+    g_queueStats.commandsCreated = 0;
+    test_iterations_remaining = 1;
+    producer_thread();
+    EXPECT_EQ(g_queueStats.commandsCreated, 0u) << "Producer should bypass logic while sleeping";
+
+    // 2. Simulate waking up (hits ThreadSystemPowerObserver::afterWakeup)
+    SystemObjects::power().notifyAfterWakeup();
+    
+    test_iterations_remaining = 1;
+    producer_thread();
+    EXPECT_GT(g_queueStats.commandsCreated, 0u) << "Producer should resume logic after wakeup";
+
+    // 3. Simulate aborted sleep sequence (hits ThreadSystemPowerObserver::sleepAborted)
+    SystemObjects::power().notifyBeforeSleep();
+    g_queueStats.commandsCreated = 0;
+    test_iterations_remaining = 1;
+    producer_thread();
+    EXPECT_EQ(g_queueStats.commandsCreated, 0u);
+    
+    SystemObjects::power().notifySleepAborted();
+    test_iterations_remaining = 1;
+    producer_thread();
+    EXPECT_GT(g_queueStats.commandsCreated, 0u) << "Producer should resume logic after sleep aborted";
 }

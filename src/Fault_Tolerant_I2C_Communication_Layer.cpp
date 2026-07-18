@@ -1,8 +1,10 @@
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
-#include <zephyr/device.h> // Fixed: Required for device_is_ready()
+#include <zephyr/device.h> 
 #include "Fault_Tolerant_I2C_Communication_Layer.h"
 #include "Static_Memory+MISRA_Compliance_Layer.h"
+#include "Power_Management_System.h" // Power Management Integration
+#include <zephyr/sys/atomic.h>       // For atomic_t in PowerObserver
 #include <cerrno>
 #include <cstdlib> 
 #include <new>
@@ -27,7 +29,6 @@ struct CacheEntry {
 static StaticPool<CacheEntry, MAX_CACHED_REGISTERS> cache_pool;
 static CacheEntry* active_entries[MAX_CACHED_REGISTERS] = {nullptr};
 
-// Fixed: Bypassing K_MUTEX_DEFINE macro to ensure compatibility with host-based Google Tests
 static struct k_mutex cache_tracker_mutex;
 static bool cache_mutex_init = false;
 
@@ -176,7 +177,6 @@ void FailSafeStrategy::executeRecovery(const device* /* i2c_dev */) {
             (unsigned long long)last_known_good_value);
 }
 
-// Fixed: Signatures matched to Header declarations (uint64_t instead of uint8_t)
 void FailSafeStrategy::updateLastGood(uint64_t val) {
       last_known_good_value = val;
 }
@@ -185,10 +185,51 @@ uint64_t FailSafeStrategy::getLastGood() const {
       return last_known_good_value;
 }
 
+namespace {
+    // Observer to monitor Deep Sleep state and prevent hardware bus faults
+    class I2CPowerObserver final : public IPowerObserver {
+    private:
+        atomic_t is_sleeping;
+    public:
+        I2CPowerObserver() { atomic_set(&is_sleeping, 0); }
+        void beforeSleep() override { atomic_set(&is_sleeping, 1); }
+        void afterWakeup() override { atomic_set(&is_sleeping, 0); }
+        void sleepAborted() override { atomic_set(&is_sleeping, 0); }
+        bool isSleeping() const noexcept { return atomic_get(&is_sleeping) != 0; }
+    };
+
+    I2CPowerObserver g_i2cPowerObserver;
+    atomic_t g_i2cObserverRegistered = ATOMIC_INIT(0);
+
+    void ensure_power_observer_registered() {
+        // atomic_cas guarantees at most one caller wins the registration race
+        // even when this is first hit from two different threads at once.
+        // registerObserver() itself is already idempotent/mutex-protected, so
+        // this was never a live bug -- just an unguarded flag with no reason
+        // to stay unguarded.
+        if (atomic_cas(&g_i2cObserverRegistered, 0, 1)) {
+            PowerManager::getInstance().registerObserver(&g_i2cPowerObserver);
+        }
+    }
+}
+
 I2CManager::I2CManager(const device* i2c_dev) : i2c_dev(i2c_dev) {}
 
 Result<uint8_t> I2CManager::readRegister(uint16_t sensor_addr, uint8_t reg_addr) {
-   const uint32_t cache_key = (static_cast<uint32_t>(sensor_addr) << 8U) | static_cast<uint32_t>(reg_addr);
+    const uint32_t cache_key = (static_cast<uint32_t>(sensor_addr) << 8U) | static_cast<uint32_t>(reg_addr);
+    
+    ensure_power_observer_registered();
+    if (g_i2cPowerObserver.isSleeping()) {
+#ifndef CONFIG_BOARD_QEMU_CORTEX_M3
+        // If bus is sleeping, seamlessly attempt to serve from cache rather than failing
+        uint64_t cached_val = 0U;
+        if (get_cached_value(cache_key, &cached_val, 3000U)) {
+            return Result<uint8_t>::Ok(static_cast<uint8_t>(cached_val & 0xFFU));
+        }
+#endif
+        return Result<uint8_t>::Err(I2CFault::DEVICE_NOT_READY);
+    }
+    
 #ifdef CONFIG_BOARD_QEMU_CORTEX_M3
     k_msleep(50); 
     uint8_t mock_data = 60U;
@@ -232,6 +273,11 @@ Result<uint8_t> I2CManager::readRegister(uint16_t sensor_addr, uint8_t reg_addr)
 }
 
 Result<bool> I2CManager::writeRegister(uint16_t sensor_addr, uint8_t reg_addr, uint8_t val) {
+    ensure_power_observer_registered();
+    if (g_i2cPowerObserver.isSleeping()) {
+        return Result<bool>::Err(I2CFault::DEVICE_NOT_READY);
+    }
+
 #ifdef CONFIG_BOARD_QEMU_CORTEX_M3
     k_msleep(10);
     return Result<bool>::Ok(true);
@@ -265,6 +311,18 @@ Result<bool> I2CManager::writeRegister(uint16_t sensor_addr, uint8_t reg_addr, u
 
 Result<uint16_t> I2CManager::readWord(uint16_t sensor_addr, uint8_t reg_addr) {
     uint32_t cache_key = (static_cast<uint32_t>(sensor_addr) << 8) | reg_addr;
+    
+    ensure_power_observer_registered();
+    if (g_i2cPowerObserver.isSleeping()) {
+#ifndef CONFIG_BOARD_QEMU_CORTEX_M3
+        uint64_t cached_val = 0U;
+        if (get_cached_value(cache_key, &cached_val, 3000U)) {
+            return Result<uint16_t>::Ok(static_cast<uint16_t>(cached_val & 0xFFFFU));
+        }
+#endif
+        return Result<uint16_t>::Err(I2CFault::DEVICE_NOT_READY);
+    }
+
 #ifdef CONFIG_BOARD_QEMU_CORTEX_M3
     k_msleep(50);
     uint16_t mock_val = 900U;
@@ -299,7 +357,7 @@ Result<uint16_t> I2CManager::readWord(uint16_t sensor_addr, uint8_t reg_addr) {
         retry_strategy.executeRecovery(i2c_dev);
     }
   
-    uint64_t cached_val = 0U; // Fixed: Needs to be a 64-bit value to pass into get_cached_value
+    uint64_t cached_val = 0U; 
     if (get_cached_value(cache_key, &cached_val, 3000U)) {
         failsafe_strategy.executeRecovery(i2c_dev);
         return Result<uint16_t>::Ok(static_cast<uint16_t>(cached_val & 0xFFFFU));
@@ -309,8 +367,19 @@ Result<uint16_t> I2CManager::readWord(uint16_t sensor_addr, uint8_t reg_addr) {
 }
 
 Result<uint32_t> I2CManager::read24Bit(uint16_t sensor_addr, uint8_t reg_addr) {
-    // Fixed: Corrected sensr_addr to sensor_addr
     uint32_t cache_key = (static_cast<uint32_t>(sensor_addr) << 8) | static_cast<uint32_t>(reg_addr); 
+    
+    ensure_power_observer_registered();
+    if (g_i2cPowerObserver.isSleeping()) {
+#ifndef CONFIG_BOARD_QEMU_CORTEX_M3
+        uint64_t cached_val = 0U;
+        if (get_cached_value(cache_key, &cached_val, 3000U)) {
+            return Result<uint32_t>::Ok(static_cast<uint32_t>(cached_val & 0xFFFFFFU));
+        }
+#endif
+        return Result<uint32_t>::Err(I2CFault::DEVICE_NOT_READY);
+    }
+
 #ifdef CONFIG_BOARD_QEMU_CORTEX_M3
     k_msleep(50);
     uint32_t mock_val = 101300U;
@@ -344,7 +413,7 @@ Result<uint32_t> I2CManager::read24Bit(uint16_t sensor_addr, uint8_t reg_addr) {
         retry_strategy.executeRecovery(i2c_dev);
     }
     
-    uint64_t cached_val = 0U; // Fixed: Pointer cast mismatch
+    uint64_t cached_val = 0U; 
     if (get_cached_value(cache_key, &cached_val, 3000U)) {
         failsafe_strategy.executeRecovery(i2c_dev);
         return Result<uint32_t>::Ok(static_cast<uint32_t>(cached_val & 0xFFFFFFU));
@@ -356,6 +425,17 @@ Result<uint32_t> I2CManager::read24Bit(uint16_t sensor_addr, uint8_t reg_addr) {
 Result<uint64_t> I2CManager::read64Bit(uint16_t sensor_addr, uint8_t reg_addr) {
   uint32_t cache_key = (static_cast<uint32_t>(sensor_addr) << 8) | reg_addr;
   
+    ensure_power_observer_registered();
+    if (g_i2cPowerObserver.isSleeping()) {
+#ifndef CONFIG_BOARD_QEMU_CORTEX_M3
+        uint64_t cached_val = 0U;
+        if (get_cached_value(cache_key, &cached_val, 3000U)) {
+            return Result<uint64_t>::Ok(cached_val);
+        }
+#endif
+        return Result<uint64_t>::Err(I2CFault::DEVICE_NOT_READY);
+    }
+
 #ifdef CONFIG_BOARD_QEMU_CORTEX_M3
     k_msleep(50);
     uint64_t mock_val = 0U; 
@@ -376,7 +456,6 @@ Result<uint64_t> I2CManager::read64Bit(uint16_t sensor_addr, uint8_t reg_addr) {
     int err = i2c_burst_read(i2c_dev, sensor_addr, reg_addr, buf, 8);
     
     if (err == 0) {
-        // Fixed: Cast explicitly to uint64_t to prevent bit-shift truncation overflows
         uint64_t val = (static_cast<uint64_t>(buf[0]) << 56U) | (static_cast<uint64_t>(buf[1]) << 48U) |
                        (static_cast<uint64_t>(buf[2]) << 40U) | (static_cast<uint64_t>(buf[3]) << 32U) |
                        (static_cast<uint64_t>(buf[4]) << 24U) | (static_cast<uint64_t>(buf[5]) << 16U) |
@@ -476,4 +555,4 @@ void test_set_sample_count(uint32_t key, uint32_t count)
 
     k_mutex_unlock(&cache_tracker_mutex);
 }
-#endif 
+#endif

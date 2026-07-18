@@ -226,3 +226,31 @@ TEST_F(StateMachineTestSuite, ExhaustiveStateTransitions) {
     EXPECT_FALSE(ctx.requestTransition(SystemState::INIT));
     const auto raw_inv4 = testing::internal::GetCapturedStdout();
 }
+
+TEST_F(StateMachineTestSuite, ContextWatchdogInitFails) {
+    DeviceContext ctx;
+    
+    // Force the inner WatchdogTimer::init to fail
+    mock_wdt_ready = false; 
+    
+    // This covers the false branch of `if (success)` in initWatchdog,
+    // successfully verifying that PowerManager::registerObserver is bypassed.
+    testing::internal::CaptureStdout();
+    EXPECT_FALSE(ctx.initWatchdog(1000));
+    testing::internal::GetCapturedStdout(); // discard
+}
+
+TEST_F(StateMachineTestSuite, PowerObserverCallbacks) {
+    DeviceContext ctx;
+    
+    // Simulate successful init so feed() actually attempts the mock call
+    mock_wdt_ready = true;
+    mock_wdt_install_res = 0;
+    mock_wdt_setup_res = 0;
+    EXPECT_TRUE(ctx.initWatchdog(1000));
+    
+    // Cover the IPowerObserver virtual method implementations
+    EXPECT_NO_FATAL_FAILURE(ctx.beforeSleep()) << "beforeSleep() crashed";
+    EXPECT_NO_FATAL_FAILURE(ctx.afterWakeup()) << "afterWakeup() crashed";
+    EXPECT_NO_FATAL_FAILURE(ctx.sleepAborted()) << "sleepAborted() crashed";
+}

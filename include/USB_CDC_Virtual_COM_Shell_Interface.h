@@ -12,6 +12,7 @@
 #include <cstdlib>
 #include "Device_State_Machine+Watchdog.h"
 #include "Smart_Battery_System.h"
+#include "Power_Management_System.h"
 #include <cstdio>
 constexpr std::size_t RX_RING_BUF_SIZE  = 256;
 constexpr std::size_t MAX_CMD_LEN       = 128;
@@ -145,7 +146,7 @@ private:
     // that cmdSetRate's error/success paths all shared.
     template <std::size_t N, typename... Args>
     void transmitFormatted(std::array<char, N>& buf, std::string_view fallback,
-                            const char* fmt, Args... args) noexcept {
+                           const char* fmt, Args... args) noexcept {
         const int written = snprintf(buf.data(), buf.size(), fmt, args...);
         if (written > 0 && static_cast<std::size_t>(written) < buf.size()) {
             usb.transmit(buf.data());

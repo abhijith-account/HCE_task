@@ -12,6 +12,14 @@ struct DummyPayload{
     float data_value;
 };
 
+#define private public
+#define protected public
+#include "Device_State_Machine+Watchdog.h"
+#undef private
+#undef protected
+
+extern DeviceContext sys_context;  
+
 class StaticMemoryTestSuite:public::testing::Test{
     protected:
         void SetUp() override{
@@ -107,4 +115,24 @@ TEST_F(StaticMemoryTestSuite, ThreadLoopConditionBranches){
     std::string_view output(raw_output);
     
     EXPECT_TRUE(output.find("=== [System Health] Thread Stack Watermarks ===")!=std::string_view::npos);
+}
+
+TEST_F(StaticMemoryTestSuite, ThreadSkipsLoggingOnSafeHalt) {
+    // 1. Force the system into the SAFE_HALT state
+    sys_context.current_state = SystemState::SAFE_HALT; 
+    
+    // 2. Ensure the thread loop runs exactly once and exits cleanly
+    run_thread_once = false; 
+    
+    testing::internal::CaptureStdout();
+    EXPECT_NO_FATAL_FAILURE(memory_monitor_thread());
+    const auto raw_output = testing::internal::GetCapturedStdout();
+    std::string_view output(raw_output);
+    
+    // 3. Verify that the logging block was successfully skipped
+    EXPECT_TRUE(output.find("=== [System Health] Thread Stack Watermarks ===") == std::string_view::npos) 
+        << "Thread failed to suppress logging during SAFE_HALT!";
+        
+    // 4. Reset the state so it doesn't contaminate other tests
+    sys_context.current_state = SystemState::INIT; 
 }

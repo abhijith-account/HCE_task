@@ -1,96 +1,415 @@
 #include "Power_Management_System.h"
+#include "Device_State_Machine+Watchdog.h"   // DeviceContext::triggerFault()
 #include <zephyr/logging/log.h>
+#include <zephyr/pm/pm.h>
+#include <zephyr/pm/policy.h>
+#include <zephyr/pm/device.h>
+#include <zephyr/drivers/counter.h>
+
+LOG_MODULE_REGISTER(PWR_SYS, LOG_LEVEL_INF);
 
 #ifdef IS_TEST_ENVIRONMENT
     extern bool run_thread_once;
     #define THREAD_LOOP_CONDITION (run_thread_once ? (run_thread_once = false, true) : false)
-#else 
+#else
     #define THREAD_LOOP_CONDITION true
 #endif
 
-LOG_MODULE_REGISTER(PWR_SYS, LOG_LEVEL_INF);
+constexpr uint32_t ACTIVE_TIMEOUT_MS = 30000;
+constexpr uint32_t IDLE_TIMEOUT_MS   = 5000;
+constexpr uint32_t STOP_WAKEUP_US    = 60000000;
+constexpr uint32_t THREAD_PERIOD_MS  = 1000;
 
-extern const device* i2c_hardware;
-const device* rtc_hardware=DEVICE_DT_GET(DT_NODELABEL(rtc));
-PowerManager pwr_manager(rtc_hardware,i2c_hardware);
+extern const struct device* i2c_hardware;
+extern DeviceContext sys_context;
 
-PowerManager::PowerManager(const device* rtc, const device* i2c)
-    : current_mode(PowerMode::ACTIVE),
-      last_activity_time(0),
-      rtc_dev(rtc),
-      i2c_dev(i2c)
+// Mock the RTC hardware pointer injection for tests to avoid DEVICE_DT_GET null resolution
+#ifdef IS_TEST_ENVIRONMENT
+    // Using a weak symbol prevents undefined reference errors in other test suites 
+    // (like test_usb_shell) that link this file but don't define their own mock.
+    __attribute__((weak)) const struct device* rtc_hardware = nullptr;
+#else
+    const struct device* const rtc_hardware = DEVICE_DT_GET(DT_NODELABEL(rtc));
+#endif
+
+// ---------------------------------------------------------
+// PowerManager Implementation
+// ---------------------------------------------------------
+PowerManager::PowerManager()
+    : current_state(nullptr),
+      last_sleep_time(0),
+      expected_wake_time(0),
+      rtc_dev(nullptr),
+      i2c_dev(nullptr),
+      observer_count(0),
+      fault_context(nullptr),
+      consecutive_pm_failures(0)
 {
+    k_mutex_init(&state_mutex);
+    k_mutex_init(&observer_mutex);
+    atomic_set(&wake_pending, 0);
 }
 
-bool PowerManager::init()
-{
-    last_activity_time = k_uptime_get_32();
+PowerManager& PowerManager::getInstance() {
+    static PowerManager instance;
+    return instance;
+}
 
-    if (!device_is_ready(rtc_dev)) {
+bool PowerManager::init(const struct device* rtc, const struct device* i2c, DeviceContext* fault_ctx) {
+    rtc_dev = rtc;
+    i2c_dev = i2c;
+    fault_context = fault_ctx;
+    last_activity_time.store(k_uptime_get_32());
+
+    if (!rtc_dev || !device_is_ready(rtc_dev)) {
         LOG_ERR("RTC device not ready");
+        return false;
+    }
+    if (!i2c_dev || !device_is_ready(i2c_dev)) {
+        LOG_ERR("I2C device not ready");
+        return false;
+    }
+
+    int err = counter_start(rtc_dev);
+    if (err) {
+        LOG_ERR("Failed to start RTC counter (err: %d)", err);
         return false;
     }
 
     pm_policy_state_lock_get(PM_STATE_SUSPEND_TO_RAM, PM_ALL_SUBSTATES);
+
     LOG_INF("Power Manager initialized. Deep Sleep Locked.");
+
+    k_mutex_lock(&state_mutex, K_FOREVER);
+    transitionTo(ActiveState::getInstance());
+    k_mutex_unlock(&state_mutex);
 
     return true;
 }
 
-void PowerManager::reportActivity(){
-    last_activity_time=k_uptime_get_32();
-    
-    if (current_mode==PowerMode::STOP){
-        LOG_INF("Hardware Activity Detected! Waking up I2C Bus...");
-        
-        pm_device_action_run(i2c_dev, PM_DEVICE_ACTION_RESUME);
-        
-        pm_policy_state_lock_get(PM_STATE_SUSPEND_TO_RAM,PM_ALL_SUBSTATES);
+bool PowerManager::registerObserver(IPowerObserver* obs) {
+    k_mutex_lock(&observer_mutex, K_FOREVER);
+
+    for (size_t i = 0; i < observer_count; ++i) {
+        if (observers[i] == obs) {
+            k_mutex_unlock(&observer_mutex);
+            return true;
+        }
     }
-    
-    current_mode=PowerMode::ACTIVE;
+
+    if (observer_count < MAX_OBSERVERS) {
+        observers[observer_count++] = obs;
+        k_mutex_unlock(&observer_mutex);
+        return true;
+    }
+
+    k_mutex_unlock(&observer_mutex);
+    LOG_ERR("Observer limit reached");
+    return false;
 }
 
-void PowerManager::rtc_alarm_handler(const device* /* dev */,uint8_t /* chan_id */,uint32_t /* ticks */,void *user_data){
-    auto* self=static_cast<PowerManager*>(user_data);
-    LOG_WRN("=== 60s RTC Wakeup Triggered! Restoring System State ===");
-    self->reportActivity();
+size_t PowerManager::captureObservers(std::array<IPowerObserver*, MAX_OBSERVERS>& out) {
+    k_mutex_lock(&observer_mutex, K_FOREVER);
+    size_t count = (observer_count > MAX_OBSERVERS) ? MAX_OBSERVERS : observer_count;
+    for (size_t i = 0; i < count; ++i) out[i] = observers[i];
+    k_mutex_unlock(&observer_mutex);
+    return count;
 }
 
-void PowerManager::processFSM(){
-    uint32_t elapsed=k_uptime_get_32()-last_activity_time;
-    
-    if (current_mode==PowerMode::ACTIVE && elapsed >=30000){
-       LOG_INF("30s Inactivity: Transitioning to IDLE mode");
-       current_mode=PowerMode::IDLE;
-    }
-    else if(current_mode==PowerMode::IDLE && elapsed>=35000){
-        LOG_WRN("35s Inactivity: Transitioning to STOP mode (Deep Sleep).");
-        current_mode=PowerMode::STOP;
-        
-        pm_device_action_run(i2c_dev,PM_DEVICE_ACTION_SUSPEND);
-        
-        struct counter_alarm_cfg alarm_cfg={};
-        alarm_cfg.flags=0;
-        alarm_cfg.ticks=counter_us_to_ticks(rtc_dev,60000000);
-        alarm_cfg.callback=rtc_alarm_handler;
-        alarm_cfg.user_data=this;
-        counter_set_channel_alarm(rtc_dev,0,&alarm_cfg);
-    
-        pm_policy_state_lock_put(PM_STATE_SUSPEND_TO_RAM,PM_ALL_SUBSTATES);
+void PowerManager::notifyBeforeSleep() {
+    std::array<IPowerObserver*, MAX_OBSERVERS> local_obs{};
+    size_t count = captureObservers(local_obs);
+    for (size_t i = 0; i < count; ++i) {
+        if (local_obs[i]) local_obs[i]->beforeSleep();
     }
 }
 
-void power_monitor_thread(){
-    pwr_manager.init();
-    do{
+void PowerManager::notifyAfterWakeup() {
+    std::array<IPowerObserver*, MAX_OBSERVERS> local_obs{};
+    size_t count = captureObservers(local_obs);
+    for (size_t i = 0; i < count; ++i) {
+        if (local_obs[i]) local_obs[i]->afterWakeup();
+    }
+}
+
+void PowerManager::notifySleepAborted() {
+    std::array<IPowerObserver*, MAX_OBSERVERS> local_obs{};
+    size_t count = captureObservers(local_obs);
+    for (size_t i = 0; i < count; ++i) {
+        if (local_obs[i]) local_obs[i]->sleepAborted();
+    }
+}
+
+void PowerManager::reportActivity() {
+    last_activity_time.store(k_uptime_get_32());
+
+    k_mutex_lock(&state_mutex, K_FOREVER);
+    if (current_state != &ActiveState::getInstance()) {
+        LOG_INF("Hardware Activity Detected! Waking system...");
+        transitionTo(ActiveState::getInstance());
+    }
+    k_mutex_unlock(&state_mutex);
+}
+
+void PowerManager::reportPmFailure() {
+    ++consecutive_pm_failures;
+    if (consecutive_pm_failures == PM_FAILURE_FAULT_THRESHOLD) {
+        LOG_ERR("Power management failure threshold reached (%u consecutive). Escalating.",
+                consecutive_pm_failures);
+        if (fault_context) {
+            fault_context->triggerFault("Power Management Failure");
+        }
+    }
+}
+
+void PowerManager::transitionTo(IPowerState& next_state) {
+    if (current_state == &next_state) {
+        return;
+    }
+
+    LOG_INF("Transition: %s -> %s",
+            current_state ? current_state->getName() : "NONE",
+            next_state.getName());
+
+    if (current_state) {
+        current_state->exit(*this);
+    }
+
+    if (next_state.enter(*this)) {
+        current_state = &next_state;
+        return;
+    }
+
+    LOG_WRN("State %s aborted entry. Evaluating cascaded fallback.", next_state.getName());
+
+    if (IdleState::getInstance().enter(*this)) {
+        current_state = &IdleState::getInstance();
+        return;
+    }
+
+    LOG_ERR("Power manager halted. Idle fallback failed.");
+
+    // Fire the fault handler first. It may re-enter the power manager
+    // (e.g. via reportActivity()) to force the system awake for safe-halt
+    // handling — that reentrant transition must not be allowed to
+    // resurrect the FSM out of the halted state, so current_state is
+    // pinned to nullptr *after* the callback returns, not before.
+    if (fault_context) {
+        fault_context->triggerFault("Power Manager FSM Halted");
+    }
+    current_state = nullptr;
+}
+
+void PowerManager::processFSM() {
+    if (atomic_cas(&wake_pending, 1, 0)) {
+        LOG_WRN("=== RTC Wakeup Triggered ===");
+        reportActivity();
+    }
+
+    IPowerState* local_state = nullptr;
+
+    k_mutex_lock(&state_mutex, K_FOREVER);
+    local_state = current_state;
+    k_mutex_unlock(&state_mutex);
+
+    if (local_state) {
+        IPowerState& next_state = local_state->execute(*this);
+
+        if (&next_state != local_state) {
+            k_mutex_lock(&state_mutex, K_FOREVER);
+            if (current_state == local_state) {
+                transitionTo(next_state);
+            }
+            k_mutex_unlock(&state_mutex);
+        }
+    }
+}
+
+void PowerManager::rtc_alarm_handler(const struct device* /* dev */, uint8_t /* chan_id */,
+                                      uint32_t /* ticks */, void* user_data) {
+    auto* self = static_cast<PowerManager*>(user_data);
+    atomic_set(&self->wake_pending, 1);
+}
+
+#ifdef IS_TEST_ENVIRONMENT
+void PowerManager::resetForTest() {
+    k_mutex_lock(&state_mutex, K_FOREVER);
+    current_state = nullptr;
+    k_mutex_unlock(&state_mutex);
+
+    last_activity_time.store(0);
+    last_sleep_time = 0;
+    expected_wake_time = 0;
+    consecutive_pm_failures = 0;
+    atomic_set(&wake_pending, 0);
+
+    k_mutex_lock(&observer_mutex, K_FOREVER);
+    observer_count = 0;
+    observers.fill(nullptr);
+    k_mutex_unlock(&observer_mutex);
+
+    StopState::getInstance().resetForTest();
+}
+#endif
+
+// ---------------------------------------------------------
+// State Pattern Concrete Types
+// ---------------------------------------------------------
+
+// --- ACTIVE STATE ---
+ActiveState& ActiveState::getInstance() {
+    static ActiveState instance;
+    return instance;
+}
+bool ActiveState::enter(PowerManager& /*pm*/) { return true; }
+IPowerState& ActiveState::execute(PowerManager& pm) {
+    uint32_t elapsed = k_uptime_get_32() - pm.getLastActivityTime();
+    if (elapsed >= ACTIVE_TIMEOUT_MS) {
+        return IdleState::getInstance();
+    }
+    return *this;
+}
+void ActiveState::exit(PowerManager& /*pm*/) {}
+
+// --- IDLE STATE ---
+IdleState& IdleState::getInstance() {
+    static IdleState instance;
+    return instance;
+}
+#ifdef IS_TEST_ENVIRONMENT
+// 1. Weak definition moved to the global scope
+__attribute__((weak)) bool g_force_idle_enter_fail = false;
+#endif
+
+bool IdleState::enter(PowerManager& /*pm*/) { 
+#ifdef IS_TEST_ENVIRONMENT
+    // 2. Only the evaluation remains inside the function
+    if (g_force_idle_enter_fail) return false;
+#endif
+    return true; 
+}
+IPowerState& IdleState::execute(PowerManager& pm) {
+    uint32_t elapsed = k_uptime_get_32() - pm.getLastActivityTime();
+    if (elapsed >= (ACTIVE_TIMEOUT_MS + IDLE_TIMEOUT_MS)) {
+        return StopState::getInstance();
+    }
+    return *this;
+}
+void IdleState::exit(PowerManager& /*pm*/) {}
+
+// --- STOP STATE ---
+StopState& StopState::getInstance() {
+    static StopState instance;
+    return instance;
+}
+
+bool StopState::enter(PowerManager& pm) {
+    LOG_WRN("Preparing for Deep Sleep (STOP Mode)");
+    sleep_prepared = false;
+
+    int err = counter_cancel_channel_alarm(pm.getRtcDev(), 0);
+    if (err && err != -ETIME && err != -ENOTSUP) {
+        LOG_WRN("Failed to cancel RTC alarm (err: %d)", err);
+    }
+
+    struct counter_alarm_cfg alarm_cfg = {};
+    alarm_cfg.flags = 0;
+
+    uint32_t ticks = counter_us_to_ticks(pm.getRtcDev(), STOP_WAKEUP_US);
+    if (ticks == 0) {
+        LOG_ERR("Alarm tick conversion failed or overflowed. Aborting STOP entry.");
+        pm.reportPmFailure();
+        return false;
+    }
+
+    alarm_cfg.ticks = ticks;
+    alarm_cfg.callback = PowerManager::rtc_alarm_handler;
+    alarm_cfg.user_data = &pm;
+
+    err = counter_set_channel_alarm(pm.getRtcDev(), 0, &alarm_cfg);
+    if (err) {
+        LOG_ERR("Failed to set RTC alarm (err: %d). Aborting STOP entry.", err);
+        pm.reportPmFailure();
+        return false;
+    }
+
+    pm.recordSleepTime();
+    pm.setExpectedWakeTime(pm.getSleepTime() + (STOP_WAKEUP_US / 1000));
+
+    pm.notifyBeforeSleep();
+
+    err = pm_device_action_run(pm.getI2cDev(), PM_DEVICE_ACTION_SUSPEND);
+    if (err && err != -EALREADY) {
+        LOG_ERR("Failed to suspend I2C peripheral (err: %d). Rolling back.", err);
+        (void)counter_cancel_channel_alarm(pm.getRtcDev(), 0);
+        pm.notifySleepAborted();
+        pm.reportPmFailure();
+        return false;
+    }
+
+    sleep_prepared = true;
+    pm_policy_state_lock_put(PM_STATE_SUSPEND_TO_RAM, PM_ALL_SUBSTATES);
+    return true;
+}
+
+IPowerState& StopState::execute(PowerManager& /*pm*/) {
+    return *this;
+}
+
+void StopState::exit(PowerManager& pm) {
+    if (!sleep_prepared) {
+        return;
+    }
+
+    int err = counter_cancel_channel_alarm(pm.getRtcDev(), 0);
+    if (err && err != -ETIME && err != -ENOTSUP) {
+        LOG_WRN("Failed to cancel RTC alarm on STOP exit (err: %d)", err);
+    }
+
+    pm_policy_state_lock_get(PM_STATE_SUSPEND_TO_RAM, PM_ALL_SUBSTATES);
+
+    uint32_t actual_wake = k_uptime_get_32();
+    uint32_t expected_wake = pm.getExpectedWakeTime();
+    int32_t delay = static_cast<int32_t>(actual_wake - expected_wake);
+
+    if (delay >= 0) {
+        LOG_INF("System Awoken via RTC. RTC wake delay: %d ms", delay);
+    } else {
+        LOG_INF("System Awoken Early (External Preemption).");
+    }
+
+    err = pm_device_action_run(pm.getI2cDev(), PM_DEVICE_ACTION_RESUME);
+    if (err && err != -EALREADY) {
+        LOG_ERR("Failed to resume I2C (err: %d)", err);
+        pm.reportPmFailure();
+    } else {
+        pm.resetPmFailures();
+    }
+
+    pm.notifyAfterWakeup();
+    sleep_prepared = false;
+}
+
+// ---------------------------------------------------------
+// RTOS Thread
+// ---------------------------------------------------------
+void power_monitor_thread() {
+    auto& pwr_manager = PowerManager::getInstance();
+    if (!pwr_manager.init(rtc_hardware, i2c_hardware, &sys_context)) {
+        LOG_ERR("Power Manager Init Failed. Thread halting.");
+        return;
+    }
+
+    do {
         pwr_manager.processFSM();
-        k_msleep(1000);
-    }while(THREAD_LOOP_CONDITION);
+
+        size_t unused;
+        if (k_thread_stack_space_get(k_current_get(), &unused) == 0) {
+            LOG_DBG("Power Thread Stack Remaining: %zu bytes", unused);
+        }
+
+        k_msleep(THREAD_PERIOD_MS);
+    } while (THREAD_LOOP_CONDITION);
 }
 
-K_THREAD_DEFINE(pr_tid,1024,power_monitor_thread,NULL,NULL,NULL,14,0,0);
-
-PowerMode PowerManager::getMode() const {
-    return current_mode;
-}
+K_THREAD_DEFINE(pr_tid, 1024, power_monitor_thread, NULL, NULL, NULL, 14, 0, 0);

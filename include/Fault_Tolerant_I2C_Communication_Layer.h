@@ -6,8 +6,6 @@
 
 enum class I2CFault{NONE,NACK,TIMEOUT,BUS_BUSY,ARBITRATION_LOST,DEVICE_NOT_READY};
 
-
-
 template <typename T>
 struct Result{
     T value;
@@ -65,5 +63,3 @@ class I2CManager{
       Result<uint32_t> read24Bit(uint16_t sensor_addr,uint8_t reg_addr);
       Result<uint64_t> read64Bit(uint16_t sensor_addr,uint8_t reg_addr);
 };
-
-

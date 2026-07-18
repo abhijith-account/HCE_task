@@ -4,7 +4,14 @@
 #include <atomic>
 #include <string_view>
 #include "RTOS_Synchronization_Layer.h"
+#include "Power_Management_System.h"         // ADD THIS
+#define private public
+#define protected public
+#include "Device_State_Machine+Watchdog.h"
+#undef private
+#undef protected  // ADD THIS
 
+extern DeviceContext sys_context;            // ADD THIS
 extern ZephyrSemaphore display_sem;
 extern SharedHeartRateBuffer hr_buffer;
 
@@ -158,5 +165,78 @@ TEST_F(SyncTestSuite,WorkQueueHandlesNullCallbackSafely){
         mock_registered_work_cb(mock_registered_work_obj);
     }
     
+    SUCCEED();
+}
+
+// -----------------------------------------------------------------------
+// System Health & Power Integration Coverage Branches
+// -----------------------------------------------------------------------
+
+TEST_F(SyncTestSuite, DeepSleepGatingSkipsWorkAndCancelsTimer) {
+    // 1. Trigger registration
+    print_status();
+
+    // 2. Simulate entering deep sleep (Covers beforeSleep() and cancel())
+    PowerManager::getInstance().notifyBeforeSleep();
+
+    // Verify print_status is gated
+    testing::internal::CaptureStdout();
+    print_status();
+    std::string_view out_status(testing::internal::GetCapturedStdout());
+    EXPECT_EQ(out_status.find("1-Second System Statistics Report"), std::string_view::npos);
+
+    // Verify producer is gated
+    mock_sem_count = 0;
+    run_thread_once = true;
+    heart_rate_producer_thread();
+    EXPECT_EQ(mock_sem_count, 0); // Semaphore should not have been given
+
+    // Verify consumer is gated
+    display_sem.give(); // Unblock the consumer mock
+    run_thread_once = true;
+    testing::internal::CaptureStdout();
+    display_consumer_thread();
+    std::string_view out_disp(testing::internal::GetCapturedStdout());
+    EXPECT_EQ(out_disp.find("Rendered Heart Rate:"), std::string_view::npos);
+
+    // 3. Simulate waking up (Covers afterWakeup() and schedule())
+    PowerManager::getInstance().notifyAfterWakeup();
+    
+    // 4. Simulate aborted sleep (Covers sleepAborted() and schedule())
+    PowerManager::getInstance().notifySleepAborted();
+}
+
+TEST_F(SyncTestSuite, SafeHaltStateSkipsThreadWork) {
+    // Force system context into SAFE_HALT
+    sys_context.current_state = SystemState::SAFE_HALT;
+
+    // Verify print_status is gated
+    testing::internal::CaptureStdout();
+    print_status();
+    std::string_view out_status(testing::internal::GetCapturedStdout());
+    EXPECT_EQ(out_status.find("1-Second System Statistics Report"), std::string_view::npos);
+
+    // Verify producer is gated
+    mock_sem_count = 0;
+    run_thread_once = true;
+    heart_rate_producer_thread();
+    EXPECT_EQ(mock_sem_count, 0);
+
+    // Verify consumer is gated
+    display_sem.give();
+    run_thread_once = true;
+    testing::internal::CaptureStdout();
+    display_consumer_thread();
+    std::string_view out_disp(testing::internal::GetCapturedStdout());
+    EXPECT_EQ(out_disp.find("Rendered Heart Rate:"), std::string_view::npos);
+
+    // Restore context for any subsequent tests
+    sys_context.current_state = SystemState::INIT;
+}
+
+TEST_F(SyncTestSuite, RedundantObserverRegistrationBranch) {
+    // Ensure both true and false paths of the atomic_cas logic are hit
+    print_status(); // First call registers (atomic_cas returns true)
+    print_status(); // Second call hits the false branch
     SUCCEED();
 }

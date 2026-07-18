@@ -1,15 +1,16 @@
+#pragma once
 #include <zephyr/kernel.h>
 #include <zephyr/drivers/watchdog.h>
-#pragma once
+#include "Power_Management_System.h" // Added for IPowerObserver and PowerManager
 
-enum class SystemState{
+enum class SystemState {
   INIT,
   RUNNING,
   FAULT,
   SAFE_HALT
 };
 
-class WatchdogTimer{
+class WatchdogTimer {
     private:
         const device* wdt_dev;
         int channel_id;
@@ -20,12 +21,15 @@ class WatchdogTimer{
         bool isInitialized() const;
 };
 
-class DeviceContext {
+// Inherit from IPowerObserver so we can safely wrap sleep operations 
+// with watchdog feeds, ensuring we never sleep on a nearly-expired timer.
+class DeviceContext : public IPowerObserver {
     private:
         mutable struct k_mutex state_mutex;
         SystemState current_state;
         WatchdogTimer wdt;
-        static bool isLegalTransition(SystemState from,SystemState to);
+        static bool isLegalTransition(SystemState from, SystemState to);
+        
     public:
         DeviceContext();
         
@@ -35,4 +39,9 @@ class DeviceContext {
         bool initWatchdog(uint32_t timeout_ms);
         void feedWatchdog();
         void triggerFault(const char* reason);
-};      
+        
+        // IPowerObserver implementations
+        void beforeSleep() override;
+        void afterWakeup() override;
+        void sleepAborted() override;
+};

@@ -105,13 +105,29 @@ uint32_t ICommand::queueDelay() const noexcept {
 // ---------------------------------------------------------
 extern DeviceContext sys_context;
 extern I2CManager i2c_manager;
-extern PowerManager pwr_manager;
 
 namespace SystemObjects {
     DeviceContext& context() { return sys_context; }
     I2CManager& i2c() { return i2c_manager; }
-    PowerManager& power() { return pwr_manager; }
+    PowerManager& power() { return PowerManager::getInstance(); } // Fixed: Use Meyer's Singleton
 }
+
+// ---------------------------------------------------------
+// Power Observer implementation to gracefully suspend tasks 
+// ---------------------------------------------------------
+class ThreadSystemPowerObserver final : public IPowerObserver {
+private:
+    atomic_t is_sleeping;
+public:
+    ThreadSystemPowerObserver() { atomic_set(&is_sleeping, 0); }
+    void beforeSleep() override { atomic_set(&is_sleeping, 1); }
+    void afterWakeup() override { atomic_set(&is_sleeping, 0); }
+    void sleepAborted() override { atomic_set(&is_sleeping, 0); }
+    bool isSleeping() const noexcept { return atomic_get(&is_sleeping) != 0; }
+    void resetForTest() noexcept { atomic_set(&is_sleeping, 0); }
+};
+
+static ThreadSystemPowerObserver g_powerObserver;
 
 namespace BMEConstants {
     constexpr int32_t T_FINE_OFFSET = 76800;
@@ -154,7 +170,6 @@ namespace {
         }
     }
     
-    // FIXED: Ensured method accessor parentheses are explicitly used on SystemObjects
     [[nodiscard]] bool readTempCalibration(uint16_t addr) noexcept {
         auto t1 = SystemObjects::i2c().readWord(addr, BME280CalibReg::DIG_T1); if (!t1.isOk()) return false; 
         auto t2 = SystemObjects::i2c().readWord(addr, BME280CalibReg::DIG_T2); if (!t2.isOk()) return false; 
@@ -306,7 +321,6 @@ float PAV3015Math::decodeAirflow(uint64_t raw_data) noexcept {
     return flow ;
 }
 
-
 SensorReadCmd::SensorReadCmd(SensorID s_id, uint8_t r_addr, ReadLength len) noexcept
     : sensor_id(s_id), reg_addr(r_addr), length(len) {}
 
@@ -438,8 +452,12 @@ void PrintCmd::execute() noexcept {
 void producer_thread(void) {
     ProducerState state = ProducerState::ReadBME; 
     
+    // Register the thread system with the power manager to respect Deep Sleep states
+    SystemObjects::power().registerObserver(&g_powerObserver);
+    
     do {
-       if (SystemObjects::context().getState() != SystemState::SAFE_HALT) {
+       // Guard I2C interactions so we don't access hardware while the bus is suspended
+       if (SystemObjects::context().getState() != SystemState::SAFE_HALT && !g_powerObserver.isSleeping()) {
            if (!g_bme280_initialized) {
                const uint16_t bme_addr = static_cast<uint16_t>(SensorID::BME280);
                auto res1 = SystemObjects::i2c().writeRegister(bme_addr, SensorReg::BME280_CTRL_HUM, BME280Config::CTRL_HUM);
@@ -466,9 +484,30 @@ void producer_thread(void) {
                 state = ProducerState::ReadBME;
             }
               
-           if (enqueued) {
-               SystemObjects::power().reportActivity();
-           }   
+           // NOTE (behavior change): routine sensor sampling no longer counts
+           // as PowerManager "activity". Previously every successful enqueue
+           // called reportActivity(), which resets the 30s ACTIVE_TIMEOUT_MS
+           // clock every 500ms -- meaning it could never elapse while this
+           // thread kept sampling, making IDLE/STOP structurally unreachable
+           // no matter how correct PowerManager's own implementation is.
+           // This now matches heart_rate_producer_thread's existing pattern
+           // in RTOS_Synchronization_Layer.cpp, which never called
+           // reportActivity() for its own periodic reads either -- so this
+           // brings the two producer threads into agreement rather than
+           // introducing a new convention.
+           //
+           // ASSUMPTION THIS RELIES ON: sensor data going stale for up to
+           // STOP_WAKEUP_US (60s) between wakes is acceptable for this
+           // device's profile. The system now settles into STOP after ~35s
+           // with no operator/fault activity (CLI input, illegal state
+           // transitions, and triggerFault() all still call reportActivity()
+           // elsewhere), and this thread naturally pauses via the
+           // isSleeping() guard above until the next RTC wake or external
+           // event. If continuous, uninterrupted sampling is actually a hard
+           // requirement for this device, this is the wrong fix -- STOP would
+           // need a different reachability condition entirely (e.g. a
+           // duty-cycled sampling contract), not just restoring this call.
+           (void)enqueued;
        }  
        k_msleep(500); 
     } while(THREAD_LOOP_CONDITION);
@@ -478,6 +517,7 @@ void producer_thread(void) {
 void resetRtosCommandTestState() noexcept {
     g_bme280Calib = BME280Calibration{};
     g_bme280_initialized = false;
+    g_powerObserver.resetForTest();
 }
 #endif
 

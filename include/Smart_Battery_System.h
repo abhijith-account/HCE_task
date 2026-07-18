@@ -1,4 +1,7 @@
+#pragma once
+
 #include "Device_State_Machine+Watchdog.h"
+#include "Power_Management_System.h"
 #include <zephyr/drivers/uart.h>
 #include <zephyr/kernel.h>
 #include <cstdint>
@@ -7,8 +10,6 @@
 #include <span>
 #include <cstddef>
 #include <zephyr/sys/atomic.h>
-
-#pragma once
 
 enum class CommFault : uint8_t
 {
@@ -186,6 +187,8 @@ public:
     void processFSM();
     BatteryFSM getState() const;
     CommStatistics getStats() const;
+    
+    void notifySystemWakeup();
 
 private:
     UARTManager* uart_bus;
@@ -212,5 +215,6 @@ private:
     void publishError(CommFault fault);
     BmsCache getCacheSnapshot() const;
 };
+
 SbsBattery* getSmartBatteryInstance();
 UARTManager* getUartBusManagerInstance();

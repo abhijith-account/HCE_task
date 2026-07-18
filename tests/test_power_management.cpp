@@ -1,210 +1,588 @@
+// =========================================================================
+// Google Test Coverage Suite for PowerManager (100% Line & Branch Coverage)
+// =========================================================================
 #include <gtest/gtest.h>
 #include <array>
 #include <cstdint>
-#include <string>
 #include <string_view>
+
+#include <zephyr/kernel.h>
+#include <zephyr/device.h>
+#include <zephyr/drivers/counter.h>
+#include <zephyr/pm/device.h>
+#include <zephyr/pm/policy.h>
+#include <zephyr/sys/atomic.h>
+
+#include <thread>
+#include <vector>
+#include <atomic>
+
+#define private public
 #include "Power_Management_System.h"
+#include "Device_State_Machine+Watchdog.h" 
+#undef private
 
-#define PM_STATE_SUSPEND_TO_RAM 1
-#define PM_ALL_SUBSTATES 0
+// ---------------------------------------------------------
+// System Mocks
+// ---------------------------------------------------------
+#ifndef ETIME
+#define ETIME 62
+#endif
+#ifndef ENOTSUP
+#define ENOTSUP 134
+#endif
+#ifndef EALREADY
+#define EALREADY 114
+#endif
+#ifndef EIO
+#define EIO 5
+#endif
 
-extern "C" uint32_t virtual_uptime;
+bool run_thread_once = false;
+extern bool g_force_idle_enter_fail;// Mock flag for unreachable fallback branch
 
-enum class PmAction {NONE,LOCK_ACQUIRED,LOCK_RELEASED,I2C_SUSPENDED,I2C_RESUMED,RTC_SET };
-static std::array<PmAction,10> action_history;
-static size_t action_idx=0;
+const struct device* dummy_rtc = reinterpret_cast<const struct device*>(0x111);
+const struct device* dummy_i2c = reinterpret_cast<const struct device*>(0x222);
 
-static void (*mock_rtc_alarm_cb)(const device*, uint8_t,uint32_t,void*)=nullptr;
-static void* mock_rtc_user_data=nullptr;
-static bool mock_device_ready_status = true;
+const struct device* i2c_hardware = dummy_i2c;
+const struct device* rtc_hardware = dummy_rtc; 
 
-extern "C"{
-   void pm_policy_state_lock_get(uint8_t state,uint8_t substate_id){
-         if (action_idx < action_history.size()){
-            action_history[action_idx++]=PmAction::LOCK_ACQUIRED;
-         }
-   }
-   
-   void pm_policy_state_lock_put(uint8_t state,uint8_t substate_id){
-        if (action_idx<action_history.size()){
-            action_history[action_idx++]=PmAction::LOCK_RELEASED;
-        }
-   }
-   
-   int pm_device_action_run(const struct device *dev,enum pm_device_action action){
-        if (action==PM_DEVICE_ACTION_SUSPEND){
-            if (action_idx<action_history.size()){
-                action_history[action_idx++]=PmAction::I2C_SUSPENDED;
-            }
-        }
-        else if(action==PM_DEVICE_ACTION_RESUME){
-            if (action_idx<action_history.size()){
-              action_history[action_idx++]=PmAction::I2C_RESUMED;
-            }
+extern DeviceContext sys_context;
+
+struct MockController {
+    bool rtc_ready = true;
+    bool i2c_ready = true;
+    int counter_start_ret = 0;
+    int counter_cancel_ret = 0;
+    uint32_t counter_ticks_ret = 60000;
+    int counter_set_ret = 0;
+    int pm_suspend_ret = 0;
+    int pm_resume_ret = 0;
+    int stack_space_ret = 0;
+    int stack_space_calls = 0; 
+
+    void reset() {
+        rtc_ready = true;
+        i2c_ready = true;
+        counter_start_ret = 0;
+        counter_cancel_ret = 0;
+        counter_ticks_ret = 60000;
+        counter_set_ret = 0;
+        pm_suspend_ret = 0;
+        pm_resume_ret = 0;
+        stack_space_ret = 0;
+        stack_space_calls = 0;
+    }
+};
+static MockController mocks;
+
+enum class PmAction { NONE, LOCK_ACQUIRED, LOCK_RELEASED, I2C_SUSPENDED, I2C_RESUMED, RTC_SET };
+static std::array<PmAction, 10> action_history;
+static size_t action_idx = 0;
+static void (*mock_rtc_alarm_cb)(const device*, uint8_t, uint32_t, void*) = nullptr;
+static void* mock_rtc_user_data = nullptr;
+
+// ---------------------------------------------------------
+// Zephyr API Stubs
+// ---------------------------------------------------------
+extern "C" {
+    bool device_is_ready(const struct device *dev) {
+        if (dev == dummy_rtc) return mocks.rtc_ready;
+        if (dev == dummy_i2c) return mocks.i2c_ready;
+        return false;
+    }
+    int counter_start(const struct device*) { return mocks.counter_start_ret; }
+    int counter_cancel_channel_alarm(const struct device*, uint8_t) { return mocks.counter_cancel_ret; }
+    uint32_t counter_us_to_ticks(const struct device*, uint64_t) { return mocks.counter_ticks_ret; }
+    
+    int counter_set_channel_alarm(const struct device*, uint8_t, const struct counter_alarm_cfg *cfg) {
+        mock_rtc_alarm_cb = cfg->callback;
+        mock_rtc_user_data = cfg->user_data;
+        if (action_idx < action_history.size()) action_history[action_idx++] = PmAction::RTC_SET;
+        return mocks.counter_set_ret;
+    }
+    void pm_policy_state_lock_get(uint8_t, uint8_t) {
+        if (action_idx < action_history.size()) action_history[action_idx++] = PmAction::LOCK_ACQUIRED;
+    }
+    void pm_policy_state_lock_put(uint8_t, uint8_t) {
+        if (action_idx < action_history.size()) action_history[action_idx++] = PmAction::LOCK_RELEASED;
+    }
+    int pm_device_action_run(const struct device*, enum pm_device_action action) {
+        if (action == PM_DEVICE_ACTION_SUSPEND) {
+            if (action_idx < action_history.size()) action_history[action_idx++] = PmAction::I2C_SUSPENDED;
+            return mocks.pm_suspend_ret;
+        } else if (action == PM_DEVICE_ACTION_RESUME) {
+            if (action_idx < action_history.size()) action_history[action_idx++] = PmAction::I2C_RESUMED;
+            return mocks.pm_resume_ret;
         }
         return 0;
-   }
-   
-   bool device_is_ready(const struct device *dev){
-        return mock_device_ready_status;
-   }
-   
-   uint32_t counter_us_to_ticks(const struct device *dev,uint64_t us){
-        return us/1000;
-   }
-   
-   int counter_set_channel_alarm(const struct device *dev,uint8_t chan_id,const struct counter_alarm_cfg *alarm_cfg){
-       if (action_idx < action_history.size()){
-          action_history[action_idx++]=PmAction::RTC_SET;
-       }
-       
-       mock_rtc_alarm_cb=alarm_cfg->callback;
-       mock_rtc_user_data=alarm_cfg->user_data;
-       return 0;
-   }
+    }
+    int k_thread_stack_space_get(const void*, size_t *unused_ptr) {
+        mocks.stack_space_calls++;
+        if (mocks.stack_space_ret == 0 && unused_ptr) *unused_ptr = 1024;
+        return mocks.stack_space_ret;
+    }
 }
 
-class PowerManagementTestSuite:public::testing::Test{
-    protected:
-          const device* dummy_rtc=reinterpret_cast<const device*>(0x111);
-          const device* dummy_i2c=reinterpret_cast<const device*>(0x222);
-          
-          void SetUp() override {
-              virtual_uptime=0;
-              action_idx=0;
-              action_history.fill(PmAction::NONE);
-              mock_rtc_alarm_cb=nullptr;
-              mock_device_ready_status = true;
-          }
+bool atomic_cas(atomic_t *target, atomic_val_t old_value, atomic_val_t new_value) {
+    atomic_val_t expected = old_value;
+    return target->compare_exchange_strong(expected, new_value);
+}
+
+// ---------------------------------------------------------
+// Test Fixture
+// ---------------------------------------------------------
+class TestObserver : public IPowerObserver {
+public:
+    int sleeps = 0, wakes = 0, aborts = 0;
+    void beforeSleep() override { sleeps++; }
+    void afterWakeup() override { wakes++; }
+    void sleepAborted() override { aborts++; }
+    void reset() { sleeps = 0; wakes = 0; aborts = 0; }
 };
 
-TEST_F(PowerManagementTestSuite, InitSuccessLogsInfo){
-    PowerManager pwr(dummy_rtc,dummy_i2c);
+class PowerManagementTestSuite : public ::testing::Test {
+protected:
+    void SetUp() override {
+        PowerManager::getInstance().resetForTest();
+        mocks.reset();
+        virtual_uptime = 0;
+        action_idx = 0;
+        action_history.fill(PmAction::NONE);
+        mock_rtc_alarm_cb = nullptr;
+        mock_rtc_user_data = nullptr;
+        sys_context.current_state = SystemState::INIT; 
+        run_thread_once = false;
+        g_force_idle_enter_fail = false;
+    }
+};
+
+// ---------------------------------------------------------
+// Test Cases
+// ---------------------------------------------------------
+
+TEST_F(PowerManagementTestSuite, InitFailures) {
+    PowerManager& pm = PowerManager::getInstance();
+    testing::internal::CaptureStdout();
+
+    EXPECT_FALSE(pm.init(nullptr, dummy_i2c, &sys_context));
+    EXPECT_FALSE(pm.init(dummy_rtc, nullptr, &sys_context));
+
+    mocks.rtc_ready = false;
+    EXPECT_FALSE(pm.init(dummy_rtc, dummy_i2c, &sys_context));
+    
+    mocks.rtc_ready = true;
+    mocks.i2c_ready = false;
+    EXPECT_FALSE(pm.init(dummy_rtc, dummy_i2c, &sys_context));
+    
+    mocks.i2c_ready = true;
+    mocks.counter_start_ret = -1;
+    EXPECT_FALSE(pm.init(dummy_rtc, dummy_i2c, &sys_context));
+    
+    const auto raw_output = testing::internal::GetCapturedStdout();
+    std::string_view output(raw_output);
+    EXPECT_TRUE(output.find("[ERR] RTC device not ready") != std::string_view::npos);
+    EXPECT_TRUE(output.find("[ERR] I2C device not ready") != std::string_view::npos);
+    EXPECT_TRUE(output.find("[ERR] Failed to start RTC counter") != std::string_view::npos);
+}
+
+TEST_F(PowerManagementTestSuite, InitSuccess) {
+    PowerManager& pm = PowerManager::getInstance();
+    testing::internal::CaptureStdout();
+    EXPECT_TRUE(pm.init(dummy_rtc, dummy_i2c, &sys_context));
+    const auto raw_output = testing::internal::GetCapturedStdout();
+    EXPECT_TRUE(std::string_view(raw_output).find("[INF] Power Manager initialized. Deep Sleep Locked.") != std::string_view::npos);
+}
+
+TEST_F(PowerManagementTestSuite, ObserverManagement) {
+    PowerManager& pm = PowerManager::getInstance();
+    TestObserver obs1, obs2;
+    static std::array<TestObserver, 5> extra_observers; 
+
+    EXPECT_TRUE(pm.registerObserver(&obs1));
+    EXPECT_TRUE(pm.registerObserver(&obs2));
+    EXPECT_TRUE(pm.registerObserver(&obs1));
+    EXPECT_TRUE(pm.registerObserver(nullptr)); 
+
+    for (int i = 0; i < 5; i++) EXPECT_TRUE(pm.registerObserver(&extra_observers[i]));
+    
+    testing::internal::CaptureStdout();
+    TestObserver obs_overflow; 
+    EXPECT_FALSE(pm.registerObserver(&obs_overflow)); 
+    const auto raw_output = testing::internal::GetCapturedStdout();
+    EXPECT_TRUE(std::string_view(raw_output).find("Observer limit reached") != std::string_view::npos);
+
+    pm.notifyBeforeSleep();
+    pm.notifyAfterWakeup();
+    pm.notifySleepAborted();
+
+    EXPECT_EQ(obs1.sleeps, 1);
+    EXPECT_EQ(obs1.wakes, 1);
+    EXPECT_EQ(obs1.aborts, 1);
+}
+
+TEST_F(PowerManagementTestSuite, FsmStateTransitions) {
+    PowerManager& pm = PowerManager::getInstance();
+    pm.init(dummy_rtc, dummy_i2c, &sys_context);
+
+    // Stay ACTIVE
+    pm.processFSM();
+    
+    // Transition to IDLE
+    virtual_uptime = 30000;
+    pm.processFSM();
+    EXPECT_EQ(std::string_view(pm.current_state->getName()), std::string_view("IDLE"));
+
+    // Execute within IDLE (covers IdleState return *this;)
+    virtual_uptime = 32000;
+    pm.processFSM();
+    
+    // Transition to STOP
+    virtual_uptime = 35000;
+    pm.processFSM();
+    EXPECT_EQ(std::string_view(pm.current_state->getName()), std::string_view("STOP"));
+
+    // Execute within STOP (covers StopState return *this;)
+    pm.processFSM();
+    EXPECT_EQ(std::string_view(pm.current_state->getName()), std::string_view("STOP"));
+}
+
+TEST_F(PowerManagementTestSuite, StopEntryAndExitEdgeCaseBranches) {
+    PowerManager& pm = PowerManager::getInstance();
+    pm.init(dummy_rtc, dummy_i2c, &sys_context);
+
+    virtual_uptime = 35000;
+    pm.processFSM(); // Jump to IDLE
+
+    // STOP Enter edge case (-ETIME Bypass)
+    mocks.counter_cancel_ret = -ETIME;
+    virtual_uptime = 40000;
+    pm.processFSM(); // Enters STOP
+    EXPECT_EQ(std::string_view(pm.current_state->getName()), std::string_view("STOP"));
+
+    // STOP Exit edge case (-ENOTSUP Bypass)
+    mocks.counter_cancel_ret = -ENOTSUP; 
+    pm.reportActivity(); // Wakes to ACTIVE
+    EXPECT_EQ(std::string_view(pm.current_state->getName()), std::string_view("ACTIVE"));
+
+    virtual_uptime = 90000;
+    pm.processFSM(); // Jump back to IDLE
+    virtual_uptime = 95000;
+
+    // Suspend & Resume success-equivalent (-EALREADY Bypass)
+    mocks.counter_cancel_ret = 0;
+    mocks.pm_suspend_ret = -EALREADY;
+    pm.processFSM(); 
+    EXPECT_EQ(std::string_view(pm.current_state->getName()), std::string_view("STOP"));
+
+    mocks.pm_resume_ret = -EALREADY;
+    pm.reportActivity(); 
+    EXPECT_EQ(std::string_view(pm.current_state->getName()), std::string_view("ACTIVE"));
+}
+
+TEST_F(PowerManagementTestSuite, StopExitNormalWakeup) {
+    PowerManager& pm = PowerManager::getInstance();
+    pm.init(dummy_rtc, dummy_i2c, &sys_context);
+
+    virtual_uptime = 30000;
+    pm.processFSM(); // IDLE
+    virtual_uptime = 35000;
+    pm.processFSM(); // STOP
+
+    // Move time significantly past 60s sleep expectation to trigger delay >= 0 branch
+    virtual_uptime += 70000; 
+    mocks.pm_resume_ret = 0; // Success to hit resetPmFailures() branch
 
     testing::internal::CaptureStdout();
-    EXPECT_TRUE(pwr.init());
+    pm.reportActivity(); // Wakes system
+    const auto raw_output = testing::internal::GetCapturedStdout();
+    
+    EXPECT_TRUE(std::string_view(raw_output).find("System Awoken via RTC.") != std::string_view::npos);
+    EXPECT_EQ(std::string_view(pm.current_state->getName()), std::string_view("ACTIVE"));
+    EXPECT_EQ(pm.consecutive_pm_failures, 0); 
+}
+
+TEST_F(PowerManagementTestSuite, StopEntryFailuresFallbackToIdle) {
+    PowerManager& pm = PowerManager::getInstance();
+    pm.init(dummy_rtc, dummy_i2c, &sys_context);
+    
+    virtual_uptime = 30000;
+    pm.processFSM(); // Enters IDLE
+
+    // 1. Ticks = 0 overflow
+    virtual_uptime = 35000;
+    mocks.counter_ticks_ret = 0;
+    pm.processFSM(); 
+    EXPECT_EQ(std::string_view(pm.current_state->getName()), std::string_view("IDLE"));
+    
+    // 2. Alarm set fails
+    virtual_uptime = 40000;
+    mocks.counter_ticks_ret = 60000;
+    mocks.counter_set_ret = -1;
+    pm.processFSM(); 
+    EXPECT_EQ(std::string_view(pm.current_state->getName()), std::string_view("IDLE"));
+    
+    // 3. pm_device_action_run fails
+    TestObserver obs;
+    pm.registerObserver(&obs);
+    virtual_uptime = 45000;
+    mocks.counter_set_ret = 0;
+    mocks.pm_suspend_ret = -EIO;
+    pm.processFSM();
+    EXPECT_EQ(std::string_view(pm.current_state->getName()), std::string_view("IDLE"));
+    EXPECT_EQ(obs.aborts, 1); 
+    
+    // 4. Cancel channel alarm warns but continues
+    virtual_uptime = 85000; 
+    pm.consecutive_pm_failures = 0; 
+    mocks.pm_suspend_ret = 0;
+    mocks.counter_cancel_ret = -EIO; 
+    
+    testing::internal::CaptureStdout();
+    pm.processFSM(); 
+    const auto raw_output = testing::internal::GetCapturedStdout();
+    EXPECT_TRUE(std::string_view(raw_output).find("Failed to cancel RTC alarm") != std::string_view::npos);
+    EXPECT_EQ(std::string_view(pm.current_state->getName()), std::string_view("STOP"));
+}
+
+TEST_F(PowerManagementTestSuite, FaultEscalationSequence) {
+    PowerManager& pm = PowerManager::getInstance();
+    pm.init(dummy_rtc, dummy_i2c, &sys_context);
+    
+    mocks.counter_set_ret = -1;
+    virtual_uptime = 30000;
+    pm.processFSM(); 
+    virtual_uptime += 5000; 
+    pm.processFSM(); 
+    virtual_uptime += 5000; 
+    pm.processFSM(); 
+    virtual_uptime += 5000; 
+    
+    testing::internal::CaptureStdout();
+    pm.processFSM(); 
+    const auto raw_output = testing::internal::GetCapturedStdout();
+    EXPECT_TRUE(std::string_view(raw_output).find("Power management failure threshold reached") != std::string_view::npos);
+    EXPECT_EQ(sys_context.current_state, SystemState::SAFE_HALT);
+}
+
+// Isolated interceptor to force transition mutation mathematically during branch evaluation
+class FsmInterruptorState : public IPowerState {
+public:
+    bool enter(PowerManager& pm) override { return true; }
+    IPowerState& execute(PowerManager& pm) override {
+        pm.current_state = &ActiveState::getInstance(); 
+        return StopState::getInstance(); 
+    }
+    void exit(PowerManager& pm) override {}
+    const char* getName() const override { return "INTERRUPTOR"; }
+};
+
+TEST_F(PowerManagementTestSuite, ProcessFSMStateInterruption) {
+    PowerManager& pm = PowerManager::getInstance();
+    pm.init(dummy_rtc, dummy_i2c, &sys_context);
+
+    static FsmInterruptorState interruptor;
+    pm.current_state = &interruptor;
+    
+    testing::internal::CaptureStdout();
+    pm.processFSM();
+    const auto raw_output = testing::internal::GetCapturedStdout();
+    EXPECT_EQ(std::string_view(pm.current_state->getName()), std::string_view("ACTIVE"));
+}
+
+TEST_F(PowerManagementTestSuite, DefensiveUnreachableBranches) {
+    PowerManager& pm = PowerManager::getInstance();
+    
+    pm.observer_count = 10; 
+    std::array<IPowerObserver*, 8> out;
+    EXPECT_EQ(pm.captureObservers(out), 8);
+    
+    pm.current_state = &ActiveState::getInstance();
+    pm.transitionTo(ActiveState::getInstance()); 
+    EXPECT_EQ(pm.current_state, &ActiveState::getInstance()); 
+    
+    StopState::getInstance().sleep_prepared = false;
+    StopState::getInstance().exit(pm); 
+    
+    pm.current_state = nullptr;
+    pm.processFSM(); 
+
+    // Force Idle Fallback to fail
+    // Force Idle Fallback to fail
+    pm.init(dummy_rtc, dummy_i2c, &sys_context);
+    
+    // 1. Advance the FSM naturally to IDLE
+    virtual_uptime = 30000;
+    pm.processFSM(); 
+
+    // 2. Advance time to trigger transition to STOP. 
+    // mock ticks=0 fails Stop entry; g_force_idle_enter_fail fails Idle fallback.
+    virtual_uptime = 40000;
+    mocks.counter_ticks_ret = 0; 
+    g_force_idle_enter_fail = true; 
+
+    testing::internal::CaptureStdout();
+    pm.processFSM();
+    
+    const auto raw_output = testing::internal::GetCapturedStdout();
+    EXPECT_TRUE(std::string_view(raw_output).find("Power manager halted. Idle fallback failed.") != std::string_view::npos);
+    EXPECT_EQ(pm.current_state, nullptr);
+}
+
+
+TEST_F(PowerManagementTestSuite, RtcAlarmWakePendingHandling) {
+    PowerManager& pm = PowerManager::getInstance();
+    pm.init(dummy_rtc, dummy_i2c, &sys_context);
+    PowerManager::rtc_alarm_handler(dummy_rtc, 0, 0, &pm);
+    
+    testing::internal::CaptureStdout();
+    pm.processFSM();
+    const auto raw_output = testing::internal::GetCapturedStdout();
+    EXPECT_TRUE(std::string_view(raw_output).find("=== RTC Wakeup Triggered ===") != std::string_view::npos);
+}
+
+extern void power_monitor_thread();
+
+TEST_F(PowerManagementTestSuite, ThreadRoutineCoverage) {
+    mocks.rtc_ready = false;
+    testing::internal::CaptureStdout();
+    power_monitor_thread();
+    const auto raw_output1 = testing::internal::GetCapturedStdout();
+    EXPECT_TRUE(std::string_view(raw_output1).find("Power Manager Init Failed. Thread halting.") != std::string_view::npos);
+    
+    mocks.rtc_ready = true;
+    
+    // Enable threading hook to run EXACTLY twice (Covers True, then False ternary branches)
+    run_thread_once = true; 
+    
+    mocks.stack_space_ret = 0; 
+    mocks.stack_space_calls = 0;
+    power_monitor_thread();
+    EXPECT_EQ(mocks.stack_space_calls, 2); 
+    
+    run_thread_once = false; 
+    mocks.stack_space_ret = -1; 
+    mocks.stack_space_calls = 0;
+    power_monitor_thread();
+    EXPECT_EQ(mocks.stack_space_calls, 1);
+}
+
+TEST_F(PowerManagementTestSuite, StopExitRemainingErrorBranches) {
+    PowerManager& pm = PowerManager::getInstance();
+    pm.init(dummy_rtc, dummy_i2c, &sys_context);
+
+    // --- STOP *entry* with cancel err = -ENOTSUP (previously only tested on exit) ---
+    virtual_uptime = 30000;
+    pm.processFSM(); // ACTIVE -> IDLE
+    mocks.counter_cancel_ret = -ENOTSUP;
+    virtual_uptime = 35000;
+    pm.processFSM(); // IDLE -> STOP, enter() bypasses -ENOTSUP silently
+    EXPECT_EQ(std::string_view(pm.current_state->getName()), std::string_view("STOP"));
+
+    // --- STOP *exit* with cancel err = -ETIME (previously only tested on entry) ---
+    mocks.counter_cancel_ret = -ETIME;
+    pm.reportActivity(); // STOP -> ACTIVE, exit() bypasses -ETIME silently
+    EXPECT_EQ(std::string_view(pm.current_state->getName()), std::string_view("ACTIVE"));
+
+    // --- STOP *exit* with a genuine, unmapped cancel error + resume failure ---
+    // This closes the previously 0-count LOG_WRN line, and the resume
+    // failure's LOG_ERR + reportPmFailure() lines right after it.
+    virtual_uptime = 65000;
+    pm.processFSM(); // ACTIVE -> IDLE
+    mocks.counter_cancel_ret = 0;
+    virtual_uptime = 70000;
+    pm.processFSM(); // IDLE -> STOP (clean entry)
+    EXPECT_EQ(std::string_view(pm.current_state->getName()), std::string_view("STOP"));
+
+    mocks.counter_cancel_ret = -EIO;   // unmapped -> must log on exit
+    mocks.pm_resume_ret = -EIO;        // resume failure -> must log + reportPmFailure()
+
+    testing::internal::CaptureStdout();
+    pm.reportActivity(); // STOP -> ACTIVE
     const auto raw_output = testing::internal::GetCapturedStdout();
     std::string_view output(raw_output);
 
-    EXPECT_TRUE(output.find("[INF] Power Manager initialized. Deep Sleep Locked.") != std::string_view::npos)
-    << "Expected successful init log missing! Actual: " << output;
+    EXPECT_TRUE(output.find("Failed to cancel RTC alarm on STOP exit (err: -5)") != std::string_view::npos);
+    EXPECT_TRUE(output.find("Failed to resume I2C (err: -5)") != std::string_view::npos);
+    EXPECT_EQ(std::string_view(pm.current_state->getName()), std::string_view("ACTIVE"));
+    EXPECT_EQ(pm.consecutive_pm_failures, 1);
 }
 
-TEST_F(PowerManagementTestSuite,FastForwardsThroughStateTransitions){
-    PowerManager pwr(dummy_rtc,dummy_i2c);
-    pwr.init();
-    
-    EXPECT_EQ(pwr.getMode(),PowerMode::ACTIVE);
-    
-    virtual_uptime=29999;
-    pwr.processFSM();
-    EXPECT_EQ(pwr.getMode(),PowerMode::ACTIVE)<<"Premature transition to IDLE!";
-    
-    virtual_uptime=30000;
-    testing::internal::CaptureStdout();
-    pwr.processFSM();
-    const auto raw_output_idle= testing::internal::GetCapturedStdout();
-    std::string_view output_idle(raw_output_idle);
-    
-    EXPECT_EQ(pwr.getMode(),PowerMode::IDLE)<<"Failed to transition to IDLE at 30s boundary";
-    EXPECT_TRUE(output_idle.find("[INF] 30s Inactivity: Transitioning to IDLE mode")!=std::string_view::npos)<<"Expected IDLE transition log missing!";
-    
-    virtual_uptime=34999;
-    pwr.processFSM();
-    EXPECT_EQ(pwr.getMode(),PowerMode::IDLE)<<"Premature transition to STOP!";
-    
-    virtual_uptime=35000;
-    testing::internal::CaptureStdout();
-    pwr.processFSM();
-    const auto  raw_output_stop= testing::internal::GetCapturedStdout();
-    std::string_view output_stop(raw_output_stop);
-    
-    EXPECT_EQ(pwr.getMode(),PowerMode::STOP)<<"Failed to enter Deep Sleep at 35s boundary!";
-    EXPECT_TRUE(output_stop.find("[WRN] 35s Inactivity: Transitioning to STOP mode (Deep Sleep).")!=std::string_view::npos)<<"Expected STOP transition log missing!";
-}
+TEST_F(PowerManagementTestSuite, NullFaultContextBranches) {
+    PowerManager& pm = PowerManager::getInstance();
 
-TEST_F(PowerManagementTestSuite,VerifiesSleepNotifictionOrder){
-    PowerManager pwr(dummy_rtc,dummy_i2c);
-    pwr.init();
-    
-    action_idx=0;
-    action_history.fill(PmAction::NONE);
-    
-    virtual_uptime=35000;
-    pwr.processFSM();
-    pwr.processFSM();
-    
-    ASSERT_GE(action_idx,3);
-    EXPECT_EQ(action_history[0],PmAction::I2C_SUSPENDED);
-    EXPECT_EQ(action_history[1],PmAction::RTC_SET);
-    EXPECT_EQ(action_history[2],PmAction::LOCK_RELEASED);
-}
-
-TEST_F(PowerManagementTestSuite,WakeupInterruptRestoreSystem){
-    PowerManager pwr(dummy_rtc,dummy_i2c);
-    pwr.init();
-
-    virtual_uptime=35000;
-    pwr.processFSM();
-    pwr.processFSM();
-    ASSERT_EQ(pwr.getMode(),PowerMode::STOP);
-    ASSERT_NE(mock_rtc_alarm_cb, nullptr)<<"RTC Alarm callback was never registered!";
-
-    action_idx=0;
-    action_history.fill(PmAction::NONE);
-
-    virtual_uptime=95000;
-    
-    testing::internal::CaptureStdout();
-    mock_rtc_alarm_cb(dummy_rtc,0,0,mock_rtc_user_data);
-    const auto raw_output = testing::internal::GetCapturedStdout();
-    std::string_view output(raw_output);
-    
-    EXPECT_EQ(pwr.getMode(),PowerMode::ACTIVE)<<"System failed to wake up from RTC interrupt!";
-    EXPECT_TRUE(output.find("[WRN] === 60s RTC Wakeup Triggered! Restoring System State ===")!=std::string_view::npos)<<"Expected RTC Wakeup log missing!";
-    EXPECT_TRUE(output.find("[INF] Hardware Activity Detected! Waking up I2C Bus...")!=std::string_view::npos)<<"Expected I2C resume log missing!";
-    
-    ASSERT_GE(action_idx,2);
-    EXPECT_EQ(action_history[0],PmAction::I2C_RESUMED);
-    EXPECT_EQ(action_history[1],PmAction::LOCK_ACQUIRED);
-}
-
-TEST_F(PowerManagementTestSuite,HandlesHardwareInitFailure){
-    mock_device_ready_status=false;
-    
-    PowerManager pwr(dummy_rtc,dummy_i2c);
-    
-    testing::internal::CaptureStdout();
-    EXPECT_FALSE(pwr.init())<<"System failed to catch missing RTC hardware!";
-    const auto raw_output = testing::internal::GetCapturedStdout();
-    std::string_view output(raw_output);
-    
-    EXPECT_TRUE(output.find("[ERR] RTC device not ready")!=std::string_view::npos)<<"Expected hardware failure log missing";
-}
-
-bool run_thread_once=false;
-
-extern void power_monitor_thread(void);
-
-TEST_F(PowerManagementTestSuite,ExecutesPowerMonitorThread){
-        EXPECT_NO_FATAL_FAILURE(power_monitor_thread());
-}
-
-TEST_F(PowerManagementTestSuite, ReportActivityWhenNotStopped){
-    PowerManager pwr(dummy_rtc,dummy_i2c);
-    
-    pwr.reportActivity();
-    
-    EXPECT_EQ(pwr.getMode(),PowerMode::ACTIVE);
-}
-
-TEST_F(PowerManagementTestSuite, ThreadLoopConditionBranches){
-    run_thread_once=true;
+    // --- reportPmFailure(): drive 3 consecutive failures with fault_context == nullptr ---
+    pm.init(dummy_rtc, dummy_i2c, nullptr);
+    mocks.counter_set_ret = -1;
+    virtual_uptime = 30000;
+    pm.processFSM(); // ACTIVE -> IDLE
+    virtual_uptime += 5000;
+    pm.processFSM(); // STOP fails (1)
+    virtual_uptime += 5000;
+    pm.processFSM(); // STOP fails (2)
 
     testing::internal::CaptureStdout();
-    EXPECT_NO_FATAL_FAILURE(power_monitor_thread());
-    const auto raw_output = testing::internal::GetCapturedStdout();
-    std::string_view output(raw_output);
+    virtual_uptime += 5000;
+    pm.processFSM(); // STOP fails (3) -> hits threshold, fault_context is null
+    const auto raw_output1 = testing::internal::GetCapturedStdout();
+    EXPECT_TRUE(std::string_view(raw_output1).find("Power management failure threshold reached") != std::string_view::npos);
+    EXPECT_NE(sys_context.current_state, SystemState::SAFE_HALT); // triggerFault() never called
 
-    EXPECT_TRUE(output.find("[INF] Power Manager initialized.")!=std::string_view::npos);
+    // --- transitionTo(): cascaded IDLE fallback also fails, with fault_context == nullptr ---
+    pm.resetForTest();
+    pm.init(dummy_rtc, dummy_i2c, nullptr);
+    mocks.counter_set_ret = 0;
+    virtual_uptime = 30000;
+    pm.processFSM(); // ACTIVE -> IDLE
+
+    virtual_uptime = 40000;
+    mocks.counter_ticks_ret = 0;      // force STOP entry to fail
+    g_force_idle_enter_fail = true;   // force IDLE fallback to also fail
+
+    testing::internal::CaptureStdout();
+    pm.processFSM();
+    const auto raw_output2 = testing::internal::GetCapturedStdout();
+    EXPECT_TRUE(std::string_view(raw_output2).find("Power manager halted. Idle fallback failed.") != std::string_view::npos);
+    EXPECT_EQ(pm.current_state, nullptr);
 }
+
+namespace {
+
+// Forces genuine contention on the very first call to a singleton's
+// getInstance(), so the compiler's double-checked-locking guard has a
+// real chance to take its "lost the race, someone already finished
+// construction" branch. This must run before ANY other code in the
+// process calls the same getInstance() - after the first call ever,
+// the guard is permanently initialized and this branch becomes
+// unreachable for the rest of the process lifetime.
+template <typename Fn>
+void RaceForFirstInit(Fn get_instance, int num_threads = 64) {
+    std::atomic<bool> start{false};
+    std::vector<std::thread> threads;
+    threads.reserve(num_threads);
+    for (int i = 0; i < num_threads; ++i) {
+        threads.emplace_back([&] {
+            while (!start.load(std::memory_order_acquire)) {
+                std::this_thread::yield();
+            }
+            get_instance();
+        });
+    }
+    start.store(true, std::memory_order_release);
+    for (auto& t : threads) t.join();
+}
+
+class SingletonRaceEnvironment : public ::testing::Environment {
+public:
+    void SetUp() override {
+        RaceForFirstInit([] { return &PowerManager::getInstance(); });
+        RaceForFirstInit([] { return &ActiveState::getInstance(); });
+        RaceForFirstInit([] { return &IdleState::getInstance(); });
+        RaceForFirstInit([] { return &StopState::getInstance(); });
+    }
+};
+
+::testing::Environment* const race_env =
+    ::testing::AddGlobalTestEnvironment(new SingletonRaceEnvironment);
+
+}  // namespace

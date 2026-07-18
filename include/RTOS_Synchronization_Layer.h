@@ -1,7 +1,7 @@
+#pragma once
 #include <zephyr/kernel.h>
 #include <array>
 #include <cstdint>
-#pragma once
 
 class ZephyrSemaphore {
   private:
@@ -28,7 +28,10 @@ class ZephyrWorkQueue {
       static void execute_callback(struct k_work *w);
   public:
       explicit ZephyrWorkQueue(void (*cb)());
-      void schedule(k_timeout_t delay);   
+      void schedule(k_timeout_t delay);
+      
+      // ADDED: Needed to stop periodic timers from breaking Deep Sleep
+      void cancel();   
 };
 
 struct SharedHeartRateBuffer{
@@ -38,4 +41,4 @@ struct SharedHeartRateBuffer{
       ZephyrMutex mutex;
 };
 extern SharedHeartRateBuffer hr_buffer;
-extern ZephyrSemaphore display_sem;      
+extern ZephyrSemaphore display_sem;

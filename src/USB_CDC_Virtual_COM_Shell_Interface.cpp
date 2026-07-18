@@ -39,6 +39,19 @@
 #endif
 LOG_MODULE_REGISTER(USB_CLI, LOG_LEVEL_INF);
 namespace {
+    // Power Observer to safely halt Shell hardware interactions when the OS transitions to Sleep
+    class ShellPowerObserver final : public IPowerObserver {
+    private:
+        atomic_t is_sleeping;
+    public:
+        ShellPowerObserver() { atomic_set(&is_sleeping, 0); }
+        void beforeSleep() override { atomic_set(&is_sleeping, 1); }
+        void afterWakeup() override { atomic_set(&is_sleeping, 0); }
+        void sleepAborted() override { atomic_set(&is_sleeping, 0); }
+        bool isSleeping() const noexcept { return atomic_get(&is_sleeping) != 0; }
+    };
+    ShellPowerObserver g_shellPowerObserver;
+
     [[nodiscard]] bool parseIntToken(std::string_view token, int& out_value) noexcept {
         if (token.empty()) {
             return false;
@@ -225,22 +238,34 @@ const std::array<UsbShell::Command, UsbShell::CommandCount> UsbShell::kCommandTa
     {kLogDumpCmd,    false, &UsbShell::cmdLogDump},
     {kRebootCmd,     false, &UsbShell::cmdReboot},
 }};
+
 void UsbShell::process() {
     if (!usb.init()) {
         LOG_ERR("USB initialization failed");
         return;
     }
+    
+    // Register the Shell observer with the Power Manager
+    PowerManager::getInstance().registerObserver(&g_shellPowerObserver);
+
     CommandBuffer cmd_buf;
     do {
-        if (usb.isConnected() && usb.readLine(cmd_buf)) {
-            if (cmd_buf[0] != '\0') {
-                dispatchCommand(std::string_view(cmd_buf.data()));
-                usb.transmit(PromptStr);
+        // Halt shell polling/transmissions if we're sleeping or in SAFE_HALT
+        if (!g_shellPowerObserver.isSleeping() && sys_ctx->getState() != SystemState::SAFE_HALT) {
+            if (usb.isConnected() && usb.readLine(cmd_buf)) {
+                // Register activity to postpone automatic sleep
+                PowerManager::getInstance().reportActivity();
+                
+                if (cmd_buf[0] != '\0') {
+                    dispatchCommand(std::string_view(cmd_buf.data()));
+                    usb.transmit(PromptStr);
+                }
             }
         }
         k_msleep(ShellPollMs);
     } while (THREAD_LOOP_CONDITION);
 }
+
 void UsbShell::dispatchCommand(std::string_view cmd) {
     cmd = trim(cmd);
     LOG_INF("CLI command: %.*s", static_cast<int>(cmd.size()), cmd.data());
@@ -359,7 +384,7 @@ void UsbShell::cmdSetRate(std::string_view args) noexcept {
     std::string_view device_str = trim(args.substr(0, space_pos));
     std::string_view rate_str   = trim(args.substr(space_pos + 1));
     int device_id_in = 0;
-    int rate_in       = 0;
+    int rate_in        = 0;
     if (!parseIntToken(device_str, device_id_in) ||
         !parseIntToken(rate_str, rate_in)) {
         usb.transmit(kSetRateUsageMsg);

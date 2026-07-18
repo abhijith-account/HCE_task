@@ -931,3 +931,74 @@ TEST_F(SmartBatteryTestSuite, PublishError_WatchdogThreshold) {
     // Validate that the threshold logic successfully forced a CUTOFF
     EXPECT_EQ(battery.getState(), BatteryFSM::CUTOFF);
 }
+
+// ==============================================================================
+// 8. Observer, Deep Sleep, and Core Thread State Branches
+// ==============================================================================
+
+static bool custom_hook_called = false;
+static void custom_watchdog_hook(void) {
+    custom_hook_called = true;
+}
+
+TEST_F(SmartBatteryTestSuite, ConstructorWithNonNullHook) {
+    custom_hook_called = false;
+    // Cover the true branch where a valid hook is provided during instantiation
+    SbsBattery custom_battery(&uart_manager, &sys_context, custom_watchdog_hook);
+    custom_battery.feedWatchdog();
+    EXPECT_TRUE(custom_hook_called);
+}
+
+TEST_F(SmartBatteryTestSuite, DeepSleepGatingAndPowerObserver) {
+    extern SbsBattery* smart_battery;
+    smart_battery = &battery;
+    
+    // 1. Run bms_comm_thread once to register the g_bmsPowerObserver
+    test_iterations_remaining = 1;
+    bms_comm_thread();
+
+    // 2. Trigger deep sleep (Covers beforeSleep())
+    PowerManager::getInstance().notifyBeforeSleep();
+    
+    // 3. Test threads in sleeping state (Covers false branches of !g_bmsPowerObserver.isSleeping())
+    test_iterations_remaining = 1;
+    testing::internal::CaptureStdout();
+    bms_comm_thread();        // Should skip pollHardwareAndUpdateCache
+    battery_monitor_thread(); // Should skip processFSM
+    const auto raw_out = testing::internal::GetCapturedStdout();
+    std::string_view out(raw_out);
+    EXPECT_TRUE(out.empty()); // No logs mean they successfully bypassed execution
+    
+    // 4. Test cache.valid = true branch inside notifySystemWakeup (Covers afterWakeup())
+    battery.cache.valid = true;
+    PowerManager::getInstance().notifyAfterWakeup();
+    
+    // 5. Test cache.valid = false branch inside notifySystemWakeup
+    PowerManager::getInstance().notifyBeforeSleep();
+    battery.cache.valid = false;
+    PowerManager::getInstance().notifyAfterWakeup();
+    
+    // 6. Test sleep aborted sequence (Covers sleepAborted())
+    PowerManager::getInstance().notifyBeforeSleep();
+    PowerManager::getInstance().notifySleepAborted();
+    
+    // 7. Test when smart_battery is null during wakeup (Covers false branch inside afterWakeup)
+    PowerManager::getInstance().notifyBeforeSleep();
+    smart_battery = nullptr;
+    PowerManager::getInstance().notifyAfterWakeup(); // Validates no segfaults
+}
+
+TEST_F(SmartBatteryTestSuite, Thread_BmsComm_SafeHalt) {
+    extern SbsBattery* smart_battery;
+    smart_battery = &battery;
+    
+    // Set SAFE_HALT state
+    sys_context.current_state = SystemState::SAFE_HALT;
+    
+    // Should skip pollHardwareAndUpdateCache (hitting the false branch of != SAFE_HALT)
+    test_iterations_remaining = 1;
+    bms_comm_thread();
+    
+    // Restore state for hygiene
+    sys_context.current_state = SystemState::RUNNING;
+}
