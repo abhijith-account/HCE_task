@@ -23,14 +23,14 @@ if(QEMU_RUNTIME_PROBE)
     )
 
     target_sources(app PRIVATE
-        src/qemu_stubs/QEMU_Startup_Probe.c
-        src/qemu_stubs/Device_State_Machine_QEMU_Stub.cpp
-        src/qemu_stubs/Persistent_Configuration_System_QEMU_Stub.cpp
-        src/qemu_stubs/Power_Management_System_QEMU_Stub.cpp
-        src/qemu_stubs/Smart_Battery_System_QEMU_Stub.cpp
-        src/qemu_stubs/USB_CDC_Virtual_COM_Shell_Interface_QEMU_Stub.cpp
-        src/qemu_stubs/Fault_Tolerant_I2C_Communication_Layer_QEMU_Stub.cpp
-        src/qemu_stubs/Static_Memory_QEMU_Stub.cpp
+        qemu_stubs/QEMU_Startup_Probe.c
+        qemu_stubs/Device_State_Machine_QEMU_Stub.cpp
+        qemu_stubs/Persistent_Configuration_System_QEMU_Stub.cpp
+        qemu_stubs/Power_Management_System_QEMU_Stub.cpp
+        qemu_stubs/Smart_Battery_System_QEMU_Stub.cpp
+        qemu_stubs/USB_CDC_Virtual_COM_Shell_Interface_QEMU_Stub.cpp
+        qemu_stubs/Fault_Tolerant_I2C_Communication_Layer_QEMU_Stub.cpp
+        qemu_stubs/Static_Memory_QEMU_Stub.cpp
     )
 else()
     target_sources(app PRIVATE
