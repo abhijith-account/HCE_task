@@ -545,4 +545,4 @@ void logger_thread(void) {
 
 K_THREAD_DEFINE(producer_tid,  ThreadConfig::StackSmall, producer_thread,  NULL, NULL, NULL, ThreadConfig::PrioProducer,  0, 0);
 K_THREAD_DEFINE(processor_tid, ThreadConfig::StackLarge, processor_thread, NULL, NULL, NULL, ThreadConfig::PrioProcessor, 0, 0);
-K_THREAD_DEFINE(logger_tid,    ThreadConfig::StackSmall, logger_thread,    NULL, NULL, NULL, ThreadConfig::PrioLogger,    0, 0);
+K_THREAD_DEFINE(logger_tid,    ThreadConfig::StackLarge, logger_thread,    NULL, NULL, NULL, ThreadConfig::PrioLogger,    0, 0);
