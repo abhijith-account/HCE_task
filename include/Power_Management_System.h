@@ -19,7 +19,8 @@ public:
     virtual IPowerState& execute(PowerManager& pm) = 0;
     virtual void exit(PowerManager& pm) = 0;
     virtual const char* getName() const = 0;
-    virtual ~IPowerState() = default;
+protected:
+    ~IPowerState() = default;
 };
 
 // ---------------------------------------------------------
