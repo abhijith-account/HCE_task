@@ -156,6 +156,7 @@ public:
 // ---------------------------------------------------------
 class ActiveState : public IPowerState {
 public:
+    constexpr ActiveState() = default; 
     bool enter(PowerManager& pm) override;
     IPowerState& execute(PowerManager& pm) override;
     void exit(PowerManager& pm) override;
@@ -165,6 +166,7 @@ public:
 
 class IdleState : public IPowerState {
 public:
+    constexpr IdleState() = default;   // ADD THIS LINE
     bool enter(PowerManager& pm) override;
     IPowerState& execute(PowerManager& pm) override;
     void exit(PowerManager& pm) override;
@@ -180,6 +182,7 @@ private:
     bool sleep_prepared = false;
 
 public:
+    constexpr StopState() : sleep_prepared(false) {}   // ADD THIS LINE
     bool enter(PowerManager& pm) override;
     IPowerState& execute(PowerManager& pm) override;
     void exit(PowerManager& pm) override;

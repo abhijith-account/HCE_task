@@ -258,7 +258,7 @@ void PowerManager::resetForTest() {
 
 // --- ACTIVE STATE ---
 ActiveState& ActiveState::getInstance() {
-    static ActiveState instance;
+    static constinit ActiveState instance; 
     return instance;
 }
 bool ActiveState::enter(PowerManager& /*pm*/) { return true; }
@@ -273,7 +273,7 @@ void ActiveState::exit(PowerManager& /*pm*/) {}
 
 // --- IDLE STATE ---
 IdleState& IdleState::getInstance() {
-    static IdleState instance;
+    static constinit IdleState instance;
     return instance;
 }
 #ifdef IS_TEST_ENVIRONMENT
@@ -299,7 +299,7 @@ void IdleState::exit(PowerManager& /*pm*/) {}
 
 // --- STOP STATE ---
 StopState& StopState::getInstance() {
-    static StopState instance;
+    static constinit StopState instance;
     return instance;
 }
 
