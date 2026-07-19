@@ -40,3 +40,33 @@ void DeviceContext::triggerFault(const char* /* reason */)
 {
     current_state = SystemState::SAFE_HALT;
 }
+
+bool WatchdogTimer::isInitialized() const
+{
+    return true;
+}
+
+bool DeviceContext::initWatchdog(uint32_t timeout_ms)
+{
+    return wdt.init(timeout_ms);
+}
+
+void DeviceContext::feedWatchdog()
+{
+    wdt.feed();
+}
+
+void DeviceContext::beforeSleep()
+{
+    wdt.feed();
+}
+
+void DeviceContext::afterWakeup()
+{
+    wdt.feed();
+}
+
+void DeviceContext::sleepAborted()
+{
+    wdt.feed();
+}
