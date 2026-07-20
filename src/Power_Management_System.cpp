@@ -21,8 +21,8 @@ constexpr uint32_t STOP_WAKEUP_US    = 60000000;
 constexpr uint32_t THREAD_PERIOD_MS  = 1000;
 
 extern const struct device* i2c_hardware;
-extern const struct device* uart_hardware;
-extern const struct device* usb_hardware;
+extern const struct device* const uart_hardware;
+extern const struct device* const usb_hardware;
 extern DeviceContext sys_context;
 
 // Mock the RTC hardware pointer injection for tests to avoid DEVICE_DT_GET null resolution
@@ -48,7 +48,7 @@ extern DeviceContext sys_context;
     // physical UART the BMS is meant to use before relying on this to
     // gate BMS communication across sleep.
     const struct device* const uart_hardware = DEVICE_DT_GET(DT_NODELABEL(usart2));
-    const struct device* const usb_hardware = DEVICE_DT_GET(DT_NODELABEL(usbotg_fs));
+    const struct device* const usb_hardware = DEVICE_DT_GET(DT_NODELABEL(cdc_acm_uart0));
 #endif
 
 // ---------------------------------------------------------
