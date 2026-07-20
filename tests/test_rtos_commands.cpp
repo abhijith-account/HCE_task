@@ -694,3 +694,52 @@ TEST_F(RTOSCommandsTestSuite, PowerObserverIntegration) {
     producer_thread();
     EXPECT_GT(g_queueStats.commandsCreated, 0u) << "Producer should resume logic after sleep aborted";
 }
+
+// -----------------------------------------------------------------------
+// COVERAGE ADDITIONS: Trace Hooks & Short-Circuit Evaluations
+// -----------------------------------------------------------------------
+
+extern "C" void sys_trace_thread_switched_in_user(struct k_thread *thread);
+extern "C" void sys_trace_thread_switched_out_user(struct k_thread *thread);
+
+TEST_F(RTOSCommandsTestSuite, TraceHooksSwitchInAndOut) {
+    testing::internal::CaptureStdout();
+
+    // 1. True Branches: Target threads your hooks explicitly check for
+    sys_trace_thread_switched_in_user((struct k_thread*)producer_tid);
+    sys_trace_thread_switched_in_user((struct k_thread*)processor_tid);
+    sys_trace_thread_switched_in_user((struct k_thread*)logger_tid);
+
+    sys_trace_thread_switched_out_user((struct k_thread*)producer_tid);
+    sys_trace_thread_switched_out_user((struct k_thread*)processor_tid);
+    sys_trace_thread_switched_out_user((struct k_thread*)logger_tid);
+
+    // 2. False Branches: An untracked thread (e.g., the Zephyr idle thread)
+    // We cast a dummy address to a pointer because struct k_thread is an incomplete type here.
+    struct k_thread* dummy_thread_ptr = reinterpret_cast<struct k_thread*>(0xDEADBEEF);
+    sys_trace_thread_switched_in_user(dummy_thread_ptr);
+    sys_trace_thread_switched_out_user(dummy_thread_ptr);
+
+    const auto raw_output = testing::internal::GetCapturedStdout();
+    std::string_view output(raw_output);
+
+    // Verify logging triggers on correct branches
+    EXPECT_NE(output.find("switched IN"), std::string_view::npos);
+    EXPECT_NE(output.find("switched OUT"), std::string_view::npos);
+}
+
+TEST_F(RTOSCommandsTestSuite, ProducerThreadLPSFirstEnqueueFails) {
+    // Leave exactly 1 slot free in the queue.
+    for (int i = 0; i < QueueConfig::Depth - 1; i++) {
+        EXPECT_TRUE(enqueueCommand<PreemptionTestCmd>(PROCESSOR_Q, i));
+    }
+    
+    // Cycle 1: ReadBME consumes the 1 remaining slot.
+    // Cycle 2: ReadLPS starts with 0 slots free. enq1 fails, short-circuiting enq2.
+    test_iterations_remaining = 2;
+    producer_thread();
+    
+    // Ensure the queue is entirely full and we successfully hit the command drop branch
+    EXPECT_EQ(k_msgq_num_free_get(PROCESSOR_Q), 0);
+    EXPECT_GT(g_queueStats.commandsDropped, 0u);
+}
