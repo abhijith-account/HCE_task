@@ -21,8 +21,8 @@ constexpr uint32_t STOP_WAKEUP_US    = 60000000;
 constexpr uint32_t THREAD_PERIOD_MS  = 1000;
 
 extern const struct device* i2c_hardware;
-extern const struct device* const uart_hardware;
-extern const struct device* const usb_hardware;
+extern const struct device* uart_hardware;
+extern const struct device* usb_hardware;
 extern DeviceContext sys_context;
 
 // Mock the RTC hardware pointer injection for tests to avoid DEVICE_DT_GET null resolution
@@ -33,12 +33,12 @@ extern DeviceContext sys_context;
     __attribute__((weak)) const struct device* uart_hardware = nullptr;
     __attribute__((weak)) const struct device* usb_hardware = nullptr;
 #else
-    const struct device* const rtc_hardware = DEVICE_DT_GET(DT_NODELABEL(rtc));
-    const struct device* const uart_hardware = DEVICE_DT_GET(DT_CHOSEN(zephyr_console));
+    const struct device* rtc_hardware = DEVICE_DT_GET(DT_NODELABEL(rtc));
+    const struct device* uart_hardware = DEVICE_DT_GET(DT_CHOSEN(zephyr_console));
     #ifndef CONFIG_BOARD_QEMU_CORTEX_M3
-    const struct device* const usb_hardware = DEVICE_DT_GET(DT_NODELABEL(cdc_acm_uart0));
+    const struct device* usb_hardware = DEVICE_DT_GET(DT_NODELABEL(cdc_acm_uart0));
     #else
-    const struct device* const usb_hardware = nullptr;
+    const struct device* usb_hardware = nullptr;
     #endif
 #endif
 
