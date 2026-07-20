@@ -21,6 +21,8 @@ PowerManager::PowerManager()
       expected_wake_time(0),
       rtc_dev(nullptr),
       i2c_dev(nullptr),
+      uart_dev(nullptr),
+      usb_dev(nullptr),
       observer_count(0),
       fault_context(nullptr),
       consecutive_pm_failures(0)
@@ -35,14 +37,21 @@ PowerManager& PowerManager::getInstance() {
     return instance;
 }
 
-bool PowerManager::init(const struct device* rtc, const struct device* i2c, DeviceContext* fault_ctx)
+bool PowerManager::init(const struct device* rtc,
+                        const struct device* i2c,
+                        const struct device* uart,
+                        const struct device* usb,
+                        DeviceContext* fault_ctx)
 {
     rtc_dev = rtc;
     i2c_dev = i2c;
+    uart_dev = uart;
+    usb_dev  = usb;
+
     fault_context = fault_ctx;
     last_activity_time.store(k_uptime_get_32());
     current_state = &ActiveState::getInstance();
-    
+
     LOG_INF("QEMU PowerManager stub initialized.");
     return true;
 }
@@ -123,7 +132,7 @@ void StopState::resetForTest() {}
 // ---------------------------------------------------------
 void power_monitor_thread() {
     auto& pwr_manager = PowerManager::getInstance();
-    pwr_manager.init(nullptr, nullptr, nullptr);
+    pwr_manager.init(nullptr, nullptr, nullptr, nullptr);
     
     while (true) {
         k_msleep(1000);
