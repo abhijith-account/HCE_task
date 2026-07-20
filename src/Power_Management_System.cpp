@@ -37,6 +37,8 @@ extern DeviceContext sys_context;
     const struct device* const uart_hardware = DEVICE_DT_GET(DT_CHOSEN(zephyr_console));
     #ifndef CONFIG_BOARD_QEMU_CORTEX_M3
     const struct device* const usb_hardware = DEVICE_DT_GET(DT_NODELABEL(cdc_acm_uart0));
+    #else
+    const struct device* const usb_hardware = nullptr;
     #endif
 #endif
 
