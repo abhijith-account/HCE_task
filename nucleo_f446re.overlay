@@ -41,7 +41,7 @@
     wakeup-source;
 };
 
- {
+{
     cpus {
         cpu0: cpu@0 {
             cpu-power-states = <&stop0>;
