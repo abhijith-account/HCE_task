@@ -47,7 +47,7 @@ extern DeviceContext sys_context;
     // does not correspond to where that traffic lives. Reconcile which
     // physical UART the BMS is meant to use before relying on this to
     // gate BMS communication across sleep.
-    const struct device* const uart_hardware = DEVICE_DT_GET(DT_NODELABEL(usart2));
+    const struct device* const uart_hardware = DEVICE_DT_GET(DT_CHOSEN(zephyr_console));
     const struct device* const usb_hardware = DEVICE_DT_GET(DT_NODELABEL(cdc_acm_uart0));
 #endif
 
