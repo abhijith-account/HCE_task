@@ -483,30 +483,7 @@ void producer_thread(void) {
                 enqueued = enqueueCommand<SensorReadCmd>(PROCESSOR_Q, SensorReg::PAV_DESC.id, SensorReg::PAV_DESC.reg, SensorReg::PAV_DESC.len);
                 state = ProducerState::ReadBME;
             }
-              
-           // NOTE (behavior change): routine sensor sampling no longer counts
-           // as PowerManager "activity". Previously every successful enqueue
-           // called reportActivity(), which resets the 30s ACTIVE_TIMEOUT_MS
-           // clock every 500ms -- meaning it could never elapse while this
-           // thread kept sampling, making IDLE/STOP structurally unreachable
-           // no matter how correct PowerManager's own implementation is.
-           // This now matches heart_rate_producer_thread's existing pattern
-           // in RTOS_Synchronization_Layer.cpp, which never called
-           // reportActivity() for its own periodic reads either -- so this
-           // brings the two producer threads into agreement rather than
-           // introducing a new convention.
-           //
-           // ASSUMPTION THIS RELIES ON: sensor data going stale for up to
-           // STOP_WAKEUP_US (60s) between wakes is acceptable for this
-           // device's profile. The system now settles into STOP after ~35s
-           // with no operator/fault activity (CLI input, illegal state
-           // transitions, and triggerFault() all still call reportActivity()
-           // elsewhere), and this thread naturally pauses via the
-           // isSleeping() guard above until the next RTC wake or external
-           // event. If continuous, uninterrupted sampling is actually a hard
-           // requirement for this device, this is the wrong fix -- STOP would
-           // need a different reachability condition entirely (e.g. a
-           // duty-cycled sampling contract), not just restoring this call.
+             
            (void)enqueued;
        }  
        k_msleep(500); 
@@ -525,6 +502,11 @@ void processor_thread(void) {
     ICommand* incoming_cmd;
     do {
         if (k_msgq_get(PROCESSOR_Q, &incoming_cmd, K_SECONDS(2)) == 0) {
+            // Time between when this command was queued and when the
+            // processor thread was actually scheduled to pick it up --
+            // i.e. how long dispatch was held off by pre-emption.
+            LOG_INF("[%s] #%u: waited %u cycles before dispatch (pre-emption delay)",
+                    LogTags::COMPUTE, incoming_cmd->command_id, incoming_cmd->queueDelay());
             incoming_cmd->execute();
             incoming_cmd->destroy();
         } else {
@@ -537,6 +519,8 @@ void logger_thread(void) {
     ICommand* incoming_cmd;
     do {
         if (k_msgq_get(LOGGER_Q, &incoming_cmd, K_SECONDS(2)) == 0) {
+            LOG_INF("[%s] #%u: waited %u cycles before dispatch (pre-emption delay)",
+                    LogTags::PRINT, incoming_cmd->command_id, incoming_cmd->queueDelay());
             incoming_cmd->execute();
             incoming_cmd->destroy();
         }
@@ -546,3 +530,15 @@ void logger_thread(void) {
 K_THREAD_DEFINE(producer_tid,  ThreadConfig::StackSmall, producer_thread,  NULL, NULL, NULL, ThreadConfig::PrioProducer,  0, 0);
 K_THREAD_DEFINE(processor_tid, ThreadConfig::StackLarge, processor_thread, NULL, NULL, NULL, ThreadConfig::PrioProcessor, 0, 0);
 K_THREAD_DEFINE(logger_tid,    ThreadConfig::StackLarge, logger_thread,    NULL, NULL, NULL, ThreadConfig::PrioLogger,    0, 0);
+
+extern "C" void sys_trace_thread_switched_in_user(struct k_thread *thread) {
+    if (thread == producer_tid || thread == processor_tid || thread == logger_tid) {
+        LOG_INF("PREEMPT: tid=%p switched IN  @ %u cycles", (void*)thread, k_cycle_get_32());
+    }
+}
+
+extern "C" void sys_trace_thread_switched_out_user(struct k_thread *thread) {
+    if (thread == producer_tid || thread == processor_tid || thread == logger_tid) {
+        LOG_INF("PREEMPT: tid=%p switched OUT @ %u cycles", (void*)thread, k_cycle_get_32());
+    }
+}

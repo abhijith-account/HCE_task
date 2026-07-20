@@ -12,8 +12,6 @@ gcovr \
     --root . \
     --object-directory tests/build \
     --filter src/ \
-    --exclude-unreachable-branches \
-    --exclude-throw-branches \
     --html-details coverage_report/index.html \
     --txt coverage_report/coverage.txt \
     --txt-metric branch \
@@ -26,8 +24,6 @@ gcovr \
     --root . \
     --object-directory tests/build \
     --filter src/ \
-    --exclude-unreachable-branches \
-    --exclude-throw-branches \
     --txt \
     --txt-metric line \
     | grep -A1000 "Missing" || true
@@ -39,8 +35,6 @@ gcovr \
     --root . \
     --object-directory tests/build \
     --filter src/ \
-    --exclude-unreachable-branches \
-    --exclude-throw-branches \
     --txt \
     --txt-metric branch \
     | grep -A1000 "Missing" || true
@@ -52,8 +46,6 @@ gcovr \
     --root . \
     --object-directory tests/build \
     --filter src/ \
-    --exclude-unreachable-branches \
-    --exclude-throw-branches \
     --fail-under-line 100 \
     --fail-under-branch 100
 
