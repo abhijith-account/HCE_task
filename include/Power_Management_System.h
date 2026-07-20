@@ -51,6 +51,8 @@ private:
 
     const struct device* rtc_dev;
     const struct device* i2c_dev;
+    const struct device* uart_dev;
+    const struct device* usb_dev;
 
     static constexpr size_t MAX_OBSERVERS = 8;
     std::array<IPowerObserver*, MAX_OBSERVERS> observers{};
@@ -106,7 +108,9 @@ public:
     PowerManager& operator=(const PowerManager&) = delete;
     static PowerManager& getInstance();
 
-    bool init(const struct device* rtc, const struct device* i2c, DeviceContext* fault_ctx = nullptr);
+    bool init(const struct device* rtc, const struct device* i2c,
+              const struct device* uart, const struct device* usb,
+              DeviceContext* fault_ctx = nullptr);
 
     void reportActivity();
     void processFSM();
@@ -132,6 +136,8 @@ public:
     uint32_t getLastActivityTime() const { return last_activity_time.load(); }
     const struct device* getRtcDev() const { return rtc_dev; }
     const struct device* getI2cDev() const { return i2c_dev; }
+    const struct device* getUartDev() const { return uart_dev; }
+    const struct device* getUsbDev() const { return usb_dev; }
 
     void recordSleepTime() { last_sleep_time = k_uptime_get_32(); }
     uint32_t getSleepTime() const { return last_sleep_time; }

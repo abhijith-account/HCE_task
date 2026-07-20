@@ -21,6 +21,8 @@ constexpr uint32_t STOP_WAKEUP_US    = 60000000;
 constexpr uint32_t THREAD_PERIOD_MS  = 1000;
 
 extern const struct device* i2c_hardware;
+extern const struct device* uart_hardware;
+extern const struct device* usb_hardware;
 extern DeviceContext sys_context;
 
 // Mock the RTC hardware pointer injection for tests to avoid DEVICE_DT_GET null resolution
@@ -28,8 +30,25 @@ extern DeviceContext sys_context;
     // Using a weak symbol prevents undefined reference errors in other test suites 
     // (like test_usb_shell) that link this file but don't define their own mock.
     __attribute__((weak)) const struct device* rtc_hardware = nullptr;
+    __attribute__((weak)) const struct device* uart_hardware = nullptr;
+    __attribute__((weak)) const struct device* usb_hardware = nullptr;
 #else
     const struct device* const rtc_hardware = DEVICE_DT_GET(DT_NODELABEL(rtc));
+
+    // NOTE: bound directly to the usart2/usbotg_fs devicetree nodes (the
+    // physical BMS UART and USB CDC controller from the board overlay) --
+    // this is a deliberately separate device handle from whatever
+    // Smart_Battery_System.cpp's file-local `uart_hardware` currently
+    // resolves to for UARTManager's traffic (at time of writing, that one
+    // is bound to DT_CHOSEN(zephyr_console) instead of usart2). Suspending
+    // this handle during STOP suspends the usart2 peripheral itself
+    // regardless of what any other subsystem thinks it's talking to; if
+    // BMS traffic is not actually flowing over usart2, this suspend/resume
+    // does not correspond to where that traffic lives. Reconcile which
+    // physical UART the BMS is meant to use before relying on this to
+    // gate BMS communication across sleep.
+    const struct device* const uart_hardware = DEVICE_DT_GET(DT_NODELABEL(usart2));
+    const struct device* const usb_hardware = DEVICE_DT_GET(DT_NODELABEL(usbotg_fs));
 #endif
 
 // ---------------------------------------------------------
@@ -41,6 +60,8 @@ PowerManager::PowerManager()
       expected_wake_time(0),
       rtc_dev(nullptr),
       i2c_dev(nullptr),
+      uart_dev(nullptr),
+      usb_dev(nullptr),
       observer_count(0),
       fault_context(nullptr),
       consecutive_pm_failures(0)
@@ -55,9 +76,13 @@ PowerManager& PowerManager::getInstance() {
     return instance;
 }
 
-bool PowerManager::init(const struct device* rtc, const struct device* i2c, DeviceContext* fault_ctx) {
+bool PowerManager::init(const struct device* rtc, const struct device* i2c,
+                         const struct device* uart, const struct device* usb,
+                         DeviceContext* fault_ctx) {
     rtc_dev = rtc;
     i2c_dev = i2c;
+    uart_dev = uart;
+    usb_dev = usb;
     fault_context = fault_ctx;
     last_activity_time.store(k_uptime_get_32());
 
@@ -67,6 +92,14 @@ bool PowerManager::init(const struct device* rtc, const struct device* i2c, Devi
     }
     if (!i2c_dev || !device_is_ready(i2c_dev)) {
         LOG_ERR("I2C device not ready");
+        return false;
+    }
+    if (!uart_dev || !device_is_ready(uart_dev)) {
+        LOG_ERR("UART device not ready");
+        return false;
+    }
+    if (!usb_dev || !device_is_ready(usb_dev)) {
+        LOG_ERR("USB device not ready");
         return false;
     }
 
@@ -347,6 +380,31 @@ bool StopState::enter(PowerManager& pm) {
         return false;
     }
 
+    // Suspended in I2C -> UART -> USB order; on failure, roll back only the
+    // peripherals that were already suspended by this same call (in reverse)
+    // before aborting, so a partial STOP entry never leaves hardware in a
+    // half-suspended state.
+    err = pm_device_action_run(pm.getUartDev(), PM_DEVICE_ACTION_SUSPEND);
+    if (err && err != -EALREADY) {
+        LOG_ERR("Failed to suspend UART peripheral (err: %d). Rolling back.", err);
+        (void)pm_device_action_run(pm.getI2cDev(), PM_DEVICE_ACTION_RESUME);
+        (void)counter_cancel_channel_alarm(pm.getRtcDev(), 0);
+        pm.notifySleepAborted();
+        pm.reportPmFailure();
+        return false;
+    }
+
+    err = pm_device_action_run(pm.getUsbDev(), PM_DEVICE_ACTION_SUSPEND);
+    if (err && err != -EALREADY) {
+        LOG_ERR("Failed to suspend USB peripheral (err: %d). Rolling back.", err);
+        (void)pm_device_action_run(pm.getUartDev(), PM_DEVICE_ACTION_RESUME);
+        (void)pm_device_action_run(pm.getI2cDev(), PM_DEVICE_ACTION_RESUME);
+        (void)counter_cancel_channel_alarm(pm.getRtcDev(), 0);
+        pm.notifySleepAborted();
+        pm.reportPmFailure();
+        return false;
+    }
+
     sleep_prepared = true;
     pm_policy_state_lock_put(PM_STATE_SUSPEND_TO_RAM, PM_ALL_SUBSTATES);
     return true;
@@ -378,12 +436,36 @@ void StopState::exit(PowerManager& pm) {
         LOG_INF("System Awoken Early (External Preemption).");
     }
 
+    // Resumed in the reverse of suspend order (USB -> UART -> I2C). Each
+    // resume is attempted regardless of whether an earlier one failed --
+    // partial resume-on-error would leave working peripherals stuck
+    // suspended for no reason -- and the overall success/failure across all
+    // three is what drives reportPmFailure()/resetPmFailures(), matching the
+    // single-failure-counter contract documented on those methods.
+    bool resume_ok = true;
+
+    err = pm_device_action_run(pm.getUsbDev(), PM_DEVICE_ACTION_RESUME);
+    if (err && err != -EALREADY) {
+        LOG_ERR("Failed to resume USB (err: %d)", err);
+        resume_ok = false;
+    }
+
+    err = pm_device_action_run(pm.getUartDev(), PM_DEVICE_ACTION_RESUME);
+    if (err && err != -EALREADY) {
+        LOG_ERR("Failed to resume UART (err: %d)", err);
+        resume_ok = false;
+    }
+
     err = pm_device_action_run(pm.getI2cDev(), PM_DEVICE_ACTION_RESUME);
     if (err && err != -EALREADY) {
         LOG_ERR("Failed to resume I2C (err: %d)", err);
-        pm.reportPmFailure();
-    } else {
+        resume_ok = false;
+    }
+
+    if (resume_ok) {
         pm.resetPmFailures();
+    } else {
+        pm.reportPmFailure();
     }
 
     pm.notifyAfterWakeup();
@@ -395,7 +477,7 @@ void StopState::exit(PowerManager& pm) {
 // ---------------------------------------------------------
 void power_monitor_thread() {
     auto& pwr_manager = PowerManager::getInstance();
-    if (!pwr_manager.init(rtc_hardware, i2c_hardware, &sys_context)) {
+    if (!pwr_manager.init(rtc_hardware, i2c_hardware, uart_hardware, usb_hardware, &sys_context)) {
         LOG_ERR("Power Manager Init Failed. Thread halting.");
         return;
     }
