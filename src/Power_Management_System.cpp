@@ -34,21 +34,10 @@ extern DeviceContext sys_context;
     __attribute__((weak)) const struct device* usb_hardware = nullptr;
 #else
     const struct device* const rtc_hardware = DEVICE_DT_GET(DT_NODELABEL(rtc));
-
-    // NOTE: bound directly to the usart2/usbotg_fs devicetree nodes (the
-    // physical BMS UART and USB CDC controller from the board overlay) --
-    // this is a deliberately separate device handle from whatever
-    // Smart_Battery_System.cpp's file-local `uart_hardware` currently
-    // resolves to for UARTManager's traffic (at time of writing, that one
-    // is bound to DT_CHOSEN(zephyr_console) instead of usart2). Suspending
-    // this handle during STOP suspends the usart2 peripheral itself
-    // regardless of what any other subsystem thinks it's talking to; if
-    // BMS traffic is not actually flowing over usart2, this suspend/resume
-    // does not correspond to where that traffic lives. Reconcile which
-    // physical UART the BMS is meant to use before relying on this to
-    // gate BMS communication across sleep.
     const struct device* const uart_hardware = DEVICE_DT_GET(DT_CHOSEN(zephyr_console));
-    const struct device* const usb_hardware = DEVICE_DT_GET(DT_NODELABEL(cdc_acm_uart0));
+    #ifndef CONFIG_BOARD_QEMU_CORTEX_M3
+    const struct device *usb_hardware = DEVICE_DT_GET(DT_NODELABEL(cdc_acm_uart0));
+    #endif
 #endif
 
 // ---------------------------------------------------------
