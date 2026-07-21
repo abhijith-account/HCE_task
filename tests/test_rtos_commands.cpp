@@ -743,3 +743,18 @@ TEST_F(RTOSCommandsTestSuite, ProducerThreadLPSFirstEnqueueFails) {
     EXPECT_EQ(k_msgq_num_free_get(PROCESSOR_Q), 0);
     EXPECT_GT(g_queueStats.commandsDropped, 0u);
 }
+
+TEST_F(RTOSCommandsTestSuite, ProducerThreadBME280InitFirstWriteFailsSecondSucceeds) {
+    g_i2c_call_counter = 0;
+    g_i2c_fail_on_call_n = 1;      // fail CTRL_HUM write (res1), let CTRL_MEAS (res2) succeed
+    g_i2c_fail_on_call_errno = -110;
+
+    test_iterations_remaining = 1;
+    testing::internal::CaptureStdout();
+    producer_thread();
+    const auto raw_out = testing::internal::GetCapturedStdout();
+    std::string_view out(raw_out);
+
+    EXPECT_NE(out.find("Failed to initialize BME280"), std::string_view::npos);
+    g_i2c_fail_on_call_n = 0;
+}

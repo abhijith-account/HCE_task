@@ -194,31 +194,31 @@ target_link_libraries(run_sync_tests PRIVATE GTest::gtest_main pthread)
 target_link_libraries(run_command_tests PRIVATE GTest::gtest_main pthread)
 
 # Enable GCOV profiling flags for compilation and linking
-target_compile_options(run_pm_tests PRIVATE --coverage)
+target_compile_options(run_pm_tests PRIVATE --coverage -fno-exceptions -fno-unwind-tables -fno-asynchronous-unwind-tables)
 target_link_options(run_pm_tests PRIVATE --coverage)
 
 target_compile_options(run_usb_shell_tests PRIVATE --coverage -fno-builtin-snprintf -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0)
 target_link_options(run_usb_shell_tests PRIVATE --coverage -Wl,--wrap=snprintf)
 
-target_compile_options(run_battery_tests PRIVATE --coverage)
+target_compile_options(run_battery_tests PRIVATE --coverage -fno-exceptions -fno-unwind-tables -fno-asynchronous-unwind-tables)
 target_link_options(run_battery_tests PRIVATE --coverage)
 
-target_compile_options(run_static_memory_tests PRIVATE --coverage)
+target_compile_options(run_static_memory_tests PRIVATE --coverage -fno-exceptions -fno-unwind-tables -fno-asynchronous-unwind-tables)
 target_link_options(run_static_memory_tests PRIVATE --coverage)
 
-target_compile_options(run_config_tests PRIVATE --coverage)
+target_compile_options(run_config_tests PRIVATE --coverage -fno-exceptions -fno-unwind-tables -fno-asynchronous-unwind-tables)
 target_link_options(run_config_tests PRIVATE --coverage)
 
-target_compile_options(run_i2c_faults_tests PRIVATE --coverage)
+target_compile_options(run_i2c_faults_tests PRIVATE --coverage -fno-exceptions -fno-unwind-tables -fno-asynchronous-unwind-tables)
 target_link_options(run_i2c_faults_tests PRIVATE --coverage)
 
-target_compile_options(run_state_machine_tests PRIVATE --coverage)
+target_compile_options(run_state_machine_tests PRIVATE --coverage -fno-exceptions -fno-unwind-tables -fno-asynchronous-unwind-tables)
 target_link_options(run_state_machine_tests PRIVATE --coverage)
 
-target_compile_options(run_sync_tests PRIVATE --coverage)
+target_compile_options(run_sync_tests PRIVATE --coverage -fno-exceptions -fno-unwind-tables -fno-asynchronous-unwind-tables)
 target_link_options(run_sync_tests PRIVATE --coverage)
 
-target_compile_options(run_command_tests PRIVATE --coverage)
+target_compile_options(run_command_tests PRIVATE --coverage -fno-exceptions -fno-unwind-tables -fno-asynchronous-unwind-tables)
 target_link_options(run_command_tests PRIVATE --coverage)
 
 target_compile_definitions(run_static_memory_tests PRIVATE IS_TEST_ENVIRONMENT)
