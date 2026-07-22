@@ -10,9 +10,6 @@
 /* -------------------------------------------------------------------------- */
 
 extern DeviceContext device_context;
-
-extern UARTManager uart_bus_manager;
-
 extern SbsBattery smart_battery;
 
 UsbShell diag_shell(
@@ -63,7 +60,7 @@ bool UsbCdcFacade::readLine(CommandBuffer&) noexcept
 }
 
 /* -------------------------------------------------------------------------- */
-/* UsbShell                                                                    */
+/* UsbShell                                                                  */
 /* -------------------------------------------------------------------------- */
 
 const std::array<UsbShell::Command, UsbShell::CommandCount>

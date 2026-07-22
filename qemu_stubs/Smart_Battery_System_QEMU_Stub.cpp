@@ -12,8 +12,8 @@
 DeviceContext sys_context;
 DeviceContext& device_context = sys_context;
 
-// Mock I2C Manager for the test stub
-I2CManager i2c_bus_manager;
+// Mock I2C Manager for the test stub - pass nullptr to satisfy the constructor
+I2CManager i2c_bus_manager(nullptr);
 
 SbsBattery smart_battery(
     &i2c_bus_manager,
