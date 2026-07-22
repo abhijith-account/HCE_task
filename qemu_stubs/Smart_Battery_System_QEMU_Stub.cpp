@@ -34,6 +34,9 @@ I2CManager* getI2cBusManagerInstance()
     return &i2c_bus_manager;
 }
 
+namespace INA226 {
+    Driver::Driver(I2CManager* i2c_bus) : i2c(i2c_bus) {}
+}
 /*----------------------------------------------------------------------------
  * SbsBattery (Stub Implementation)
  *---------------------------------------------------------------------------*/
