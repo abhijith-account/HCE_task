@@ -20,6 +20,37 @@
         reg = <0x50>;
         status = "okay";
     };
+    ina226: ina226@40 {
+        compatible = "vnd,ina226";   
+        reg = <0x40>;
+        status = "okay";
+    };
+};
+
+&adc1 {
+    status = "okay";
+    #address-cells = <1>;
+    #size-cells = <0>;
+    pinctrl-names = "default";
+    st,adc-prescaler = <4>;
+    pinctrl-0 = <&adc1_in0_pa0>;
+    channel@0 {
+        reg = <0>;
+        zephyr,gain = "ADC_GAIN_1";
+        zephyr,reference = "ADC_REF_INTERNAL";
+        zephyr,acquisition-time = <ADC_ACQ_TIME_DEFAULT>;
+        zephyr,resolution = <12>;
+    };
+};
+
+/ {
+    zephyr_user: zephyr,user {
+        io-channels = <&adc1 0>;
+    };
+};
+
+&gpioa {
+    status = "okay";
 };
 
 &usart2 {

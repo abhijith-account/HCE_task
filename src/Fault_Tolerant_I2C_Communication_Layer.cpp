@@ -366,6 +366,15 @@ Result<uint16_t> I2CManager::readWord(uint16_t sensor_addr, uint8_t reg_addr) {
 #endif
 }
 
+Result<bool> I2CManager::writeWord(uint16_t sensor_addr, uint8_t reg_addr, uint16_t val) {
+    uint8_t high = static_cast<uint8_t>((val >> 8) & 0xFF);
+    uint8_t low  = static_cast<uint8_t>(val & 0xFF);
+
+    Result<bool> res1 = writeRegister(sensor_addr, reg_addr, high);
+    if (!res1.isOk()) return res1;
+    return writeRegister(sensor_addr, reg_addr + 1, low);
+}
+
 Result<uint32_t> I2CManager::read24Bit(uint16_t sensor_addr, uint8_t reg_addr) {
     uint32_t cache_key = (static_cast<uint32_t>(sensor_addr) << 8) | static_cast<uint32_t>(reg_addr); 
     

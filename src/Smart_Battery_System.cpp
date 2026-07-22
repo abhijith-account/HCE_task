@@ -1,15 +1,11 @@
-#include <zephyr/logging/log.h>
-#include <zephyr/kernel.h>
 #include "Smart_Battery_System.h"
-#include "Power_Management_System.h"
+#include <zephyr/logging/log.h>
 #include <zephyr/device.h>
+#include <zephyr/sys/byteorder.h>
 #include <array>
-#include <new>
-#include <cstdint>
 #include <algorithm>
 
 #ifdef IS_TEST_ENVIRONMENT
-    // Safely define the test variable here as a weak symbol to prevent linker errors across executables
     __attribute__((weak)) int test_iterations_remaining = 0;
     #define THREAD_LOOP_CONDITION (test_iterations_remaining > 0 ? (test_iterations_remaining--, true) : false)
 #else
@@ -17,393 +13,444 @@
 #endif
 
 extern DeviceContext sys_context;
+#ifndef IS_TEST_ENVIRONMENT
+extern I2CManager i2c_manager;
+#endif
+
 LOG_MODULE_REGISTER(BATTERY_SYS, LOG_LEVEL_INF);
 
 extern "C" void daly_watchdog_feed_hook(void) __attribute__((weak));
 
 #ifndef IS_TEST_ENVIRONMENT
 extern "C" void daly_watchdog_feed_hook(void) {
-    // This weak fallback is excluded during tests because the test 
-    // executable links against the strong symbol, making this dead code.
     return;
 }
 #endif
 
-namespace DalyProtocol {
+namespace {
+    // Pure fixed-point math for absolutes (removes <cmath> dependency)
+    template <typename T>
+    constexpr T absolute(T val) { return (val < 0) ? -val : val; }
 
-uint8_t calculateChecksum(std::span<const uint8_t> bytes) {
-    uint8_t sum = 0U;
-    for (uint8_t byte : bytes) {
-        sum = static_cast<uint8_t>(sum + byte);
+    CommFault mapI2CFault(I2CFault fault) {
+        switch (fault) {
+            case I2CFault::NONE:              return CommFault::NONE;
+            case I2CFault::NACK:              return CommFault::I2C_NACK;
+            case I2CFault::TIMEOUT:           return CommFault::I2C_TIMEOUT;
+            case I2CFault::BUS_BUSY:          return CommFault::I2C_BUS_BUSY;
+            case I2CFault::ARBITRATION_LOST:  return CommFault::I2C_ARBITRATION_LOST;
+            case I2CFault::DEVICE_NOT_READY:  return CommFault::DEVICE_NOT_READY;
+            default:                          return CommFault::I2C_NACK;
+        }
     }
-    return sum;
 }
 
-FrameBuffer buildRequest(DalyCommand cmd) {
-    FrameBuffer frame{};
-    frame[0U] = START_BYTE;
-    frame[1U] = HOST_ID;
-    frame[2U] = static_cast<uint8_t>(cmd);
-    frame[3U] = PAYLOAD_SIZE;
-    
-    for (size_t i = HEADER_SIZE; i < CHECKSUM_INDEX; ++i) {
-        frame[i] = 0U;
-    }
-    
-    frame[CHECKSUM_INDEX] = calculateChecksum(std::span<const uint8_t>(frame.data(), CHECKSUM_INDEX));
-    return frame;
-}
+// -----------------------------------------------------------------------------
+// Battery Chemistry Profiles (Fixed-Point Look-Up Tables)
+// -----------------------------------------------------------------------------
+namespace CurveFitting {
+    struct OcvPoint { uint16_t mv; uint8_t soc_pct; };
+    struct NtcPoint { int32_t mv; int16_t temp_tenths; };
 
-result<Frame> decodeResponse(std::span<const uint8_t, FRAME_SIZE> raw_frame, DalyCommand expected_cmd) {
-    if (raw_frame[0U] != START_BYTE) {
-        return result<Frame>::Err(CommFault::FRAME_ERROR);
-    }
-    
-    if ((raw_frame[1U] != BMS_ID) || (raw_frame[2U] != static_cast<uint8_t>(expected_cmd)) || (raw_frame[3U] != PAYLOAD_SIZE)) {
-        return result<Frame>::Err(CommFault::FRAME_ERROR);
-    }
-    
-    const uint8_t expected_checksum = calculateChecksum(std::span<const uint8_t>(raw_frame.data(), CHECKSUM_INDEX));
-    if (expected_checksum != raw_frame[CHECKSUM_INDEX]) {
-        return result<Frame>::Err(CommFault::CHECKSUM_ERROR);
-    }
-    
-    Frame decoded{};
-    decoded.command = expected_cmd;
-    
-    for (size_t i = 0U; i < PAYLOAD_SIZE; ++i) {
-        decoded.payload[i] = raw_frame[HEADER_SIZE + i];
-    }
-    
-    return result<Frame>::Ok(decoded);
-}
+    static constexpr OcvPoint OCV_LUT[] = {
+        { 8700, 0 },    { 9600, 5 },    { 10200, 10 },
+        { 10800, 25 },  { 11100, 40 },  { 11400, 60 },
+        { 11700, 75 },  { 12000, 85 },  { 12300, 95 },
+        { 12600, 100 }
+    };
 
-FrameParser::FrameParser(DalyCommand expected_cmd) : state(RxState::WAIT_START), frame{}, bytes_read(0U), expected_command(expected_cmd) {}
+    // Assumes an NTC-to-GND divider (see comment on NTC_LUT usage in the
+    // header): voltage falls as temperature rises. If your board wires the
+    // NTC on top instead, this table's mv column needs to be re-derived.
+    //
+    // Computed from the Beta equation at 5C steps (R_FIXED=10k, R0=10k @25C,
+    // Beta=3950, Vcc=3.3V -- the same constants implied by the original
+    // 8-point table, which this replaces for ~5x finer interpolation).
+    static constexpr NtcPoint NTC_LUT[] = {
+        { 3220, -400 }, { 3187, -350 }, { 3143, -300 }, { 3086, -250 },
+        { 3014, -200 }, { 2925, -150 }, { 2816, -100 }, { 2689,  -50 },
+        { 2543,    0 }, { 2381,   50 }, { 2206,  100 }, { 2023,  150 },
+        { 1836,  200 }, { 1650,  250 }, { 1470,  300 }, { 1301,  350 },
+        { 1143,  400 }, { 1000,  450 }, {  871,  500 }, {  757,  550 },
+        {  657,  600 }, {  570,  650 }, {  494,  700 }, {  428,  750 },
+        {  372,  800 }, {  323,  850 }, {  282,  900 }, {  246,  950 },
+        {  215, 1000 }, {  189, 1050 }, {  166, 1100 }, {  146, 1150 },
+        {  129, 1200 }, {  114, 1250 }
+    };
 
-bool FrameParser::validateHeader() const {
-    return (frame[1U] == BMS_ID) && 
-           (frame[2U] == static_cast<uint8_t>(expected_command)) && 
-           (frame[3U] == PAYLOAD_SIZE);
-}
-
-void FrameParser::restartFromStartByte() {
-    frame.fill(0U);
-    frame[0U] = START_BYTE;
-    bytes_read = 1U;
-    state = RxState::READ_HEADER;
-}
-
-void FrameParser::reset() {
-    frame.fill(0U);
-    bytes_read = 0U;
-    state = RxState::WAIT_START;
-}
-
-result<bool> FrameParser::pushByte(uint8_t byte, FrameBuffer& out_frame) {
-    switch (state) {
-        case RxState::WAIT_START:
-            if (byte == START_BYTE) {
-                frame[0U] = byte;
-                bytes_read = 1U;
-                state = RxState::READ_HEADER;
-            }
-            break;
+    template <size_t N>
+    uint8_t interpolateOcv(const OcvPoint (&lut)[N], uint16_t mv) {
+        if (mv <= lut[0].mv) return lut[0].soc_pct;
+        if (mv >= lut[N-1].mv) return lut[N-1].soc_pct;
         
-        case RxState::READ_HEADER:
-            if (byte == START_BYTE) {
-                restartFromStartByte();
-                break;
+        for (size_t i = 0; i < N - 1; ++i) {
+            if (mv >= lut[i].mv && mv <= lut[i+1].mv) {
+                uint32_t v_range = lut[i+1].mv - lut[i].mv;
+                uint32_t s_range = lut[i+1].soc_pct - lut[i].soc_pct;
+                uint32_t v_offset = mv - lut[i].mv;
+                return lut[i].soc_pct + static_cast<uint8_t>((v_offset * s_range) / v_range);
             }
-            
-            frame[bytes_read] = byte;
-            ++bytes_read;
-
-            if (bytes_read == HEADER_SIZE) {
-                if (validateHeader()) {
-                    state = RxState::READ_PAYLOAD;
-                } else {
-                    reset();
-                    return result<bool>::Err(CommFault::FRAME_ERROR);
-                }
-            }
-            break;
-    
-        case RxState::READ_PAYLOAD:
-            frame[bytes_read] = byte;
-            ++bytes_read;
-            
-            if (bytes_read == FRAME_SIZE) {
-                const auto decoded = decodeResponse(std::span<const uint8_t, FRAME_SIZE>(frame.data(), FRAME_SIZE), expected_command);
-                if (decoded.success) {
-                    out_frame = frame;
-                    reset();
-                    return result<bool>::Ok(true);
-                }
-                
-                const CommFault fault = decoded.error;
-                if (byte == START_BYTE) {
-                    restartFromStartByte();
-                } else {
-                    reset();
-                }
-                return result<bool>::Err(fault);
-            }
-            break;
-        
-        default:
-            reset();
-            return result<bool>::Err(CommFault::FRAME_ERROR);
+        }
+        return 0;
     }
-    
-    return result<bool>::Ok(false);
+
+    template <size_t N>
+    int16_t interpolateNtc(const NtcPoint (&lut)[N], int32_t mv) {
+        if (mv >= lut[0].mv) return lut[0].temp_tenths;
+        if (mv <= lut[N-1].mv) return lut[N-1].temp_tenths;
+        
+        for (size_t i = 0; i < N - 1; ++i) {
+            if (mv <= lut[i].mv && mv >= lut[i+1].mv) {
+                int32_t v_range = lut[i].mv - lut[i+1].mv;
+                int32_t t_range = lut[i+1].temp_tenths - lut[i].temp_tenths;
+                int32_t v_offset = lut[i].mv - mv;
+                return lut[i].temp_tenths + static_cast<int16_t>((v_offset * t_range) / v_range);
+            }
+        }
+        return 250;
+    }
 }
 
-} // namespace DalyProtocol
+// -----------------------------------------------------------------------------
+// Thermistor Sensor Implementation
+// -----------------------------------------------------------------------------
+namespace Thermistor {
 
-UARTManager::UARTManager(const device* dev) : uart_dev(dev), uart_mutex{}, rx_msgq{}, rx_msgq_buffer{}, tx_buf{}, tx_idx(0), hw_fault(0), stats{}, initialized(false) {
-    k_mutex_init(&uart_mutex);
-    k_msgq_init(&rx_msgq, rx_msgq_buffer.data(), sizeof(uint8_t), rx_msgq_buffer.size());
-    atomic_set(&hw_fault, faultToAtomic(CommFault::NONE));
-}
+#ifdef CONFIG_BOARD_QEMU_CORTEX_M3
+bool init() { return true; }
+Reading<int16_t> readCelsius() { return Reading<int16_t>::Ok(250); }
+#else
 
-bool UARTManager::init() {
-    if (!device_is_ready(uart_dev)) {
+const struct adc_dt_spec thermistor_adc_chan =
+    ADC_DT_SPEC_GET_BY_IDX(DT_NODELABEL(zephyr_user), 0);
+
+bool init() {
+    if (!adc_is_ready_dt(&thermistor_adc_chan)) {
+        LOG_ERR("Thermistor ADC channel not ready");
         return false;
     }
-    
-    k_mutex_lock(&uart_mutex, K_FOREVER);
-    
-    if (!initialized) {
-        uart_irq_callback_user_data_set(uart_dev, uart_isr, this);
-        uart_irq_rx_enable(uart_dev);
-        initialized = true;
-    }
-    
-    k_mutex_unlock(&uart_mutex);
-    return true;
+    return adc_channel_setup_dt(&thermistor_adc_chan) == 0;
 }
 
-atomic_val_t UARTManager::faultToAtomic(CommFault fault) {
-    return static_cast<atomic_val_t>(fault);
+Reading<int16_t> readCelsius() {
+    if (!adc_is_ready_dt(&thermistor_adc_chan)) return Reading<int16_t>::Err(Fault::ADC_NOT_READY);
+
+    int32_t sum_mv = 0;
+    for (uint8_t i = 0; i < OVERSAMPLE_COUNT; ++i) {
+        int16_t raw = 0;
+        struct adc_sequence sequence{};
+        sequence.buffer = &raw;
+        sequence.buffer_size = sizeof(raw);
+
+        if (adc_sequence_init_dt(&thermistor_adc_chan, &sequence) != 0 || 
+            adc_read(thermistor_adc_chan.dev, &sequence) != 0) {
+            return Reading<int16_t>::Err(Fault::ADC_READ_ERROR);
+        }
+
+        int32_t mv = raw;
+        if (adc_raw_to_millivolts_dt(&thermistor_adc_chan, &mv) != 0) return Reading<int16_t>::Err(Fault::ADC_READ_ERROR);
+        sum_mv += mv;
+    }
+
+    int32_t avg_mv = sum_mv / static_cast<int32_t>(OVERSAMPLE_COUNT);
+
+    if ((avg_mv <= 0) || (avg_mv >= SUPPLY_MILLIVOLTS)) return Reading<int16_t>::Err(Fault::OUT_OF_RANGE);
+    const int16_t celsius_tenths = CurveFitting::interpolateNtc(CurveFitting::NTC_LUT, avg_mv);
+
+    if ((celsius_tenths < (MIN_VALID_CELSIUS * 10)) || (celsius_tenths > (MAX_VALID_CELSIUS * 10))) {
+        return Reading<int16_t>::Err(Fault::OUT_OF_RANGE);
+    }
+    return Reading<int16_t>::Ok(celsius_tenths);
+}
+#endif 
+} // namespace Thermistor
+
+// -----------------------------------------------------------------------------
+// INA226 Driver Implementation
+// -----------------------------------------------------------------------------
+namespace INA226 {
+
+Driver::Driver(I2CManager* i2c) : i2c(i2c) {}
+
+bool Driver::init() {
+    if (i2c == nullptr) return false;
+    const Result<bool> cfg = i2c->writeWord(I2C_ADDR, REG_CONFIG, sys_cpu_to_be16(CONFIG_VALUE));
+    if (!cfg.isOk()) return false;
+    return i2c->writeWord(I2C_ADDR, REG_CALIBRATION, sys_cpu_to_be16(CALIBRATION_VALUE)).isOk();
 }
 
-CommFault UARTManager::atomicToFault(atomic_val_t fault) {
-    return static_cast<CommFault>(fault);
+Result<int16_t> Driver::readBusVoltageRaw() {
+    const Result<uint16_t> r = i2c->readWord(I2C_ADDR, REG_BUS_VOLT);
+    if (!r.isOk()) return Result<int16_t>::Err(r.error);
+    return Result<int16_t>::Ok(static_cast<int16_t>(sys_be16_to_cpu(r.unwrap())));
 }
 
-void UARTManager::recordRetry() {
-    atomic_inc(&stats.retries);
+Result<int16_t> Driver::readCurrentRaw() {
+    const Result<uint16_t> r = i2c->readWord(I2C_ADDR, REG_CURRENT);
+    if (!r.isOk()) return Result<int16_t>::Err(r.error);
+    return Result<int16_t>::Ok(static_cast<int16_t>(sys_be16_to_cpu(r.unwrap())));
 }
 
-CommStatistics UARTManager::getStatsSnapshot() const {
-    CommStatistics snapshot{};
-    
-    snapshot.tx_frames = static_cast<uint32_t>(atomic_get(&stats.tx_frames));
-    snapshot.rx_frames = static_cast<uint32_t>(atomic_get(&stats.rx_frames));
-    snapshot.crc_errors = static_cast<uint32_t>(atomic_get(&stats.crc_errors));
-    snapshot.frame_errors = static_cast<uint32_t>(atomic_get(&stats.frame_errors));
-    snapshot.overflows = static_cast<uint32_t>(atomic_get(&stats.overflows));
-    snapshot.retries = static_cast<uint32_t>(atomic_get(&stats.retries));
-    snapshot.timeouts = static_cast<uint32_t>(atomic_get(&stats.timeouts));
-    
-    return snapshot;
-}    
+} // namespace INA226
 
-void UARTManager::uart_isr(const struct device *dev, void *user_data) {
-    UARTManager* const manager = static_cast<UARTManager*>(user_data);
-    
-    uart_irq_update(dev);
-    
-    const int err = uart_err_check(dev);
-    if (err != 0) {
-        if ((err & UART_ERROR_OVERRUN) != 0) {
-            atomic_set(&manager->hw_fault, faultToAtomic(CommFault::UART_OVERRUN));
-        } else if ((err & UART_ERROR_FRAMING) != 0) {
-            atomic_set(&manager->hw_fault, faultToAtomic(CommFault::FRAME_ERROR));
-        } else if ((err & UART_ERROR_NOISE) != 0) {
-            atomic_set(&manager->hw_fault, faultToAtomic(CommFault::UART_NOISE));       
-        } else if ((err & UART_ERROR_PARITY) != 0) {
-            atomic_set(&manager->hw_fault, faultToAtomic(CommFault::UART_PARITY));                
-        } else {
-            atomic_set(&manager->hw_fault, faultToAtomic(CommFault::FRAME_ERROR));
-        }
-    }
-    
-    if (uart_irq_tx_ready(dev)) {
-        const int remaining = static_cast<int>(DalyProtocol::FRAME_SIZE) - manager->tx_idx;
-        if (remaining > 0) {
-            const int written = uart_fifo_fill(dev, &manager->tx_buf[static_cast<size_t>(manager->tx_idx)], remaining);
-            manager->tx_idx += written;
-        }
-        
-        if (manager->tx_idx >= static_cast<int>(DalyProtocol::FRAME_SIZE)) {
-            uart_irq_tx_disable(dev);
-        }
-    }
-    
-    if (uart_irq_rx_ready(dev)) {
-        std::array<uint8_t, 16U> temp_buffer{};
-        const int len = uart_fifo_read(dev, temp_buffer.data(), static_cast<int>(temp_buffer.size()));
-        for (int i = 0; i < len; ++i) {
-            const uint8_t byte = temp_buffer[static_cast<size_t>(i)];
-            if (k_msgq_put(&manager->rx_msgq, &byte, K_NO_WAIT) != 0) {
-                atomic_set(&manager->hw_fault, faultToAtomic(CommFault::RX_OVERFLOW));
-                atomic_inc(&manager->stats.overflows);
-            }
-        }
-    }
-}
+// -----------------------------------------------------------------------------
+// Smart Battery System Implementation
+// -----------------------------------------------------------------------------
 
-result<bool> UARTManager::receiveFrame(DalyCommand cmd, DalyProtocol::FrameBuffer& rx_frame) {
-    DalyProtocol::FrameParser parser(cmd);
-    uint8_t rx_byte = 0U;
-      
-    while (true) {
-        if (k_msgq_get(&rx_msgq, &rx_byte, K_MSEC(DalyProtocol::RX_TIMEOUT_MS)) != 0) {
-            atomic_inc(&stats.timeouts);
-            const CommFault fault = atomicToFault(atomic_get(&hw_fault));
-            return (fault != CommFault::NONE) ? result<bool>::Err(fault) : result<bool>::Err(CommFault::RX_TIMEOUT);
-        }
-          
-        const result<bool> parser_result = parser.pushByte(rx_byte, rx_frame);
-        if (!parser_result.success) {
-            if (parser_result.error == CommFault::CHECKSUM_ERROR) {
-                atomic_inc(&stats.crc_errors);
-            } else {
-                atomic_inc(&stats.frame_errors);
-            }
-            continue;
-        }
-          
-        if (parser_result.value) {
-            return result<bool>::Ok(true);
-        }
-    }
-}
+SbsBattery::SbsBattery(I2CManager* i2c_bus, DeviceContext* context, WatchdogFeedHook hook)
+    : ina226(i2c_bus), sys_context(context), current_state(BatteryFSM::IDLE),
+      full_charge_logged(false), watchdog_feed_hook((hook != nullptr) ? hook : daly_watchdog_feed_hook),
+      cache_mutex{}, last_valid_comm_time(k_uptime_get_32()), consecutive_comm_failures(0U),
+      cache{}, stats{}, soc_initialized(false), accumulated_uAh(0), last_poll_time_ms(0U),
+      consecutive_jump_rejects(0U) {}
 
-result<bool> UARTManager::executeTransaction(DalyCommand cmd, DalyProtocol::Payload& payload_out) {
-    if (!initialized) {
-       return result<bool>::Err(CommFault::DEVICE_NOT_READY);
-    }
-
-    k_mutex_lock(&uart_mutex, K_FOREVER);
-
-    tx_buf = DalyProtocol::buildRequest(cmd);
-    tx_idx = 0;
-
-    uart_irq_rx_disable(uart_dev);
-    k_msgq_purge(&rx_msgq);
-    uart_irq_rx_enable(uart_dev);
-    
-    uart_irq_tx_enable(uart_dev);
-    atomic_inc(&stats.tx_frames);
-
-    DalyProtocol::FrameBuffer rx_frame{};
-    const result<bool> rx_result = receiveFrame(cmd, rx_frame);
-
-    uart_irq_tx_disable(uart_dev);
-
-    if (!rx_result.success) {
-        k_mutex_unlock(&uart_mutex);
-        return rx_result;
-    }
-    
-    // receiveFrame guarantees the frame is valid, correctly sized, and checksummed.
-    for (size_t i = 0U; i < DalyProtocol::PAYLOAD_SIZE; ++i) {
-        payload_out[i] = rx_frame[DalyProtocol::HEADER_SIZE + i];
-    }
-    atomic_inc(&stats.rx_frames);
-    
-    k_mutex_unlock(&uart_mutex);
-    return result<bool>::Ok(true);
-}
-
-SbsBattery::SbsBattery(UARTManager* bus, DeviceContext* context, WatchdogFeedHook hook)
-    : uart_bus(bus), sys_context(context), current_state(BatteryFSM::IDLE), cache_mutex{},
-      full_charge_logged(false), last_valid_comm_time(k_uptime_get_32()), consecutive_comm_failures(0U),
-      cache{}, watchdog_feed_hook(hook) {
+bool SbsBattery::init() {
     k_mutex_init(&cache_mutex);
-    if (watchdog_feed_hook == nullptr) {
-        watchdog_feed_hook = daly_watchdog_feed_hook;
-    }
+    const bool ina_ok = ina226.init();
+    if (!ina_ok) LOG_ERR("INA226 init failed");
+    const bool therm_ok = Thermistor::init();
+    if (!therm_ok) LOG_ERR("Thermistor ADC init failed");
+    return ina_ok && therm_ok;
 }
 
 void SbsBattery::setWatchdogFeedHook(WatchdogFeedHook hook) {
-    k_mutex_lock(&cache_mutex, K_FOREVER);
-    watchdog_feed_hook = (hook != nullptr) ? hook : daly_watchdog_feed_hook;
-    k_mutex_unlock(&cache_mutex);
+    watchdog_feed_hook.store((hook != nullptr) ? hook : daly_watchdog_feed_hook);
 }
 
 void SbsBattery::feedWatchdog() const {
-    watchdog_feed_hook();
+    WatchdogFeedHook hook = watchdog_feed_hook.load();
+    if (hook) hook();
 }
 
 void SbsBattery::notifySystemWakeup() {
-    k_mutex_lock(&cache_mutex, K_FOREVER);
-    const uint32_t now = k_uptime_get_32();
-    // Shift timestamps forward after sleeping so the watchdog doesn't mistakenly
-    // treat the deep sleep duration as a communication failure.
-    last_valid_comm_time = now;
-    if (cache.valid) {
-        cache.timestamp_ms = now; 
+    if (k_mutex_lock(&cache_mutex, K_NO_WAIT) == 0) {
+        const uint32_t now = k_uptime_get_32();
+        last_valid_comm_time = now;
+        last_poll_time_ms = now;
+        if (cache.valid) cache.timestamp_ms = now;
+        k_mutex_unlock(&cache_mutex);
+    } else {
+        LOG_WRN("Could not lock cache_mutex during system wakeup.");
     }
-    k_mutex_unlock(&cache_mutex);
 }
 
-result<bool> SbsBattery::fetchWithRetry(DalyCommand cmd, DalyProtocol::Payload& payload) {
-    result<bool> response = result<bool>::Err(CommFault::RX_TIMEOUT);
+result<int16_t> SbsBattery::fetchBusVoltageRawWithRetry() {
+    Result<int16_t> response = Result<int16_t>::Err(I2CFault::TIMEOUT);
     uint32_t backoff_ms = INITIAL_BACKOFF_MS;
-    
+
     for (uint32_t attempt = 0U; attempt <= MAX_RETRIES; ++attempt) {
         feedWatchdog();
-        
-        response = uart_bus->executeTransaction(cmd, payload);
-        if (response.success) {
-            return response;
+        response = ina226.readBusVoltageRaw();
+        if (response.isOk()) {
+            atomic_inc(&stats.reads);
+            return result<int16_t>::Ok(response.unwrap());
         }
-        
-        uart_bus->recordRetry();
-        
+        atomic_inc(&stats.retries);
         if (attempt < MAX_RETRIES) {
             k_msleep(backoff_ms);
             backoff_ms = (backoff_ms >= (MAX_BACKOFF_MS / 2U)) ? MAX_BACKOFF_MS : (backoff_ms * 2U);
         }
     }
-    
-    return response;
+    atomic_inc(&stats.i2c_faults);
+    return result<int16_t>::Err(mapI2CFault(response.error));
 }
 
-void SbsBattery::publishCache(const BmsCache& next_cache) {
-    k_mutex_lock(&cache_mutex, K_FOREVER);
-    cache = next_cache;
+result<int16_t> SbsBattery::fetchCurrentRawWithRetry() {
+    Result<int16_t> response = Result<int16_t>::Err(I2CFault::TIMEOUT);
+    uint32_t backoff_ms = INITIAL_BACKOFF_MS;
+
+    for (uint32_t attempt = 0U; attempt <= MAX_RETRIES; ++attempt) {
+        feedWatchdog();
+        response = ina226.readCurrentRaw();
+        if (response.isOk()) {
+            atomic_inc(&stats.reads);
+            return result<int16_t>::Ok(response.unwrap());
+        }
+        atomic_inc(&stats.retries);
+        if (attempt < MAX_RETRIES) {
+            k_msleep(backoff_ms);
+            backoff_ms = (backoff_ms >= (MAX_BACKOFF_MS / 2U)) ? MAX_BACKOFF_MS : (backoff_ms * 2U);
+        }
+    }
+    atomic_inc(&stats.i2c_faults);
+    return result<int16_t>::Err(mapI2CFault(response.error));
+}
+
+result<int16_t> SbsBattery::fetchTemperatureTenthsWithRetry() {
+    Thermistor::Reading<int16_t> response = Thermistor::Reading<int16_t>::Err(Thermistor::Fault::ADC_READ_ERROR);
+    uint32_t backoff_ms = INITIAL_BACKOFF_MS;
+
+    for (uint32_t attempt = 0U; attempt <= MAX_RETRIES; ++attempt) {
+        feedWatchdog();
+        response = Thermistor::readCelsius();
+        if (response.success) {
+            atomic_inc(&stats.reads);
+            return result<int16_t>::Ok(response.value);
+        }
+        atomic_inc(&stats.retries);
+        if (attempt < MAX_RETRIES) {
+            k_msleep(backoff_ms);
+            backoff_ms = (backoff_ms >= (MAX_BACKOFF_MS / 2U)) ? MAX_BACKOFF_MS : (backoff_ms * 2U);
+        }
+    }
+    atomic_inc(&stats.thermistor_faults);
+    return result<int16_t>::Err(CommFault::THERMISTOR_FAULT);
+}
+
+uint8_t SbsBattery::estimateSocFromVoltage(uint16_t pack_mv) const {
+    return CurveFitting::interpolateOcv(CurveFitting::OCV_LUT, pack_mv);
+}
+
+void SbsBattery::seedOrResyncCoulombCounter(uint16_t pack_mv, int32_t current_ma, bool force_seed) {
+    const bool at_rest = (current_ma > -BatteryLimits::REST_CURRENT_THRESHOLD_MA) &&
+                         (current_ma < BatteryLimits::REST_CURRENT_THRESHOLD_MA);
+                         
+    const bool full_charge = (pack_mv >= (BatteryLimits::PACK_MAX_VOLTAGE_MV - 100)) && at_rest;
+    const bool full_discharge = (pack_mv <= (BatteryLimits::PACK_MIN_VOLTAGE_MV + 100)) && at_rest;
+
+    if (force_seed || full_charge || full_discharge) {
+        const uint8_t ocv_soc_pct = estimateSocFromVoltage(pack_mv);
+        accumulated_uAh = (static_cast<int64_t>(ocv_soc_pct) * BatteryLimits::NOMINAL_CAPACITY_MAH * 1000LL) / 100LL;
+        soc_initialized = true;
+    }
+}
+
+void SbsBattery::updateStateAndPublish(uint16_t pack_mv, int32_t current_ma, int16_t temp_tenths) {
+    if (k_mutex_lock(&cache_mutex, K_MSEC(BatteryLimits::MUTEX_TIMEOUT_MS)) != 0) {
+        atomic_inc(&stats.validation_errors);
+        // Route through the standard fault-escalation path instead of just
+        // counting it -- repeated lock contention should count toward the
+        // comm-failure watchdog the same way an I2C fault would, otherwise a
+        // stuck cache_mutex could go unnoticed indefinitely.
+        publishError(CommFault::MUTEX_TIMEOUT);
+        return;
+    }
+
+    const uint32_t now = k_uptime_get_32();
+
+    if (!soc_initialized) {
+        seedOrResyncCoulombCounter(pack_mv, current_ma, true);
+        last_poll_time_ms = now;
+    } else {
+        const uint32_t delta_ms = now - last_poll_time_ms;
+        // uAh = mA * hours * 1000 = mA * ms / 3600 (see derivation in review notes)
+        const int64_t uAh_change = (static_cast<int64_t>(current_ma) * static_cast<int64_t>(delta_ms)) / 3600LL;
+        accumulated_uAh += uAh_change;
+        last_poll_time_ms = now;
+        seedOrResyncCoulombCounter(pack_mv, current_ma, false);
+    }
+
+    const int64_t max_uAh = static_cast<int64_t>(BatteryLimits::NOMINAL_CAPACITY_MAH) * 1000LL;
+    accumulated_uAh = std::clamp(accumulated_uAh, int64_t{0}, max_uAh);
+    const uint8_t soc_pct = static_cast<uint8_t>((accumulated_uAh * 100LL) / max_uAh);
+
+    cache.voltage = Millivolts{pack_mv};
+    cache.current = Milliamps{current_ma};
+    cache.soc = Percent{soc_pct};
+    cache.temperature = Kelvin{static_cast<uint16_t>(temp_tenths + Thermistor::KELVIN_OFFSET_TENTHS)};
+    cache.capacity = MilliAmpHours{static_cast<uint32_t>(accumulated_uAh / 1000LL)};
     cache.valid = true;
     cache.last_error = CommFault::NONE;
-    cache.timestamp_ms = k_uptime_get_32();
+    cache.timestamp_ms = now;
+
     consecutive_comm_failures = 0U;
-    last_valid_comm_time = cache.timestamp_ms;
+    last_valid_comm_time = now;
+
     k_mutex_unlock(&cache_mutex);
+}
+
+void SbsBattery::pollHardwareAndUpdateCache() {
+#ifdef CONFIG_BOARD_QEMU_CORTEX_M3
+    updateStateAndPublish(11100U, -150, 250);
+    feedWatchdog();
+    return;
+#else
+    const result<int16_t> voltage_raw = fetchBusVoltageRawWithRetry();
+    if (!voltage_raw.success) {
+        publishError(voltage_raw.error);
+        return;
+    }
+    
+    const uint32_t pack_mv_32 = static_cast<uint32_t>(voltage_raw.value) + (static_cast<uint32_t>(voltage_raw.value) / 4U);
+    if (pack_mv_32 > BatteryLimits::MAX_VALID_VOLTAGE_MV) {
+        atomic_inc(&stats.validation_errors);
+        publishError(CommFault::VALIDATION_ERROR);
+        return;
+    }
+    const uint16_t pack_mv = static_cast<uint16_t>(pack_mv_32);
+
+    const result<int16_t> current_raw = fetchCurrentRawWithRetry();
+    if (!current_raw.success) {
+        publishError(current_raw.error);
+        return;
+    }
+    
+    // current_ma = raw_codes * CURRENT_LSB[uA/code] / 1000
+    const int32_t current_ma = (static_cast<int32_t>(current_raw.value) * static_cast<int32_t>(INA226::CURRENT_LSB_UA)) / 1000;
+    if (absolute(current_ma) > BatteryLimits::MAX_VALID_CURRENT_MA) {
+        atomic_inc(&stats.validation_errors);
+        publishError(CommFault::VALIDATION_ERROR);
+        return;
+    }
+
+    // Rate of change validation against last valid snapshot
+    BmsCache snapshot = getCacheSnapshot();
+    if (snapshot.valid && snapshot.last_error == CommFault::NONE) {
+        const int32_t v_delta = absolute(static_cast<int32_t>(pack_mv) - static_cast<int32_t>(snapshot.voltage.value));
+        const int32_t c_delta = absolute(current_ma - snapshot.current.value);
+        
+        if (v_delta > BatteryLimits::MAX_VOLTAGE_DELTA_MV || c_delta > BatteryLimits::MAX_CURRENT_DELTA_MA) {
+            atomic_inc(&stats.validation_errors);
+            publishError(CommFault::VALIDATION_ERROR);
+            return;
+        }
+    }
+
+    const result<int16_t> temp_tenths = fetchTemperatureTenthsWithRetry();
+    if (!temp_tenths.success) {
+        publishError(temp_tenths.error);
+        return;
+    }
+
+    updateStateAndPublish(pack_mv, current_ma, temp_tenths.value);
+    feedWatchdog();
+#endif
 }
 
 void SbsBattery::publishError(CommFault fault) {
-    k_mutex_lock(&cache_mutex, K_FOREVER);
-    cache.valid = false;
-    cache.last_error = fault;
-    ++consecutive_comm_failures;
-    const bool watchdog_threshold_reached = consecutive_comm_failures >= WATCHDOG_FAILURE_THRESHOLD;
-    const bool timeout_reached = (k_uptime_get_32() - last_valid_comm_time) > COMM_TIMEOUT_MS;
-    k_mutex_unlock(&cache_mutex);
+    bool threshold_reached = false;
+    bool timeout_reached = false;
     
-    if ((watchdog_threshold_reached || timeout_reached) && (current_state != BatteryFSM::CUTOFF)) {
+    if (k_mutex_lock(&cache_mutex, K_MSEC(BatteryLimits::MUTEX_TIMEOUT_MS)) == 0) {
+        cache.valid = false;
+        cache.last_error = fault;
+        ++consecutive_comm_failures;
+        threshold_reached = (consecutive_comm_failures >= WATCHDOG_FAILURE_THRESHOLD);
+        timeout_reached = ((k_uptime_get_32() - last_valid_comm_time) > COMM_TIMEOUT_MS);
+        k_mutex_unlock(&cache_mutex);
+    } else {
+        // Assume failure if we encounter a deadlock during a hardware fault
+        threshold_reached = true; 
+    }
+
+    if ((threshold_reached || timeout_reached) && (current_state.load() != BatteryFSM::CUTOFF)) {
         LOG_ERR("CRITICAL: BMS communication watchdog triggered. Fault:%d", static_cast<int>(fault));
-        sys_context->triggerFault("BMS Communication Watchdog");
-        current_state = BatteryFSM::CUTOFF;
+        if (sys_context != nullptr) {
+            sys_context->triggerFault("BMS Communication Watchdog");
+        }
+        current_state.store(BatteryFSM::CUTOFF);
     }
 }
 
 BmsCache SbsBattery::getCacheSnapshot() const {
-    k_mutex_lock(&cache_mutex, K_FOREVER);
-    BmsCache snapshot = cache;
-    k_mutex_unlock(&cache_mutex);
+    BmsCache snapshot{};
+    if (k_mutex_lock(&cache_mutex, K_MSEC(BatteryLimits::MUTEX_TIMEOUT_MS)) == 0) {
+        snapshot = cache;
+        k_mutex_unlock(&cache_mutex);
+    } else {
+        snapshot.valid = false;
+        snapshot.last_error = CommFault::MUTEX_TIMEOUT;
+    }
     return snapshot;
 }
 
@@ -419,70 +466,9 @@ static bool isCacheValid(const BmsCache& c) {
     return c.valid && (c.last_error == CommFault::NONE) && isCacheFresh(c);
 }
 
-void SbsBattery::pollHardwareAndUpdateCache() {
-#ifdef CONFIG_BOARD_QEMU_CORTEX_M3
-    BmsCache qemu_cache{};
-    qemu_cache.voltage = Millivolts{11100U};
-    qemu_cache.current = Milliamps{-150};
-    qemu_cache.soc = Percent{95U};
-    qemu_cache.temperature = Kelvin{2980U};
-    qemu_cache.capacity = MilliAmpHours{2500U};
-    publishCache(qemu_cache);
-    feedWatchdog();
-    return;
-#else
-    DalyProtocol::Payload payload{};
-    BmsCache next_cache{};
-
-    result<bool> result = fetchWithRetry(DalyCommand::V_I_SOC, payload);
-    if (!result.success) {
-        publishError(result.error);
-        return;
-    }
-
-    const uint16_t pack_voltage_deci_volts = static_cast<uint16_t>((static_cast<uint16_t>(payload[0U]) << 8U) | static_cast<uint16_t>(payload[1U]));
-    const int32_t raw_current = static_cast<int32_t>((static_cast<uint16_t>(payload[4U]) << 8U) | static_cast<uint16_t>(payload[5U]));
-    const uint16_t soc_tenths = static_cast<uint16_t>((static_cast<uint16_t>(payload[6U]) << 8U) | static_cast<uint16_t>(payload[7U]));
-    
-    const uint32_t pack_voltage_mv = static_cast<uint32_t>(pack_voltage_deci_volts) * 100U;
-    next_cache.voltage = Millivolts{static_cast<uint16_t>(pack_voltage_mv)};
-    next_cache.current = Milliamps{static_cast<int32_t>((raw_current - 30000L) * 100L)};
-    next_cache.soc = Percent{static_cast<uint8_t>(soc_tenths / 10U)};
-    
-    if ((next_cache.soc.value > 100U) || (pack_voltage_mv > 20000U)) {
-        publishError(CommFault::VALIDATION_ERROR);
-        return;
-    }
-    
-    result = fetchWithRetry(DalyCommand::TEMP, payload);
-    if (!result.success) {
-        publishError(result.error);
-        return;
-    }
-    
-    const int16_t temp_celsius = static_cast<int16_t>(payload[1U]) - 40;
-    if (temp_celsius > 125) {
-        publishError(CommFault::VALIDATION_ERROR);
-        return;
-    }
-    next_cache.temperature = Kelvin{static_cast<uint16_t>((temp_celsius * 10) + 2731)};
-    
-    result = fetchWithRetry(DalyCommand::STATUS_CAPACITY, payload);
-    if (!result.success) {
-        publishError(result.error);
-        return;
-    }
-    
-    next_cache.capacity = MilliAmpHours{(static_cast<uint32_t>(payload[4U]) << 24U) | (static_cast<uint32_t>(payload[5U]) << 16U) | (static_cast<uint32_t>(payload[6U]) << 8U) | static_cast<uint32_t>(payload[7U])};
-    
-    publishCache(next_cache);
-    feedWatchdog();
-#endif
-}
-
 result<Millivolts> SbsBattery::getVoltage() const {
     const BmsCache snapshot = getCacheSnapshot();
-    return isCacheValid(snapshot) ? result<Millivolts>::Ok(snapshot.voltage) : result<Millivolts>::Err(cacheFailureReason(snapshot)); 
+    return isCacheValid(snapshot) ? result<Millivolts>::Ok(snapshot.voltage) : result<Millivolts>::Err(cacheFailureReason(snapshot));
 }
 
 result<Milliamps> SbsBattery::getCurrent() const {
@@ -500,7 +486,7 @@ result<Kelvin> SbsBattery::getTemperature() const {
     return isCacheValid(snapshot) ? result<Kelvin>::Ok(snapshot.temperature) : result<Kelvin>::Err(cacheFailureReason(snapshot));
 }
 
-result<MilliAmpHours> SbsBattery::getCapacity() const { 
+result<MilliAmpHours> SbsBattery::getCapacity() const {
     const BmsCache snapshot = getCacheSnapshot();
     return isCacheValid(snapshot) ? result<MilliAmpHours>::Ok(snapshot.capacity) : result<MilliAmpHours>::Err(cacheFailureReason(snapshot));
 }
@@ -509,88 +495,88 @@ void SbsBattery::processFSM() {
     BmsCache snapshot = getCacheSnapshot();
     auto current_res = getCurrent();
     auto soc_res = getStateOfCharge();
-    
-    if (!current_res.success) {
+
+    if (!current_res.success || !soc_res.success) {
         LOG_ERR("Battery cache unavailable. Error Code:%d", static_cast<int>(snapshot.last_error));
         return;
     }
-    
+
     const int32_t current_ma = current_res.value.value;
     const uint8_t soc_pct = soc_res.value.value;
-    
-    if (current_state != BatteryFSM::CUTOFF) {
-        if (current_ma > 0) {
-            current_state = BatteryFSM::CHARGING;
-        } else if (current_ma < 0) {
-            current_state = BatteryFSM::DISCHARGING;
-        } else {
-            current_state = BatteryFSM::IDLE;
+    const BatteryFSM current_fsm_state = current_state.load();
+
+    if (current_fsm_state != BatteryFSM::CUTOFF) {
+        if (current_ma > 0) current_state.store(BatteryFSM::CHARGING);
+        else if (current_ma < 0) current_state.store(BatteryFSM::DISCHARGING);
+        else current_state.store(BatteryFSM::IDLE);
+    }
+
+    if (soc_pct >= 100U) {
+        bool expected = false;
+        if (full_charge_logged.compare_exchange_strong(expected, true)) {
+            LOG_INF("BATTERY FULLY CHARGED. Triggering NVS Log entry.");
         }
-    }
-    
-    if ((soc_pct >= 100U) && (!full_charge_logged)) {
-        LOG_INF("BATTERY FULLY CHARGED. Triggering NVS Log entry.");
-        full_charge_logged = true;
     } else if (soc_pct < 95U) {
-        full_charge_logged = false;
+        full_charge_logged.store(false);
     }
-    
+
     if (soc_pct <= BatteryLimits::CUTOFF_SOC_PCT) {
-        if (current_state != BatteryFSM::CUTOFF) {
+        if (current_fsm_state != BatteryFSM::CUTOFF) {
             LOG_ERR("DISCHARGE GUARD TRIGGERED! SoC:%u%%. Halting System.", soc_pct);
-            sys_context->triggerFault("Battery Critically Low");
-            current_state = BatteryFSM::CUTOFF;
+            if (sys_context != nullptr) sys_context->triggerFault("Battery Critically Low");
+            current_state.store(BatteryFSM::CUTOFF);
         }
     } else if (soc_pct >= BatteryLimits::REENABLE_SOC_PCT) {
-        if (sys_context->getState() == SystemState::SAFE_HALT) {
+        if (sys_context != nullptr && sys_context->getState() == SystemState::SAFE_HALT) {
             LOG_INF("Battery recovered to %u%%. System safe to restart.", soc_pct);
             sys_context->requestTransition(SystemState::INIT);
-            current_state = (current_ma > 0) ? BatteryFSM::CHARGING : BatteryFSM::IDLE;
+            current_state.store((current_ma > 0) ? BatteryFSM::CHARGING : BatteryFSM::IDLE);
         }
     }
 }
 
-BatteryFSM SbsBattery::getState() const {
-    return current_state;
-}  
+BatteryFSM SbsBattery::getState() const { return current_state.load(); }
 
 CommStatistics SbsBattery::getStats() const {
-    return uart_bus->getStatsSnapshot();
+    CommStatistics snapshot{};
+    snapshot.reads = static_cast<uint32_t>(atomic_get(&stats.reads));
+    snapshot.i2c_faults = static_cast<uint32_t>(atomic_get(&stats.i2c_faults));
+    snapshot.thermistor_faults = static_cast<uint32_t>(atomic_get(&stats.thermistor_faults));
+    snapshot.retries = static_cast<uint32_t>(atomic_get(&stats.retries));
+    snapshot.validation_errors = static_cast<uint32_t>(atomic_get(&stats.validation_errors));
+    return snapshot;
 }
 
-UARTManager* uart_bus_manager = nullptr;
 SbsBattery* smart_battery = nullptr;
 
 namespace {
-    static const device* uart_hardware = DEVICE_DT_GET(DT_CHOSEN(zephyr_console));
-    static UARTManager static_uart_manager(uart_hardware);
-    static SbsBattery static_smart_battery(&static_uart_manager, &sys_context, daly_watchdog_feed_hook);
     static bool bms_objects_initialized = false;
+#ifndef IS_TEST_ENVIRONMENT
+    static SbsBattery static_smart_battery(&i2c_manager, &sys_context, daly_watchdog_feed_hook);
+#endif
 
-    // Power Observer to safely halt BMS polling when the OS transitions to Sleep
     class BmsPowerObserver final : public IPowerObserver {
     private:
         atomic_t is_sleeping;
     public:
         BmsPowerObserver() { atomic_set(&is_sleeping, 0); }
         void beforeSleep() override { atomic_set(&is_sleeping, 1); }
-        void afterWakeup() override { 
-            atomic_set(&is_sleeping, 0); 
-            if (smart_battery != nullptr) {
-                smart_battery->notifySystemWakeup();
-            }
+        void afterWakeup() override {
+            atomic_set(&is_sleeping, 0);
+            if (smart_battery != nullptr) smart_battery->notifySystemWakeup();
         }
         void sleepAborted() override { atomic_set(&is_sleeping, 0); }
         bool isSleeping() const noexcept { return atomic_get(&is_sleeping) != 0; }
     };
+    
     static BmsPowerObserver g_bmsPowerObserver;
-
     K_SEM_DEFINE(bms_objects_ready_sem, 0, 1);
 
     static void initializeBmsObjects() {
         if (!bms_objects_initialized) {
-            uart_bus_manager = &static_uart_manager;
+#ifndef IS_TEST_ENVIRONMENT
             smart_battery = &static_smart_battery;
+#endif
             bms_objects_initialized = true;
         }
     }
@@ -600,47 +586,47 @@ SbsBattery* getSmartBatteryInstance() {
     initializeBmsObjects();
     return smart_battery;
 }
-UARTManager* getUartBusManagerInstance() {
+
+#ifndef IS_TEST_ENVIRONMENT
+I2CManager* getI2cBusManagerInstance() {
     initializeBmsObjects();
-    return uart_bus_manager;
+    return &i2c_manager;
 }
+#endif
 
 void bms_comm_thread(void) {
     initializeBmsObjects();
-    k_sem_give(&bms_objects_ready_sem);
 
-    if ((uart_bus_manager == nullptr) || (!uart_bus_manager->init())) {
-        LOG_ERR("UART hardware not ready.");
-        return;
+    if (smart_battery == nullptr) {
+        LOG_ERR("Smart battery instance is null.");
+        k_sem_give(&bms_objects_ready_sem); 
+        return; 
     }
 
-    // Register observer so we know when to stop utilizing the UART bus
+    while (!smart_battery->init()) {
+        LOG_ERR("BMS sensors (INA226 / thermistor) init failed. Retrying in 5s...");
+        k_msleep(5000);
+    }
+
+    k_sem_give(&bms_objects_ready_sem);
     PowerManager::getInstance().registerObserver(&g_bmsPowerObserver);
 
     do {
-       if (smart_battery != nullptr) {
-           // Gate the poll based on the deep sleep state
-           if (!g_bmsPowerObserver.isSleeping() && sys_context.getState() != SystemState::SAFE_HALT) {
-               smart_battery->pollHardwareAndUpdateCache();
-           }
+       if (!g_bmsPowerObserver.isSleeping()) {
+           smart_battery->pollHardwareAndUpdateCache();
        }
        k_msleep(1000);
     } while(THREAD_LOOP_CONDITION);
 }
 
 void battery_monitor_thread(void) {
-    if (!device_is_ready(uart_hardware)) {
-        LOG_ERR("UART hardware not ready. Battery monitor halting.");
-        return;
-    }
+    k_sem_take(&bms_objects_ready_sem, K_FOREVER);
     
     do {
         if (smart_battery != nullptr) {
-            // Processing FSM logic must halt during sleep to prevent 
-            // reacting to stale cache variables just as we transition states
             if (!g_bmsPowerObserver.isSleeping()) {
                 smart_battery->processFSM();
-            
+
                 if (smart_battery->getState() == BatteryFSM::DISCHARGING) {
                     const auto soc = smart_battery->getStateOfCharge();
                     if (soc.success) {
@@ -653,5 +639,9 @@ void battery_monitor_thread(void) {
     } while(THREAD_LOOP_CONDITION);
 }
 
-K_THREAD_DEFINE(bms_comm_tid, 1536, bms_comm_thread, NULL, NULL, NULL, 10, 0, 0);
-K_THREAD_DEFINE(battery_tid, 1024, battery_monitor_thread, NULL, NULL, NULL, 11, 0, 0);
+// K_FP_REGS dropped: this file no longer does any floating-point math
+// (coulomb counting, calibration, and the OCV/NTC curves are all fixed-point
+// integer arithmetic now), so reserving FPU register context for these
+// threads is unnecessary stack/context-switch overhead.
+K_THREAD_DEFINE(bms_comm_tid, 1536, bms_comm_thread, NULL, NULL, NULL, BatteryLimits::BMS_THREAD_PRIO, 0, 0);
+K_THREAD_DEFINE(battery_tid, 1024, battery_monitor_thread, NULL, NULL, NULL, BatteryLimits::MONITOR_THREAD_PRIO, 0, 0);

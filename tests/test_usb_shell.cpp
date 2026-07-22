@@ -1,3 +1,4 @@
+// test_usb_shell.cpp
 #include <gtest/gtest.h>
 #include <array>
 #include <cstring>
@@ -5,6 +6,14 @@
 #include <cstdint>
 #include <string>
 #include <cstdarg>
+#include <algorithm>
+
+// Allow the test suite to bypass the INA226 hardware mismatch assertion.
+// This requires the battery header to support the guard, for example:
+//   #ifndef INA226_TEST_BYPASS_STATIC_ASSERT
+//   static_assert(...)
+//   #endif 
+
 // White-Box Access
 #define private public
 #define protected public
@@ -15,7 +24,9 @@
 #include "Smart_Battery_System.h"
 #include "Persistent_Configuration_System.h"
 #include "Power_Management_System.h"
+
 #define MOCK_UART_DTR_CTRL 1
+
 static std::array<char,512> mock_tx_buffer;
 static size_t mock_tx_index=0;
 extern UsbShell diag_shell;
@@ -36,12 +47,10 @@ bool enable_snprintf_mock = false;
 int mock_snprintf_call_count = 0;
 int mock_snprintf_fail_on_call = -1;
 int mock_snprintf_truncate_on_call = -1;
-// Consumed by testable_snprintf() in USB_CDC_Virtual_COM_Shell_Interface.cpp
-// as of the fix below -- previously declared here but never read by the
-// production/test-harness code, so tests relying on it silently no-op'd.
 int mock_snprintf_exact_return_on_call = -1;
 int mock_snprintf_exact_return_value = 0;
 extern uint32_t virtual_uptime;
+
 struct MockNvsEntry {
     uint16_t id;
     std::array<uint8_t, 64> data;
@@ -50,11 +59,7 @@ struct MockNvsEntry {
 };
 static std::array<MockNvsEntry, 32> mock_nvs_map;
 
-// White-box shims defined in USB_CDC_Virtual_COM_Shell_Interface.cpp under
-// IS_TEST_ENVIRONMENT. They give external-linkage access to the
-// anonymous-namespace parseIntToken()/trim() helpers so their branches
-// that are unreachable through the public dispatch API (see cmdSetRate)
-// can be exercised directly.
+// White-box shims for parseIntToken/trim (unreachable via public API)
 extern bool test_parseIntToken(std::string_view token, int& out_value) noexcept;
 extern std::string_view test_trim(std::string_view s) noexcept;
 
@@ -137,10 +142,12 @@ extern "C" {
         return 0;
     }
 }
+
 void inject_mock_uart_data(std::string_view data){
     for (char c: data) mock_rx_queue[mock_rx_head++%512]=c;
     if (mock_uart_irq_cb) mock_uart_irq_cb(dummy_uart_dev,mock_uart_cb_data);
 }
+
 class UsbShellTestSuite:public::testing::Test{
   protected:
       UsbCdcFacade facade;
@@ -158,7 +165,12 @@ class UsbShellTestSuite:public::testing::Test{
           EXPECT_TRUE(facade.init());
           ConfigStore::getInstance().init();
       }
+      void TearDown() override {
+          // Reset the power observer so that sleep state doesn't leak between tests
+          PowerManager::getInstance().notifyAfterWakeup();
+      }
 };
+
 // ---- Init ----
 TEST_F(UsbShellTestSuite,InitSuccess){
     UsbCdcFacade fresh; testing::internal::CaptureStdout();
@@ -371,7 +383,9 @@ TEST_F(UsbShellTestSuite, ParseIntTokenAndTrimDirectEdgeCases) {
 bool run_thread_once=false;
 extern void shell_thread(void);
 TEST_F(UsbShellTestSuite,ProcessAndShellThread){
-    DeviceContext ctx; UARTManager uart(dummy_uart_dev); SbsBattery battery(&uart,&ctx);
+    DeviceContext ctx;
+    I2CManager i2c(dummy_uart_dev); // Use I2CManager, not UARTManager
+    SbsBattery battery(&i2c, &ctx);
     UsbShell shell(&ctx,&battery);
     // init fails
     force_device_not_ready=true; testing::internal::CaptureStdout();
@@ -396,7 +410,9 @@ TEST_F(UsbShellTestSuite,ProcessAndShellThread){
 }
 // ---- Dispatch / Commands ----
 TEST_F(UsbShellTestSuite, DispatchCommands) {
-    DeviceContext ctx; UARTManager uart(dummy_uart_dev); SbsBattery battery(&uart, &ctx);
+    DeviceContext ctx;
+    I2CManager i2c(dummy_uart_dev);
+    SbsBattery battery(&i2c, &ctx);
     UsbShell shell(&ctx, &battery);
     mock_dtr_state = 1; mock_tx_index = 0; mock_tx_buffer.fill(0);
 
@@ -435,7 +451,9 @@ TEST_F(UsbShellTestSuite, DispatchCommands) {
 }
 // ---- set_rate ----
 TEST_F(UsbShellTestSuite,SetRateVariants){
-    DeviceContext ctx; UARTManager uart(dummy_uart_dev); SbsBattery battery(&uart,&ctx);
+    DeviceContext ctx;
+    I2CManager i2c(dummy_uart_dev);
+    SbsBattery battery(&i2c,&ctx);
     UsbShell shell(&ctx,&battery);
     mock_dtr_state=1; mock_tx_index=0; mock_tx_buffer.fill(0);
     // success
@@ -519,7 +537,9 @@ TEST_F(UsbShellTestSuite,SetRateVariants){
 }
 // ---- Status formatting ----
 TEST_F(UsbShellTestSuite,StatusFormatting){
-    DeviceContext ctx; UARTManager uart(dummy_uart_dev); SbsBattery battery(&uart,&ctx);
+    DeviceContext ctx;
+    I2CManager i2c(dummy_uart_dev);
+    SbsBattery battery(&i2c,&ctx);
     UsbShell shell(&ctx,&battery);
     // missing config
     mock_dtr_state=1; for(auto& entry : mock_nvs_map) entry.active = false; mock_tx_index=0;
@@ -561,51 +581,30 @@ TEST_F(UsbShellTestSuite,StatusFormatting){
     // collectStatus without infusion rate
     for(auto& entry : mock_nvs_map) entry.active = false;
     ConfigStore::getInstance().init();
-
     auto snap2 = shell.collectStatus();
-
     EXPECT_EQ(snap2.slots[0].rate,0);
-
     // header snprintf failure
     enable_snprintf_mock=true;
     mock_snprintf_call_count=0;
     mock_snprintf_fail_on_call=1;
-
     EXPECT_EQ(UsbShell::formatStatus(UsbShell::StatusSnapshot{},buf),0u);
     EXPECT_EQ(mock_snprintf_call_count,1);
-
     enable_snprintf_mock=false;
     mock_snprintf_fail_on_call=-1;
-
     // device-entry snprintf failure
     UsbShell::StatusSnapshot snap3{};
     snap3.slot_count=2;
     snap3.slots[0]={1001,50,80};
     snap3.slots[1]={1002,60,90};
-
     enable_snprintf_mock=true;
     mock_snprintf_call_count=0;
     mock_snprintf_fail_on_call=2;
-
     const auto written2 = UsbShell::formatStatus(snap3, buf);     
     EXPECT_GT(written2, 0u);
-
     enable_snprintf_mock=false;
     mock_snprintf_fail_on_call=-1;
 }
 
-// Covers the false side of formatStatus's footer-write branch:
-//   if (written > 0) {
-//     const std::size_t remaining = out_buf.size() - offset;
-//     if (remaining > 1) { offset += ...; }   <-- this
-//   }
-// i.e. exactly 1 byte of room is left when the closing "]}\r\n" write
-// happens, so its return value must be discarded rather than folded
-// into offset. Forced by making the *header* write consume all but one
-// byte of the buffer (via mock_snprintf_exact_return_on_call, now wired
-// up in testable_snprintf), which also causes the device-entry loop to
-// break immediately on the JsonSafetyMargin check, leaving the footer as
-// the very next snprintf call.
 TEST_F(UsbShellTestSuite, FormatStatusFooterExactlyOneByteRemaining) {
     UsbShell::StatusSnapshot snap{};
     snap.slot_count = 0;
@@ -619,10 +618,6 @@ TEST_F(UsbShellTestSuite, FormatStatusFooterExactlyOneByteRemaining) {
     mock_snprintf_exact_return_value = static_cast<int>(buf.size() - 1);
 
     const size_t written = UsbShell::formatStatus(snap, buf);
-
-    // offset must stay pinned at buf.size()-1: the footer's own
-    // (unbounded) intended length was discarded because only 1 byte of
-    // room remained.
     EXPECT_EQ(written, buf.size() - 1);
 
     enable_snprintf_mock = false;
@@ -640,7 +635,9 @@ TEST_F(UsbShellTestSuite, OverlongCommandWithEol) {
 }
 
 TEST_F(UsbShellTestSuite, DispatchBlankCommand) {
-    DeviceContext ctx; UARTManager uart(dummy_uart_dev); SbsBattery battery(&uart, &ctx);
+    DeviceContext ctx;
+    I2CManager i2c(dummy_uart_dev);
+    SbsBattery battery(&i2c, &ctx);
     UsbShell shell(&ctx, &battery);
     mock_dtr_state = 1; mock_tx_index = 0; mock_tx_buffer.fill(0);
     shell.dispatchCommand("  \t  ");
@@ -649,7 +646,9 @@ TEST_F(UsbShellTestSuite, DispatchBlankCommand) {
 }
 
 TEST_F(UsbShellTestSuite, SetRateWithTabsInArgs) {
-    DeviceContext ctx; UARTManager uart(dummy_uart_dev); SbsBattery battery(&uart, &ctx);
+    DeviceContext ctx;
+    I2CManager i2c(dummy_uart_dev);
+    SbsBattery battery(&i2c, &ctx);
     UsbShell shell(&ctx, &battery);
     mock_dtr_state = 1; mock_tx_index = 0; mock_tx_buffer.fill(0);
     shell.dispatchCommand("set_rate \t1001\t 50");
@@ -658,7 +657,9 @@ TEST_F(UsbShellTestSuite, SetRateWithTabsInArgs) {
 }
 
 TEST_F(UsbShellTestSuite, DispatchSetRateWithOnlySpacesAfterCommand) {
-    DeviceContext ctx; UARTManager uart(dummy_uart_dev); SbsBattery battery(&uart, &ctx);
+    DeviceContext ctx;
+    I2CManager i2c(dummy_uart_dev);
+    SbsBattery battery(&i2c, &ctx);
     UsbShell shell(&ctx, &battery);
     mock_dtr_state = 1; mock_tx_index = 0; mock_tx_buffer.fill(0);
     shell.dispatchCommand("set_rate ");
@@ -669,10 +670,9 @@ TEST_F(UsbShellTestSuite, DispatchSetRateWithOnlySpacesAfterCommand) {
 TEST_F(UsbShellTestSuite, DispatchNoArgumentHandlersDirectly)
 {
     DeviceContext ctx;
-    UARTManager uart(dummy_uart_dev);
-    SbsBattery battery(&uart, &ctx);
+    I2CManager i2c(dummy_uart_dev);
+    SbsBattery battery(&i2c, &ctx);
     UsbShell shell(&ctx, &battery);
-
     mock_dtr_state = 1;
 
     mock_tx_index = 0;
@@ -693,10 +693,9 @@ TEST_F(UsbShellTestSuite, DispatchNoArgumentHandlersDirectly)
 TEST_F(UsbShellTestSuite, CollectStatusAllSlotsHaveRates)
 {
     DeviceContext ctx;
-    UARTManager uart(dummy_uart_dev);
-    SbsBattery battery(&uart, &ctx);
+    I2CManager i2c(dummy_uart_dev);
+    SbsBattery battery(&i2c, &ctx);
     UsbShell shell(&ctx, &battery);
-
     auto &cfg = ConfigStore::getInstance();
 
     for (uint8_t slot = InfusionDeviceConfig::MinSlot;
@@ -707,7 +706,6 @@ TEST_F(UsbShellTestSuite, CollectStatusAllSlotsHaveRates)
     }
 
     auto snap = shell.collectStatus();
-
     for (uint8_t i = 0; i < snap.slot_count; ++i)
     {
         EXPECT_EQ(snap.slots[i].rate, 42);
@@ -717,10 +715,9 @@ TEST_F(UsbShellTestSuite, CollectStatusAllSlotsHaveRates)
 TEST_F(UsbShellTestSuite, SetRateEqualAndLessThanThreshold)
 {
     DeviceContext ctx;
-    UARTManager uart(dummy_uart_dev);
-    SbsBattery battery(&uart, &ctx);
+    I2CManager i2c(dummy_uart_dev);
+    SbsBattery battery(&i2c, &ctx);
     UsbShell shell(&ctx, &battery);
-
     mock_dtr_state = 1;
 
     auto &cfg = ConfigStore::getInstance();
@@ -729,70 +726,48 @@ TEST_F(UsbShellTestSuite, SetRateEqualAndLessThanThreshold)
     ASSERT_TRUE(cfg.findSlotByDeviceId(1001, slot));
     ASSERT_TRUE(cfg.setAlarmThreshold(slot, 80));
 
-    mock_tx_index = 0;
-    mock_tx_buffer.fill(0);
+    mock_tx_index = 0; mock_tx_buffer.fill(0);
     shell.dispatchCommand("set_rate 1001 79");
-    EXPECT_NE(std::string_view(mock_tx_buffer.data(), mock_tx_index)
-                  .find("Success"),
-              std::string_view::npos);
+    EXPECT_NE(std::string_view(mock_tx_buffer.data(), mock_tx_index).find("Success"), std::string_view::npos);
 
-    mock_tx_index = 0;
-    mock_tx_buffer.fill(0);
+    mock_tx_index = 0; mock_tx_buffer.fill(0);
     shell.dispatchCommand("set_rate 1001 80");
-    EXPECT_NE(std::string_view(mock_tx_buffer.data(), mock_tx_index)
-                  .find("Success"),
-              std::string_view::npos);
+    EXPECT_NE(std::string_view(mock_tx_buffer.data(), mock_tx_index).find("Success"), std::string_view::npos);
 }
 
 TEST_F(UsbShellTestSuite, DispatchSetRatePrefixWithoutSpace)
 {
     DeviceContext ctx;
-    UARTManager uart(dummy_uart_dev);
-    SbsBattery battery(&uart,&ctx);
+    I2CManager i2c(dummy_uart_dev);
+    SbsBattery battery(&i2c, &ctx);
     UsbShell shell(&ctx,&battery);
-
     mock_dtr_state = 1;
-    mock_tx_index = 0;
-    mock_tx_buffer.fill(0);
-
+    mock_tx_index = 0; mock_tx_buffer.fill(0);
     shell.dispatchCommand("set_rateXYZ");
-
-    EXPECT_NE(std::string_view(mock_tx_buffer.data(),mock_tx_index)
-                  .find("Unknown"),
-              std::string_view::npos);
+    EXPECT_NE(std::string_view(mock_tx_buffer.data(),mock_tx_index).find("Unknown"), std::string_view::npos);
 }
 
 TEST_F(UsbShellTestSuite, DispatchSetRateFollowedByTab)
 {
     DeviceContext ctx;
-    UARTManager uart(dummy_uart_dev);
-    SbsBattery battery(&uart, &ctx);
+    I2CManager i2c(dummy_uart_dev);
+    SbsBattery battery(&i2c, &ctx);
     UsbShell shell(&ctx, &battery);
-
     mock_dtr_state = 1;
-    mock_tx_index = 0;
-    mock_tx_buffer.fill(0);
-
+    mock_tx_index = 0; mock_tx_buffer.fill(0);
     shell.dispatchCommand("set_rate\t1001 50");
-
-    EXPECT_NE(std::string_view(mock_tx_buffer.data(), mock_tx_index)
-                  .find("Unknown"),
-              std::string_view::npos);
+    EXPECT_NE(std::string_view(mock_tx_buffer.data(), mock_tx_index).find("Unknown"), std::string_view::npos);
 }
 
 TEST_F(UsbShellTestSuite, DispatchExactSetRateCommand)
 {
     DeviceContext ctx;
-    UARTManager uart(dummy_uart_dev);
-    SbsBattery battery(&uart,&ctx);
+    I2CManager i2c(dummy_uart_dev);
+    SbsBattery battery(&i2c, &ctx);
     UsbShell shell(&ctx,&battery);
-
     mock_dtr_state = 1;
-    mock_tx_index = 0;
-    mock_tx_buffer.fill(0);
-
+    mock_tx_index = 0; mock_tx_buffer.fill(0);
     shell.dispatchCommand("set_rate");
-
     std::string_view out(mock_tx_buffer.data(), mock_tx_index);
     EXPECT_NE(out.find("Usage"), std::string_view::npos);
 }
@@ -800,86 +775,67 @@ TEST_F(UsbShellTestSuite, DispatchExactSetRateCommand)
 TEST_F(UsbShellTestSuite, DispatchSetRatePrefixButInvalidSeparator)
 {
     DeviceContext ctx;
-    UARTManager uart(dummy_uart_dev);
-    SbsBattery battery(&uart, &ctx);
+    I2CManager i2c(dummy_uart_dev);
+    SbsBattery battery(&i2c, &ctx);
     UsbShell shell(&ctx, &battery);
-
     mock_dtr_state = 1;
-    mock_tx_index = 0;
-    mock_tx_buffer.fill(0);
-
+    mock_tx_index = 0; mock_tx_buffer.fill(0);
     shell.dispatchCommand("set_rate:");
-
     std::string_view out(mock_tx_buffer.data(), mock_tx_index);
-
     EXPECT_NE(out.find("Unknown"), std::string_view::npos);
 }
 
 TEST_F(UsbShellTestSuite, DispatchSetRateWhitespaceOnlyArgument)
 {
     DeviceContext ctx;
-    UARTManager uart(dummy_uart_dev);
-    SbsBattery battery(&uart, &ctx);
+    I2CManager i2c(dummy_uart_dev);
+    SbsBattery battery(&i2c, &ctx);
     UsbShell shell(&ctx, &battery);
-
     mock_dtr_state = 1;
-
-    mock_tx_index = 0;
-    mock_tx_buffer.fill(0);
-
+    mock_tx_index = 0; mock_tx_buffer.fill(0);
     shell.dispatchCommand("set_rate          ");
-
     std::string_view out(mock_tx_buffer.data(), mock_tx_index);
-
     EXPECT_NE(out.find("Usage"), std::string_view::npos);
 }
 
 TEST_F(UsbShellTestSuite, SetRateWithoutAlarmThreshold)
 {
     DeviceContext ctx;
-    UARTManager uart(dummy_uart_dev);
-    SbsBattery battery(&uart, &ctx);
+    I2CManager i2c(dummy_uart_dev);
+    SbsBattery battery(&i2c, &ctx);
     UsbShell shell(&ctx, &battery);
-
     auto &cfg = ConfigStore::getInstance();
-
     mock_dtr_state = 1;
 
     for (uint16_t slot = InfusionDeviceConfig::MinSlot;
          slot <= InfusionDeviceConfig::MaxSlot;
          ++slot)
     {
-        for (uint16_t slot = InfusionDeviceConfig::MinSlot; slot <= InfusionDeviceConfig::MaxSlot; ++slot) {
-            for(auto& entry : mock_nvs_map) {
-                if(entry.id == static_cast<uint16_t>(static_cast<uint16_t>(ConfigKey::ALARM_THRESHOLD_BASE) + slot)) {
-                    entry.active = false;
-                }
+        for (auto& entry : mock_nvs_map) {
+            if (entry.id == static_cast<uint16_t>(
+                    static_cast<uint16_t>(ConfigKey::ALARM_THRESHOLD_BASE) + slot)) {
+                entry.active = false;
             }
         }
     }
-
     cfg.init();
 
-    mock_tx_index = 0;
-    mock_tx_buffer.fill(0);
-
+    mock_tx_index = 0; mock_tx_buffer.fill(0);
     shell.dispatchCommand("set_rate 1001 50");
-
     std::string_view out(mock_tx_buffer.data(), mock_tx_index);
-
     EXPECT_NE(out.find("Success"), std::string_view::npos);
 }
 
 TEST_F(UsbShellTestSuite, SetRateThresholdExhaustiveBranches) {
-    DeviceContext ctx; UARTManager uart(dummy_uart_dev); SbsBattery battery(&uart, &ctx);
+    DeviceContext ctx;
+    I2CManager i2c(dummy_uart_dev);
+    SbsBattery battery(&i2c, &ctx);
     UsbShell shell(&ctx, &battery);
     mock_dtr_state = 1; mock_tx_index = 0; mock_tx_buffer.fill(0);
     auto &cfg = ConfigStore::getInstance();
     uint8_t slot = 0;
     ASSERT_TRUE(cfg.findSlotByDeviceId(1001, slot));
     
-    // Path 1: haveThreshold = false
-    // Clear it AFTER initialization to ensure default seeding doesn't restore it
     for(auto& entry : mock_nvs_map) {
         if(entry.id == static_cast<uint16_t>(static_cast<uint16_t>(ConfigKey::ALARM_THRESHOLD_BASE) + slot)) {
             entry.active = false;
@@ -890,13 +846,11 @@ TEST_F(UsbShellTestSuite, SetRateThresholdExhaustiveBranches) {
     shell.dispatchCommand("set_rate 1001 50");
     EXPECT_NE(std::string_view(mock_tx_buffer.data(), mock_tx_index).find("Success"), std::string_view::npos);
 
-    // Path 2: haveThreshold = true, rate == threshold
     mock_tx_index = 0; mock_tx_buffer.fill(0);
     ASSERT_TRUE(cfg.setAlarmThreshold(slot, 80));
     shell.dispatchCommand("set_rate 1001 80");
     EXPECT_NE(std::string_view(mock_tx_buffer.data(), mock_tx_index).find("Success"), std::string_view::npos);
 
-    // Path 3: haveThreshold = true, rate > threshold
     mock_tx_index = 0; mock_tx_buffer.fill(0);
     shell.dispatchCommand("set_rate 1001 81");
     EXPECT_NE(std::string_view(mock_tx_buffer.data(), mock_tx_index).find("exceeds alarm threshold"), std::string_view::npos);
@@ -904,51 +858,82 @@ TEST_F(UsbShellTestSuite, SetRateThresholdExhaustiveBranches) {
 
 TEST_F(UsbShellTestSuite, PowerObserverAndSafeHaltGating) {
     DeviceContext ctx; 
-    UARTManager uart(dummy_uart_dev); 
-    SbsBattery battery(&uart, &ctx);
+    I2CManager i2c(dummy_uart_dev);
+    SbsBattery battery(&i2c, &ctx);
     UsbShell shell(&ctx, &battery);
     
     mock_dtr_state = 1;
     mock_tx_index = 0;
     
-    // 1. Run once to initialize USB and register the observer
     run_thread_once = true;
     shell.process();
 
-    // 2. Simulate Deep Sleep (Covers ShellPowerObserver::beforeSleep and true branch of isSleeping)
     PowerManager::getInstance().notifyBeforeSleep();
-    
     inject_mock_uart_data("status\n");
     run_thread_once = true;
     shell.process();
     EXPECT_EQ(mock_tx_index, 0u) << "Shell should ignore input while sleeping";
 
-    // 3. Wake up (Covers ShellPowerObserver::afterWakeup)
     PowerManager::getInstance().notifyAfterWakeup();
-    
     run_thread_once = true;
     shell.process();
     EXPECT_GT(mock_tx_index, 0u) << "Shell should process queued input after waking up";
     
-    // 4. Sleep Aborted (Covers ShellPowerObserver::sleepAborted)
     PowerManager::getInstance().notifyBeforeSleep();
     PowerManager::getInstance().notifySleepAborted();
-    
     mock_tx_index = 0;
     inject_mock_uart_data("log dump\n");
     run_thread_once = true;
     shell.process();
     EXPECT_GT(mock_tx_index, 0u) << "Shell should resume if sleep is aborted";
 
-    // 5. SAFE_HALT gating (Covers the false branch of sys_ctx->getState() != SAFE_HALT)
     ctx.current_state = SystemState::SAFE_HALT;
-    
     mock_tx_index = 0;
     inject_mock_uart_data("status\n");
     run_thread_once = true;
     shell.process();
     EXPECT_EQ(mock_tx_index, 0u) << "Shell should halt processing in SAFE_HALT state";
     
-    // Restore context for hygiene
     ctx.current_state = SystemState::RUNNING;
+    PowerManager::getInstance().notifyAfterWakeup();
+}
+
+TEST_F(UsbShellTestSuite, TransmitFormattedFallbackOnSnprintfFailure) {
+    DeviceContext ctx;
+    I2CManager i2c(dummy_uart_dev);
+    SbsBattery battery(&i2c, &ctx);
+    UsbShell shell(&ctx, &battery);
+    mock_dtr_state = 1;
+    mock_tx_index = 0;
+    mock_tx_buffer.fill(0);
+
+    enable_snprintf_mock = true;
+    mock_snprintf_fail_on_call = 1;
+    shell.dispatchCommand("set_rate 1001 50");
+    std::string_view out(mock_tx_buffer.data(), mock_tx_index);
+    EXPECT_NE(out.find("Success: infusion rate updated"), std::string_view::npos);
+
+    enable_snprintf_mock = false;
+}
+
+TEST_F(UsbShellTestSuite, BatteryCacheAndStateOfCharge) {
+    DeviceContext ctx;
+    I2CManager i2c(dummy_uart_dev);
+    SbsBattery battery(&i2c, &ctx);
+    BmsCache valid_cache{};
+    valid_cache.valid = true;
+    valid_cache.last_error = CommFault::NONE;
+    valid_cache.soc.value = 75;
+    valid_cache.timestamp_ms = k_uptime_get_32();
+    battery.cache = valid_cache;
+
+    auto soc = battery.getStateOfCharge();
+    ASSERT_TRUE(soc.success);
+    EXPECT_EQ(soc.value.value, 75);
+
+    valid_cache.timestamp_ms = 0;  // will fail freshness check
+    battery.cache = valid_cache;
+    soc = battery.getStateOfCharge();
+    EXPECT_FALSE(soc.success);
+    EXPECT_EQ(soc.error, CommFault::CACHE_INVALID);
 }

@@ -14,6 +14,60 @@ file(MAKE_DIRECTORY ${MOCK_DIR}/zephyr/logging)
 # Add this block to your CMake file where you generate other zephyr/sys mocks
 file(MAKE_DIRECTORY ${MOCK_DIR}/zephyr/sys)
 
+file(WRITE ${MOCK_DIR}/zephyr/sys/byteorder.h
+"#pragma once\n
+#include <stdint.h>\n
+#ifdef __cplusplus\n
+extern \"C\" {\n
+#endif\n
+static inline uint16_t sys_cpu_to_be16(uint16_t val) { return __builtin_bswap16(val); }\n
+static inline uint16_t sys_be16_to_cpu(uint16_t val) { return __builtin_bswap16(val); }\n
+#ifdef __cplusplus\n
+}\n
+#endif\n
+")
+
+# Mock ADC driver
+file(WRITE ${MOCK_DIR}/zephyr/drivers/adc.h
+"#pragma once\n
+#include <stdint.h>\n
+#include <stddef.h>\n
+
+struct device;\n
+
+struct adc_dt_spec {\n
+    const struct device *dev;\n
+    uint8_t channel_id;\n
+    uint8_t resolution;\n
+};\n
+
+#define ADC_DT_SPEC_GET_BY_IDX(node, idx) { .dev = nullptr, .channel_id = (idx), .resolution = 12 }\n
+
+static inline int adc_is_ready_dt(const struct adc_dt_spec *spec) { return 1; }\n
+static inline int adc_channel_setup_dt(const struct adc_dt_spec *spec) { return 0; }\n
+
+struct adc_sequence {\n
+    uint32_t channels;\n
+    void *buffer;\n
+    size_t buffer_size;\n
+    uint8_t resolution;\n
+};\n
+
+static inline int adc_sequence_init_dt(const struct adc_dt_spec *spec,\n
+                                        struct adc_sequence *seq) { return 0; }\n
+
+#ifdef __cplusplus\n
+extern \"C\" {\n
+#endif\n
+
+int adc_read(const struct device *dev, const struct adc_sequence *sequence);\n
+int adc_raw_to_millivolts_dt(const struct adc_dt_spec *spec, int32_t *val);\n
+
+#ifdef __cplusplus\n
+}\n
+#endif\n
+")
+
 # -- EDITED: Added __assert.h generation with the correct file path mapping --
 file(WRITE ${MOCK_DIR}/zephyr/sys/__assert.h "#pragma once\n#define __ASSERT(test, fmt, ...) ((void)0)\n#define __ASSERT_NO_MSG(test) ((void)0)\n")
 
@@ -59,7 +113,8 @@ file(MAKE_DIRECTORY ${MOCK_DIR}/zephyr/debug)
 file(WRITE ${MOCK_DIR}/zephyr/debug/thread_analyzer.h "#pragma once\nstatic inline void thread_analyzer_print(unsigned int cpu) {}\n")
 
 
-file(WRITE ${CMAKE_BINARY_DIR}/mock_globals.cpp "#include <zephyr/device.h>\n#include <stdint.h>\n#include <string.h>\n#include <zephyr/kernel.h>\n#include <zephyr/pm/pm.h>\n#include <zephyr/pm/device.h>\n#include <zephyr/drivers/watchdog.h>\n#include <zephyr/drivers/counter.h>\n#include <zephyr/drivers/uart.h>\n#include <zephyr/drivers/i2c.h>\n#include <zephyr/sys/atomic.h>\n\n__attribute__((weak)) bool run_thread_once = false;\n\n__attribute__((weak)) const device* i2c_hardware = nullptr;\n\n__attribute__((weak)) bool atomic_cas(atomic_t *target, atomic_val_t old_value, atomic_val_t new_value) { return target->compare_exchange_strong(old_value, new_value); }\n\nuint32_t virtual_uptime = 0;\n\n// Fault-injection controls for host-side I2C tests. Default state matches the\n// original always-succeed mock behavior exactly.\nint g_i2c_force_errno = 0;            // 0 = success; set to a negative errno (e.g. -ETIMEDOUT, -EBUSY, -EAGAIN, -ENODEV) to force EVERY I2C call to fail\nbool g_device_ready_override = true;  // controls device_is_ready() return value\n\n// Per-call-index fault injection, for covering long straight-line chains of\n// sequential I2C reads (e.g. calibration loaders) where each individual read\n// needs its own isolated failure to exercise every branch. g_i2c_call_counter\n// increments on every mocked I2C transaction (read byte / burst read / write\n// byte); when it reaches g_i2c_fail_on_call_n, that single call fails with\n// g_i2c_fail_on_call_errno and every other call around it still succeeds.\n// Disabled by default (0), and independent of g_i2c_force_errno -- g_i2c_force_errno\n// still takes priority (blanket failure) if both are set.\nint g_i2c_call_counter = 0;\nint g_i2c_fail_on_call_n = 0;\nint g_i2c_fail_on_call_errno = -5;    // -EIO by default\n\nextern \"C\" {\n__attribute__((weak)) bool device_is_ready(const struct device *dev) { return g_device_ready_override; }\n__attribute__((weak)) int wdt_install_timeout(const struct device *dev, const struct wdt_timeout_cfg *cfg) { return 0; }\n__attribute__((weak)) int wdt_setup(const struct device *dev, uint8_t options) { return 0; }\n__attribute__((weak)) int wdt_feed(const struct device *dev, int channel_id) { return 0; }\n__attribute__((weak)) void pm_policy_state_lock_get(uint8_t state, uint8_t substate_id) {}\n__attribute__((weak)) void pm_policy_state_lock_put(uint8_t state, uint8_t substate_id) {}\n__attribute__((weak)) int pm_device_action_run(const struct device *dev, enum pm_device_action action) { return 0; }\n__attribute__((weak)) uint32_t counter_us_to_ticks(const struct device *dev, uint64_t us) { return 0; }\n__attribute__((weak)) int counter_set_channel_alarm(const struct device *dev, uint8_t chan_id, const struct counter_alarm_cfg *alarm_cfg) { return 0; }\n__attribute__((weak)) int counter_start(const struct device *dev) { return 0; }\n__attribute__((weak)) int counter_cancel_channel_alarm(const struct device *dev, uint8_t chan_id) { return 0; }\n__attribute__((weak)) int k_thread_stack_space_get(const void *thread, size_t *unused_ptr) { if (unused_ptr) { *unused_ptr = 0; } return 0; }\n__attribute__((weak)) int k_work_cancel_delayable(struct k_work_delayable *dwork) { return 0; }\n__attribute__((weak)) int uart_irq_update(const struct device *dev) { return 1; }\n__attribute__((weak)) int uart_err_check(const struct device *dev) { return 0; }\n__attribute__((weak)) int uart_irq_tx_ready(const struct device *dev) { return 1; }\n__attribute__((weak)) int uart_fifo_fill(const struct device *dev, const uint8_t *tx_data, const int size) { return size; }\n__attribute__((weak)) void uart_irq_tx_enable(const struct device *dev) {}\n__attribute__((weak)) void uart_irq_tx_disable(const struct device *dev) {}\n__attribute__((weak)) void uart_irq_rx_disable(const struct device *dev) {}\n__attribute__((weak)) int i2c_read(const struct device *dev, uint8_t *buf, uint32_t num_bytes, uint16_t addr) { return 0; }\n__attribute__((weak)) int i2c_write(const struct device *dev, const uint8_t *buf, uint32_t num_bytes, uint16_t addr) { return 0; }\n__attribute__((weak)) int i2c_write_read(const struct device *dev, uint16_t addr, const void *write_buf, size_t num_write, void *read_buf, size_t num_read) { return 0; }\n__attribute__((weak)) int i2c_reg_read_byte(const struct device *dev, uint16_t dev_addr, uint8_t reg_addr, uint8_t *value) { ++g_i2c_call_counter; if (g_i2c_force_errno != 0) { return g_i2c_force_errno; } if (g_i2c_fail_on_call_n != 0 && g_i2c_call_counter == g_i2c_fail_on_call_n) { return g_i2c_fail_on_call_errno; } if (value) { *value = 0; } return 0; }\n__attribute__((weak)) int i2c_reg_write_byte(const struct device *dev, uint16_t dev_addr, uint8_t reg_addr, uint8_t value) { ++g_i2c_call_counter; if (g_i2c_force_errno != 0) { return g_i2c_force_errno; } if (g_i2c_fail_on_call_n != 0 && g_i2c_call_counter == g_i2c_fail_on_call_n) { return g_i2c_fail_on_call_errno; } return 0; }\n__attribute__((weak)) int i2c_burst_read(const struct device *dev, uint16_t dev_addr, uint8_t start_addr, uint8_t *buf, uint32_t num_bytes) { ++g_i2c_call_counter; if (g_i2c_force_errno != 0) { return g_i2c_force_errno; } if (g_i2c_fail_on_call_n != 0 && g_i2c_call_counter == g_i2c_fail_on_call_n) { return g_i2c_fail_on_call_errno; } if (buf && num_bytes > 0) { memset(buf, 0, num_bytes); } return 0; }\n__attribute__((weak)) int k_sem_init(struct k_sem *sem, unsigned int initial, unsigned int limit) { sem->count = initial; sem->limit = limit; return 0; }\n__attribute__((weak)) void k_sem_give(struct k_sem *sem) { if (sem->count < sem->limit) { sem->count++; } }\n__attribute__((weak)) int k_sem_take(struct k_sem *sem, k_timeout_t timeout) { if (sem->count > 0) { sem->count--; return 0; } return -EBUSY; }\n}\n")
+file(WRITE ${CMAKE_BINARY_DIR}/mock_globals.cpp "#include <zephyr/device.h>\n#include <stdint.h>\n#include <string.h>\n#include <zephyr/kernel.h>\n#include <zephyr/pm/pm.h>\n#include <zephyr/pm/device.h>\n#include <zephyr/drivers/watchdog.h>\n#include <zephyr/drivers/counter.h>\n#include <zephyr/drivers/uart.h>\n#include <zephyr/drivers/i2c.h>\n#include <zephyr/sys/atomic.h>\n\n__attribute__((weak)) bool run_thread_once = false;\n\n__attribute__((weak)) const device* i2c_hardware = nullptr;\n\n__attribute__((weak)) bool atomic_cas(atomic_t *target, atomic_val_t old_value, atomic_val_t new_value) { return target->compare_exchange_strong(old_value, new_value); }\n\nuint32_t virtual_uptime = 0;\n\n// Fault-injection controls for host-side I2C tests. Default state matches the\n// original always-succeed mock behavior exactly.\nint g_i2c_force_errno = 0;            // 0 = success; set to a negative errno (e.g. -ETIMEDOUT, -EBUSY, -EAGAIN, -ENODEV) to force EVERY I2C call to fail\nbool g_device_ready_override = true;  // controls device_is_ready() return value\n\n// Per-call-index fault injection, for covering long straight-line chains of\n// sequential I2C reads (e.g. calibration loaders) where each individual read\n// needs its own isolated failure to exercise every branch. g_i2c_call_counter\n// increments on every mocked I2C transaction (read byte / burst read / write\n// byte); when it reaches g_i2c_fail_on_call_n, that single call fails with\n// g_i2c_fail_on_call_errno and every other call around it still succeeds.\n// Disabled by default (0), and independent of g_i2c_force_errno -- g_i2c_force_errno\n// still takes priority (blanket failure) if both are set.\nint g_i2c_call_counter = 0;\nint g_i2c_fail_on_call_n = 0;\nint g_i2c_fail_on_call_errno = -5;    // -EIO by default\n\nextern \"C\" {\n__attribute__((weak)) bool device_is_ready(const struct device *dev) { return g_device_ready_override; }\n__attribute__((weak)) int wdt_install_timeout(const struct device *dev, const struct wdt_timeout_cfg *cfg) { return 0; }\n__attribute__((weak)) int wdt_setup(const struct device *dev, uint8_t options) { return 0; }\n__attribute__((weak)) int wdt_feed(const struct device *dev, int channel_id) { return 0; }\n__attribute__((weak)) void pm_policy_state_lock_get(uint8_t state, uint8_t substate_id) {}\n__attribute__((weak)) void pm_policy_state_lock_put(uint8_t state, uint8_t substate_id) {}\n__attribute__((weak)) int pm_device_action_run(const struct device *dev, enum pm_device_action action) { return 0; }\n__attribute__((weak)) uint32_t counter_us_to_ticks(const struct device *dev, uint64_t us) { return 0; }\n__attribute__((weak)) int counter_set_channel_alarm(const struct device *dev, uint8_t chan_id, const struct counter_alarm_cfg *alarm_cfg) { return 0; }\n__attribute__((weak)) int counter_start(const struct device *dev) { return 0; }\n__attribute__((weak)) int counter_cancel_channel_alarm(const struct device *dev, uint8_t chan_id) { return 0; }\n__attribute__((weak)) int k_thread_stack_space_get(const void *thread, size_t *unused_ptr) { if (unused_ptr) { *unused_ptr = 0; } return 0; }\n__attribute__((weak)) int k_work_cancel_delayable(struct k_work_delayable *dwork) { return 0; }\n__attribute__((weak)) int uart_irq_update(const struct device *dev) { return 1; }\n__attribute__((weak)) int uart_err_check(const struct device *dev) { return 0; }\n__attribute__((weak)) int uart_irq_tx_ready(const struct device *dev) { return 1; }\n__attribute__((weak)) int uart_fifo_fill(const struct device *dev, const uint8_t *tx_data, const int size) { return size; }\n__attribute__((weak)) void uart_irq_tx_enable(const struct device *dev) {}\n__attribute__((weak)) void uart_irq_tx_disable(const struct device *dev) {}\n__attribute__((weak)) void uart_irq_rx_disable(const struct device *dev) {}\n__attribute__((weak)) int i2c_read(const struct device *dev, uint8_t *buf, uint32_t num_bytes, uint16_t addr) { return 0; }\n__attribute__((weak)) int i2c_write(const struct device *dev, const uint8_t *buf, uint32_t num_bytes, uint16_t addr) { return 0; }\n__attribute__((weak)) int i2c_write_read(const struct device *dev, uint16_t addr, const void *write_buf, size_t num_write, void *read_buf, size_t num_read) { return 0; }\n__attribute__((weak)) int i2c_reg_read_byte(const struct device *dev, uint16_t dev_addr, uint8_t reg_addr, uint8_t *value) { ++g_i2c_call_counter; if (g_i2c_force_errno != 0) { return g_i2c_force_errno; } if (g_i2c_fail_on_call_n != 0 && g_i2c_call_counter == g_i2c_fail_on_call_n) { return g_i2c_fail_on_call_errno; } if (value) { *value = 0; } return 0; }\n__attribute__((weak)) int i2c_reg_write_byte(const struct device *dev, uint16_t dev_addr, uint8_t reg_addr, uint8_t value) { ++g_i2c_call_counter; if (g_i2c_force_errno != 0) { return g_i2c_force_errno; } if (g_i2c_fail_on_call_n != 0 && g_i2c_call_counter == g_i2c_fail_on_call_n) { return g_i2c_fail_on_call_errno; } return 0; }\n__attribute__((weak)) int i2c_burst_read(const struct device *dev, uint16_t dev_addr, uint8_t start_addr, uint8_t *buf, uint32_t num_bytes) { ++g_i2c_call_counter; if (g_i2c_force_errno != 0) { return g_i2c_force_errno; } if (g_i2c_fail_on_call_n != 0 && g_i2c_call_counter == g_i2c_fail_on_call_n) { return g_i2c_fail_on_call_errno; } if (buf && num_bytes > 0) { memset(buf, 0, num_bytes); } return 0; }\n__attribute__((weak)) int k_sem_init(struct k_sem *sem, unsigned int initial, unsigned int limit) { sem->count = initial; sem->limit = limit; return 0; }\n__attribute__((weak)) void k_sem_give(struct k_sem *sem) { if (sem->count < sem->limit) { sem->count++; } }\n__attribute__((weak)) int k_sem_take(struct k_sem *sem, k_timeout_t timeout) { if (sem->count > 0) { sem->count--; return 0; } return -EBUSY; }\n__attribute__((weak)) int adc_read(const struct device *dev, const struct adc_sequence *sequence) { return 0; }\n
+__attribute__((weak)) int adc_raw_to_millivolts_dt(const struct adc_dt_spec *spec, int32_t *val) { if (val) *val = 2500; return 0; }\n}\n")
 # 4. Define the executable
 add_executable(run_pm_tests 
     test_power_management.cpp 
@@ -194,37 +249,37 @@ target_link_libraries(run_sync_tests PRIVATE GTest::gtest_main pthread)
 target_link_libraries(run_command_tests PRIVATE GTest::gtest_main pthread)
 
 # Enable GCOV profiling flags for compilation and linking
-target_compile_options(run_pm_tests PRIVATE --coverage -fno-exceptions -fno-unwind-tables -fno-asynchronous-unwind-tables)
+target_compile_options(run_pm_tests PRIVATE --coverage)
 target_link_options(run_pm_tests PRIVATE --coverage)
 
 target_compile_options(run_usb_shell_tests PRIVATE --coverage -fno-builtin-snprintf -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0)
 target_link_options(run_usb_shell_tests PRIVATE --coverage -Wl,--wrap=snprintf)
 
-target_compile_options(run_battery_tests PRIVATE --coverage -fno-exceptions -fno-unwind-tables -fno-asynchronous-unwind-tables)
+target_compile_options(run_battery_tests PRIVATE --coverage)
 target_link_options(run_battery_tests PRIVATE --coverage)
 
-target_compile_options(run_static_memory_tests PRIVATE --coverage -fno-exceptions -fno-unwind-tables -fno-asynchronous-unwind-tables)
+target_compile_options(run_static_memory_tests PRIVATE --coverage)
 target_link_options(run_static_memory_tests PRIVATE --coverage)
 
-target_compile_options(run_config_tests PRIVATE --coverage -fno-exceptions -fno-unwind-tables -fno-asynchronous-unwind-tables)
+target_compile_options(run_config_tests PRIVATE --coverage)
 target_link_options(run_config_tests PRIVATE --coverage)
 
-target_compile_options(run_i2c_faults_tests PRIVATE --coverage -fno-exceptions -fno-unwind-tables -fno-asynchronous-unwind-tables)
+target_compile_options(run_i2c_faults_tests PRIVATE --coverage)
 target_link_options(run_i2c_faults_tests PRIVATE --coverage)
 
-target_compile_options(run_state_machine_tests PRIVATE --coverage -fno-exceptions -fno-unwind-tables -fno-asynchronous-unwind-tables)
+target_compile_options(run_state_machine_tests PRIVATE --coverage)
 target_link_options(run_state_machine_tests PRIVATE --coverage)
 
-target_compile_options(run_sync_tests PRIVATE --coverage -fno-exceptions -fno-unwind-tables -fno-asynchronous-unwind-tables)
+target_compile_options(run_sync_tests PRIVATE --coverage)
 target_link_options(run_sync_tests PRIVATE --coverage)
 
-target_compile_options(run_command_tests PRIVATE --coverage -fno-exceptions -fno-unwind-tables -fno-asynchronous-unwind-tables)
+target_compile_options(run_command_tests PRIVATE --coverage)
 target_link_options(run_command_tests PRIVATE --coverage)
 
 target_compile_definitions(run_static_memory_tests PRIVATE IS_TEST_ENVIRONMENT)
 target_compile_definitions(run_pm_tests PRIVATE IS_TEST_ENVIRONMENT)
-target_compile_definitions(run_usb_shell_tests PRIVATE IS_TEST_ENVIRONMENT)
-target_compile_definitions(run_battery_tests PRIVATE IS_TEST_ENVIRONMENT)
+target_compile_definitions(run_usb_shell_tests PRIVATE IS_TEST_ENVIRONMENT INA226_TEST_BYPASS_STATIC_ASSERT)
+target_compile_definitions(run_battery_tests PRIVATE IS_TEST_ENVIRONMENT INA226_TEST_BYPASS_STATIC_ASSERT)
 target_compile_definitions(run_config_tests PRIVATE IS_TEST_ENVIRONMENT)
 target_compile_definitions(run_sync_tests PRIVATE IS_TEST_ENVIRONMENT)
 target_compile_definitions(run_command_tests PRIVATE IS_TEST_ENVIRONMENT)

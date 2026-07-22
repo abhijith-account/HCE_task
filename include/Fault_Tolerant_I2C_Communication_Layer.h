@@ -60,6 +60,7 @@ class I2CManager{
       Result<uint8_t> readRegister(uint16_t sensor_addr,uint8_t reg_addr);
       Result<bool> writeRegister(uint16_t sensor_addr,uint8_t reg_addr,uint8_t val);
       Result<uint16_t> readWord(uint16_t sensor_addr,uint8_t reg_addr);
+      Result<bool> writeWord(uint16_t sensor_addr, uint8_t reg_addr, uint16_t val);
       Result<uint32_t> read24Bit(uint16_t sensor_addr,uint8_t reg_addr);
       Result<uint64_t> read64Bit(uint16_t sensor_addr,uint8_t reg_addr);
 };
