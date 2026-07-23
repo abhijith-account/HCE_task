@@ -21,9 +21,13 @@
         status = "okay";
     };
     ina226: ina226@40 {
-        compatible = "ti,ina226";   
-        reg = <0x40>;
-        status = "okay";
+    compatible = "ti,ina226";
+    reg = <0x40>;
+
+    rshunt-micro-ohms = <100000>;
+    current-lsb-microamps = <25>;
+
+    status = "okay";
     };
 };
 
