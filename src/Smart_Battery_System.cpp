@@ -121,8 +121,7 @@ bool init() { return true; }
 Reading<int16_t> readCelsius() { return Reading<int16_t>::Ok(250); }
 #else
 
-const struct adc_dt_spec thermistor_adc_chan =
-    ADC_DT_SPEC_GET_BY_IDX(DT_NODELABEL(zephyr_user), 0);
+const struct adc_dt_spec thermistor_adc_chan = ADC_DT_SPEC_GET_BY_IDX(DT_NODELABEL(zephyr_user), 0);
 
 bool init() {
     if (!adc_is_ready_dt(&thermistor_adc_chan)) {
@@ -201,8 +200,9 @@ SbsBattery::SbsBattery(I2CManager* i2c_bus, DeviceContext* context, WatchdogFeed
     : ina226(i2c_bus), sys_context(context), current_state(BatteryFSM::IDLE),
       full_charge_logged(false), watchdog_feed_hook((hook != nullptr) ? hook : daly_watchdog_feed_hook),
       cache_mutex{}, last_valid_comm_time(k_uptime_get_32()), consecutive_comm_failures(0U),
+      consecutive_mutex_failures(0U),
       cache{}, stats{}, soc_initialized(false), accumulated_uAh(0), last_poll_time_ms(0U),
-      consecutive_jump_rejects(0U) {}
+      consecutive_jump_rejects(0U), rest_period_start_ms(0U) {}
 
 bool SbsBattery::init() {
     k_mutex_init(&cache_mutex);
@@ -304,11 +304,30 @@ uint8_t SbsBattery::estimateSocFromVoltage(uint16_t pack_mv) const {
 void SbsBattery::seedOrResyncCoulombCounter(uint16_t pack_mv, int32_t current_ma, bool force_seed) {
     const bool at_rest = (current_ma > -BatteryLimits::REST_CURRENT_THRESHOLD_MA) &&
                          (current_ma < BatteryLimits::REST_CURRENT_THRESHOLD_MA);
-                         
+
+    const uint32_t now = k_uptime_get_32();
+
+    // Track how long the pack has been continuously at rest. Once that
+    // exceeds REST_RESYNC_DURATION_MS, resync against the OCV curve even at
+    // a mid-range SoC where the full/empty-only resync below wouldn't fire --
+    // otherwise a pack left resting mid-charge for hours never gets its
+    // coulomb-counter drift corrected.
+    bool long_rest_resync = false;
+    if (at_rest) {
+        if (rest_period_start_ms == 0U) {
+            rest_period_start_ms = now;
+        } else if ((now - rest_period_start_ms) >= BatteryLimits::REST_RESYNC_DURATION_MS) {
+            long_rest_resync = true;
+            rest_period_start_ms = now; // restart the window so it can resync again after another rest period
+        }
+    } else {
+        rest_period_start_ms = 0U;
+    }
+
     const bool full_charge = (pack_mv >= (BatteryLimits::PACK_MAX_VOLTAGE_MV - 100)) && at_rest;
     const bool full_discharge = (pack_mv <= (BatteryLimits::PACK_MIN_VOLTAGE_MV + 100)) && at_rest;
 
-    if (force_seed || full_charge || full_discharge) {
+    if (force_seed || full_charge || full_discharge || long_rest_resync) {
         const uint8_t ocv_soc_pct = estimateSocFromVoltage(pack_mv);
         accumulated_uAh = (static_cast<int64_t>(ocv_soc_pct) * BatteryLimits::NOMINAL_CAPACITY_MAH * 1000LL) / 100LL;
         soc_initialized = true;
@@ -354,6 +373,7 @@ void SbsBattery::updateStateAndPublish(uint16_t pack_mv, int32_t current_ma, int
     cache.timestamp_ms = now;
 
     consecutive_comm_failures = 0U;
+    consecutive_mutex_failures = 0U;
     last_valid_comm_time = now;
 
     k_mutex_unlock(&cache_mutex);
@@ -393,26 +413,42 @@ void SbsBattery::pollHardwareAndUpdateCache() {
         return;
     }
 
-    // Rate of change validation against last valid snapshot
-    BmsCache snapshot = getCacheSnapshot();
-    if (snapshot.valid && snapshot.last_error == CommFault::NONE) {
-        const int32_t v_delta = absolute(static_cast<int32_t>(pack_mv) - static_cast<int32_t>(snapshot.voltage.value));
-        const int32_t c_delta = absolute(current_ma - snapshot.current.value);
-        
-        if (v_delta > BatteryLimits::MAX_VOLTAGE_DELTA_MV || c_delta > BatteryLimits::MAX_CURRENT_DELTA_MA) {
-            atomic_inc(&stats.validation_errors);
-            publishError(CommFault::VALIDATION_ERROR);
-            return;
-        }
-    }
-
     const result<int16_t> temp_tenths = fetchTemperatureTenthsWithRetry();
     if (!temp_tenths.success) {
         publishError(temp_tenths.error);
         return;
     }
 
+    // Rate-of-change validation against the last published snapshot. A
+    // single noisy sample doesn't immediately reject/fault -- see
+    // BatteryLimits::MAX_CONSECUTIVE_JUMP_REJECTS.
+    const BmsCache snapshot = getCacheSnapshot();
+    if (snapshot.valid && snapshot.last_error == CommFault::NONE) {
+        const int32_t v_delta = absolute(static_cast<int32_t>(pack_mv) - static_cast<int32_t>(snapshot.voltage.value));
+        const int32_t c_delta = absolute(current_ma - snapshot.current.value);
+        const int32_t prev_temp_tenths_c = static_cast<int32_t>(snapshot.temperature.value) - Thermistor::KELVIN_OFFSET_TENTHS;
+        const int32_t t_delta = absolute(static_cast<int32_t>(temp_tenths.value) - prev_temp_tenths_c);
+
+        const bool jump_detected = (v_delta > BatteryLimits::MAX_VOLTAGE_DELTA_MV) ||
+                                    (c_delta > BatteryLimits::MAX_CURRENT_DELTA_MA) ||
+                                    (t_delta > BatteryLimits::MAX_TEMP_DELTA_TENTHS);
+
+        if (jump_detected) {
+            atomic_inc(&stats.validation_errors);
+            ++consecutive_jump_rejects;
+            if (consecutive_jump_rejects >= BatteryLimits::MAX_CONSECUTIVE_JUMP_REJECTS) {
+                publishError(CommFault::VALIDATION_ERROR);
+            }
+            // Below threshold: drop this sample and keep the prior cache
+            // value rather than escalating -- the watchdog was already fed
+            // by the fetch retries above, so nothing times out from this.
+            return;
+        }
+    }
+    consecutive_jump_rejects = 0U;
+
     updateStateAndPublish(pack_mv, current_ma, temp_tenths.value);
+    atomic_inc(&stats.successful_publishes);
     feedWatchdog();
 #endif
 }
@@ -420,21 +456,37 @@ void SbsBattery::pollHardwareAndUpdateCache() {
 void SbsBattery::publishError(CommFault fault) {
     bool threshold_reached = false;
     bool timeout_reached = false;
-    
+    const bool is_mutex_fault = (fault == CommFault::MUTEX_TIMEOUT);
+
     if (k_mutex_lock(&cache_mutex, K_MSEC(BatteryLimits::MUTEX_TIMEOUT_MS)) == 0) {
         cache.valid = false;
         cache.last_error = fault;
-        ++consecutive_comm_failures;
-        threshold_reached = (consecutive_comm_failures >= WATCHDOG_FAILURE_THRESHOLD);
+
+        if (is_mutex_fault) {
+            ++consecutive_mutex_failures;
+            threshold_reached = (consecutive_mutex_failures >= WATCHDOG_MUTEX_FAILURE_THRESHOLD);
+        } else {
+            ++consecutive_comm_failures;
+            // A hardware fault that we could still lock the mutex to record
+            // proves the mutex itself isn't stuck -- don't let unrelated
+            // mutex-contention history linger.
+            consecutive_mutex_failures = 0U;
+            threshold_reached = (consecutive_comm_failures >= WATCHDOG_FAILURE_THRESHOLD);
+        }
+
         timeout_reached = ((k_uptime_get_32() - last_valid_comm_time) > COMM_TIMEOUT_MS);
         k_mutex_unlock(&cache_mutex);
     } else {
-        // Assume failure if we encounter a deadlock during a hardware fault
-        threshold_reached = true; 
+        // Couldn't even lock to record the fault -- the mutex itself is
+        // stuck, which is unambiguously a software contention issue rather
+        // than a hardware comm failure, regardless of what `fault` was.
+        ++consecutive_mutex_failures;
+        threshold_reached = (consecutive_mutex_failures >= WATCHDOG_MUTEX_FAILURE_THRESHOLD);
     }
 
     if ((threshold_reached || timeout_reached) && (current_state.load() != BatteryFSM::CUTOFF)) {
-        LOG_ERR("CRITICAL: BMS communication watchdog triggered. Fault:%d", static_cast<int>(fault));
+        LOG_ERR("CRITICAL: BMS watchdog triggered. Fault:%d (mutex-related:%d)",
+                static_cast<int>(fault), static_cast<int>(is_mutex_fault));
         if (sys_context != nullptr) {
             sys_context->triggerFault("BMS Communication Watchdog");
         }
@@ -492,17 +544,15 @@ result<MilliAmpHours> SbsBattery::getCapacity() const {
 }
 
 void SbsBattery::processFSM() {
-    BmsCache snapshot = getCacheSnapshot();
-    auto current_res = getCurrent();
-    auto soc_res = getStateOfCharge();
+    const BmsCache snapshot = getCacheSnapshot();
 
-    if (!current_res.success || !soc_res.success) {
-        LOG_ERR("Battery cache unavailable. Error Code:%d", static_cast<int>(snapshot.last_error));
+    if (!isCacheValid(snapshot)) {
+        LOG_ERR("Battery cache unavailable. Error Code:%d", static_cast<int>(cacheFailureReason(snapshot)));
         return;
     }
 
-    const int32_t current_ma = current_res.value.value;
-    const uint8_t soc_pct = soc_res.value.value;
+    const int32_t current_ma = snapshot.current.value;
+    const uint8_t soc_pct = snapshot.soc.value;
     const BatteryFSM current_fsm_state = current_state.load();
 
     if (current_fsm_state != BatteryFSM::CUTOFF) {
@@ -544,6 +594,7 @@ CommStatistics SbsBattery::getStats() const {
     snapshot.thermistor_faults = static_cast<uint32_t>(atomic_get(&stats.thermistor_faults));
     snapshot.retries = static_cast<uint32_t>(atomic_get(&stats.retries));
     snapshot.validation_errors = static_cast<uint32_t>(atomic_get(&stats.validation_errors));
+    snapshot.successful_publishes = static_cast<uint32_t>(atomic_get(&stats.successful_publishes));
     return snapshot;
 }
 
@@ -603,8 +654,19 @@ void bms_comm_thread(void) {
         return; 
     }
 
+    uint32_t init_attempts = 0U;
     while (!smart_battery->init()) {
-        LOG_ERR("BMS sensors (INA226 / thermistor) init failed. Retrying in 5s...");
+        ++init_attempts;
+        LOG_ERR("BMS sensors (INA226 / thermistor) init failed (attempt %u/%u).",
+                init_attempts, BatteryLimits::MAX_INIT_RETRIES);
+
+        if (init_attempts >= BatteryLimits::MAX_INIT_RETRIES) {
+            LOG_ERR("BMS sensor init failed %u times -- escalating fault instead of retrying forever.", init_attempts);
+            sys_context.triggerFault("BMS Sensor Init Failure");
+            k_sem_give(&bms_objects_ready_sem);
+            return;
+        }
+
         k_msleep(5000);
     }
 
@@ -630,7 +692,7 @@ void battery_monitor_thread(void) {
                 if (smart_battery->getState() == BatteryFSM::DISCHARGING) {
                     const auto soc = smart_battery->getStateOfCharge();
                     if (soc.success) {
-                        LOG_INF("Battery Discharging: %u%% remaining", soc.value.value);
+                        LOG_DBG("Battery Discharging: %u%% remaining", soc.value.value);
                     }
                 }
             }

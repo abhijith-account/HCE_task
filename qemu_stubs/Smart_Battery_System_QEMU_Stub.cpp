@@ -37,6 +37,7 @@ I2CManager* getI2cBusManagerInstance()
 namespace INA226 {
     Driver::Driver(I2CManager* i2c_bus) : i2c(i2c_bus) {}
 }
+
 /*----------------------------------------------------------------------------
  * SbsBattery (Stub Implementation)
  *---------------------------------------------------------------------------*/
@@ -53,12 +54,14 @@ SbsBattery::SbsBattery(
       cache_mutex{},
       last_valid_comm_time(0U),
       consecutive_comm_failures(0U),
+      consecutive_mutex_failures(0U),
       cache{},
       stats{},
       soc_initialized(false),
       accumulated_uAh(0),
       last_poll_time_ms(0U),
-      consecutive_jump_rejects(0U)
+      consecutive_jump_rejects(0U),
+      rest_period_start_ms(0U)
 {
     k_mutex_init(&cache_mutex);
 }
@@ -76,30 +79,31 @@ void SbsBattery::setWatchdogFeedHook(WatchdogFeedHook hook)
 
 void SbsBattery::notifySystemWakeup()
 {
-    k_mutex_lock(&cache_mutex, K_FOREVER);
-    last_valid_comm_time = k_uptime_get_32();
-    last_poll_time_ms = last_valid_comm_time;
-    if (cache.valid) cache.timestamp_ms = last_valid_comm_time;
-    k_mutex_unlock(&cache_mutex);
+    if (k_mutex_lock(&cache_mutex, K_NO_WAIT) == 0) {
+        last_valid_comm_time = k_uptime_get_32();
+        last_poll_time_ms = last_valid_comm_time;
+        if (cache.valid) cache.timestamp_ms = last_valid_comm_time;
+        k_mutex_unlock(&cache_mutex);
+    }
 }
 
 void SbsBattery::pollHardwareAndUpdateCache()
 {
-    k_mutex_lock(&cache_mutex, K_FOREVER);
+    if (k_mutex_lock(&cache_mutex, K_MSEC(BatteryLimits::MUTEX_TIMEOUT_MS)) == 0) {
+        cache.valid = true;
+        cache.last_error = CommFault::NONE;
 
-    cache.valid = true;
-    cache.last_error = CommFault::NONE;
+        // Hardcoded stub values
+        cache.voltage = Millivolts{12000};
+        cache.current = Milliamps{0};
+        cache.soc = Percent{95};
+        cache.temperature = Kelvin{298};
+        cache.capacity = MilliAmpHours{3000};
 
-    // Hardcoded stub values
-    cache.voltage = Millivolts{12000};
-    cache.current = Milliamps{0};
-    cache.soc = Percent{95};
-    cache.temperature = Kelvin{298};
-    cache.capacity = MilliAmpHours{3000};
+        cache.timestamp_ms = k_uptime_get_32();
 
-    cache.timestamp_ms = k_uptime_get_32();
-
-    k_mutex_unlock(&cache_mutex);
+        k_mutex_unlock(&cache_mutex);
+    }
 }
 
 result<Millivolts> SbsBattery::getVoltage() const
@@ -164,19 +168,30 @@ void SbsBattery::feedWatchdog() const
 
 void SbsBattery::publishError(CommFault fault)
 {
-    k_mutex_lock(&cache_mutex, K_FOREVER);
-
-    cache.last_error = fault;
-    cache.valid = false;
-
-    k_mutex_unlock(&cache_mutex);
+    if (k_mutex_lock(&cache_mutex, K_MSEC(BatteryLimits::MUTEX_TIMEOUT_MS)) == 0) {
+        cache.last_error = fault;
+        cache.valid = false;
+        k_mutex_unlock(&cache_mutex);
+    }
 }
 
 BmsCache SbsBattery::getCacheSnapshot() const
 {
-    k_mutex_lock(&cache_mutex, K_FOREVER);
-    BmsCache snapshot = cache;
-    k_mutex_unlock(&cache_mutex);
-
+    BmsCache snapshot{};
+    if (k_mutex_lock(&cache_mutex, K_MSEC(BatteryLimits::MUTEX_TIMEOUT_MS)) == 0) {
+        snapshot = cache;
+        k_mutex_unlock(&cache_mutex);
+    } else {
+        snapshot.valid = false;
+        snapshot.last_error = CommFault::MUTEX_TIMEOUT;
+    }
     return snapshot;
 }
+
+// Dummy implementations for private methods to satisfy the linker if called internally by tests
+result<int16_t> SbsBattery::fetchBusVoltageRawWithRetry() { return result<int16_t>::Ok(0); }
+result<int16_t> SbsBattery::fetchCurrentRawWithRetry() { return result<int16_t>::Ok(0); }
+result<int16_t> SbsBattery::fetchTemperatureTenthsWithRetry() { return result<int16_t>::Ok(250); }
+uint8_t SbsBattery::estimateSocFromVoltage(uint16_t pack_mv) const { return 50; }
+void SbsBattery::seedOrResyncCoulombCounter(uint16_t pack_mv, int32_t current_ma, bool force_seed) {}
+void SbsBattery::updateStateAndPublish(uint16_t pack_mv, int32_t current_ma, int16_t temp_tenths) {}

@@ -148,12 +148,19 @@ void inject_mock_uart_data(std::string_view data){
     if (mock_uart_irq_cb) mock_uart_irq_cb(dummy_uart_dev,mock_uart_cb_data);
 }
 
-class UsbShellTestSuite:public::testing::Test{
+class UsbShellTestSuite : public ::testing::Test {
   protected:
       UsbCdcFacade facade;
-      void SetUp() override{
-          mock_dtr_state=0; mock_tx_index=0; mock_tx_buffer.fill(0);
-          mock_rx_head=0; mock_rx_tail=0;
+      DeviceContext global_ctx;
+      I2CManager global_i2c{dummy_uart_dev};
+      SbsBattery global_battery{&global_i2c, &global_ctx};
+
+      void SetUp() override {
+          mock_dtr_state = 0; 
+          mock_tx_index = 0; 
+          mock_tx_buffer.fill(0);
+          mock_rx_head = 0; 
+          mock_rx_tail = 0;
           mock_nvs_write_fail = false;
           for (auto& entry : mock_nvs_map) entry.active = false;
           enable_snprintf_mock = false;
@@ -162,6 +169,20 @@ class UsbShellTestSuite:public::testing::Test{
           mock_snprintf_exact_return_on_call = -1;
           mock_snprintf_call_count = 0;
           virtual_uptime = 0;
+          
+          mock_uart_line_ctrl_fail = false;
+          mock_uart_callback_fail = false;
+          force_device_not_ready = false;
+          mock_uart_irq_update_fail = false;
+          extern bool run_thread_once;
+          run_thread_once = false;
+
+          // Patch global diag_shell to point to our test-scoped valid dependencies
+          auto* mut_sys_ctx = const_cast<DeviceContext**>(&diag_shell.sys_ctx);
+          *mut_sys_ctx = &global_ctx;
+          auto* mut_battery = const_cast<SbsBattery**>(&diag_shell.battery);
+          *mut_battery = &global_battery;
+
           EXPECT_TRUE(facade.init());
           ConfigStore::getInstance().init();
       }
@@ -380,8 +401,9 @@ TEST_F(UsbShellTestSuite, ParseIntTokenAndTrimDirectEdgeCases) {
 }
 
 // ---- Process / Thread ----
-bool run_thread_once=false;
+extern bool run_thread_once;
 extern void shell_thread(void);
+
 TEST_F(UsbShellTestSuite,ProcessAndShellThread){
     DeviceContext ctx;
     I2CManager i2c(dummy_uart_dev); // Use I2CManager, not UARTManager
@@ -392,21 +414,28 @@ TEST_F(UsbShellTestSuite,ProcessAndShellThread){
     shell.process();
     EXPECT_NE(testing::internal::GetCapturedStdout().find("[ERR] USB initialization failed"),std::string_view::npos);
     force_device_not_ready=false;
+    
     // connected command
     mock_dtr_state=1; run_thread_once=false; mock_tx_index=0; mock_tx_buffer.fill(0);
-    shell.process(); inject_mock_uart_data("status\n"); run_thread_once=true; shell.process();
+    shell.process(); 
+    inject_mock_uart_data("status\n"); 
+    run_thread_once=false; // Just consume one cycle to get the output!
+    shell.process();
     std::string_view out(mock_tx_buffer.data(), mock_tx_index);
     EXPECT_NE(out.find("sys_state"),std::string_view::npos);
     EXPECT_NE(out.find("med-device:~$ "),std::string_view::npos);
+    
     // empty line
     mock_dtr_state=1; mock_tx_index=0; run_thread_once=false;
     shell.process(); inject_mock_uart_data("\n"); shell.process();
     EXPECT_EQ(mock_tx_index,0u);
+    
     // disconnected
-    mock_dtr_state=0; run_thread_once=true; shell.process(); SUCCEED();
+    mock_dtr_state=0; run_thread_once=false; shell.process(); SUCCEED();
+    
     // shell thread
-    mock_dtr_state=1; EXPECT_NO_FATAL_FAILURE(shell_thread());
-    inject_mock_uart_data("status\n"); EXPECT_NO_FATAL_FAILURE(shell_thread());
+    mock_dtr_state=1; run_thread_once=false; EXPECT_NO_FATAL_FAILURE(shell_thread());
+    inject_mock_uart_data("status\n"); run_thread_once=false; EXPECT_NO_FATAL_FAILURE(shell_thread());
 }
 // ---- Dispatch / Commands ----
 TEST_F(UsbShellTestSuite, DispatchCommands) {
@@ -865,17 +894,18 @@ TEST_F(UsbShellTestSuite, PowerObserverAndSafeHaltGating) {
     mock_dtr_state = 1;
     mock_tx_index = 0;
     
-    run_thread_once = true;
+    extern bool run_thread_once;
+    run_thread_once = false;
     shell.process();
 
     PowerManager::getInstance().notifyBeforeSleep();
     inject_mock_uart_data("status\n");
-    run_thread_once = true;
+    run_thread_once = false;
     shell.process();
     EXPECT_EQ(mock_tx_index, 0u) << "Shell should ignore input while sleeping";
 
     PowerManager::getInstance().notifyAfterWakeup();
-    run_thread_once = true;
+    run_thread_once = false;
     shell.process();
     EXPECT_GT(mock_tx_index, 0u) << "Shell should process queued input after waking up";
     
@@ -883,14 +913,14 @@ TEST_F(UsbShellTestSuite, PowerObserverAndSafeHaltGating) {
     PowerManager::getInstance().notifySleepAborted();
     mock_tx_index = 0;
     inject_mock_uart_data("log dump\n");
-    run_thread_once = true;
+    run_thread_once = false;
     shell.process();
     EXPECT_GT(mock_tx_index, 0u) << "Shell should resume if sleep is aborted";
 
     ctx.current_state = SystemState::SAFE_HALT;
     mock_tx_index = 0;
     inject_mock_uart_data("status\n");
-    run_thread_once = true;
+    run_thread_once = false;
     shell.process();
     EXPECT_EQ(mock_tx_index, 0u) << "Shell should halt processing in SAFE_HALT state";
     
@@ -920,6 +950,11 @@ TEST_F(UsbShellTestSuite, BatteryCacheAndStateOfCharge) {
     DeviceContext ctx;
     I2CManager i2c(dummy_uart_dev);
     SbsBattery battery(&i2c, &ctx);
+    
+    // Fast-forward mock time so the cache timestamp isn't exactly 0. 
+    // The BMS freshness check strictly rejects timestamp 0 as uninitialized data.
+    virtual_uptime = 10000;
+
     BmsCache valid_cache{};
     valid_cache.valid = true;
     valid_cache.last_error = CommFault::NONE;
@@ -931,7 +966,7 @@ TEST_F(UsbShellTestSuite, BatteryCacheAndStateOfCharge) {
     ASSERT_TRUE(soc.success);
     EXPECT_EQ(soc.value.value, 75);
 
-    valid_cache.timestamp_ms = 0;  // will fail freshness check
+    valid_cache.timestamp_ms = 0;  // will explicitly fail freshness check
     battery.cache = valid_cache;
     soc = battery.getStateOfCharge();
     EXPECT_FALSE(soc.success);

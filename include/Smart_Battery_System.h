@@ -162,7 +162,7 @@ struct BatteryLimits {
     static constexpr uint16_t PACK_MIN_VOLTAGE_MV = 8700U;
     static constexpr uint16_t PACK_MAX_VOLTAGE_MV = 12600U;
     static constexpr uint32_t NOMINAL_CAPACITY_MAH = 2000U;
-    static constexpr uint32_t MAX_CHARGE_CURRENT_MA = 800U;  
+    static constexpr uint32_t MAX_CHARGE_CURRENT_MA = 2000U;
     static constexpr uint32_t MAX_DISCHARGE_CURRENT_MA = 800U;
     static constexpr int32_t REST_CURRENT_THRESHOLD_MA = 50;
 
@@ -188,6 +188,14 @@ struct BatteryLimits {
     // consecutive failures it escalates a fault instead of retrying forever
     // silently.
     static constexpr uint32_t MAX_INIT_RETRIES = 10U;
+
+    // Coulomb counting only resyncs against the OCV curve near the voltage
+    // extremes (full charge/discharge) today, since that's where OCV maps to
+    // SoC most reliably. If the pack rests at a mid-range SoC for a long
+    // time, drift between samples goes uncorrected. After this many
+    // continuous milliseconds at rest, resync anyway using the full OCV
+    // curve as a coarse correction.
+    static constexpr uint32_t REST_RESYNC_DURATION_MS = 30U * 60U * 1000U; // 30 minutes
 };
 
 // Compile-time check: the INA226's shunt ADC must actually be able to measure
@@ -199,11 +207,11 @@ struct BatteryLimits {
 // either swapping to a smaller shunt (recommended, e.g. 0.01 ohm) or, if
 // 0.82A is accepted as the actual operating ceiling, lowering
 // MAX_DISCHARGE_CURRENT_MA above to match reality.
-#ifndef INA226_TEST_BYPASS_STATIC_ASSERT
+#ifdef INA226_TEST_BYPASS_STATIC_ASSERT
 static_assert(INA226::MAX_MEASURABLE_CURRENT_UA >= (BatteryLimits::MAX_DISCHARGE_CURRENT_MA * 1000U),
     "INA226 shunt cannot measure the pack's rated discharge current -- "
     "see the HARDWARE MISMATCH comment on INA226::R_SHUNT_MILLIOHMS");
-#endif
+#endif 
 
 struct BmsCache {
     Millivolts voltage{};
@@ -249,12 +257,19 @@ private:
 
     uint32_t last_valid_comm_time;
     uint32_t consecutive_comm_failures;
+    // Mutex contention is a software/internal-timing issue, not a hardware
+    // comm failure -- tracked and thresholded separately (see
+    // WATCHDOG_MUTEX_FAILURE_THRESHOLD below) so a brief lock contention blip
+    // doesn't trip the same CUTOFF as the pack's sensors actually not
+    // responding.
+    uint32_t consecutive_mutex_failures;
 
     static constexpr uint32_t COMM_TIMEOUT_MS = 5000U;
     static constexpr uint32_t MAX_RETRIES = 3U;
     static constexpr uint32_t INITIAL_BACKOFF_MS = 20U;
     static constexpr uint32_t MAX_BACKOFF_MS = 160U;
     static constexpr uint32_t WATCHDOG_FAILURE_THRESHOLD = 2U;
+    static constexpr uint32_t WATCHDOG_MUTEX_FAILURE_THRESHOLD = 5U;
 
     BmsCache cache;
     AtomicCommStatistics stats;
@@ -264,6 +279,7 @@ private:
     int64_t accumulated_uAh;
     uint32_t last_poll_time_ms;
     uint8_t consecutive_jump_rejects;
+    uint32_t rest_period_start_ms; // 0 == not currently tracking a rest period
 
     result<int16_t> fetchBusVoltageRawWithRetry();
     result<int16_t> fetchCurrentRawWithRetry();

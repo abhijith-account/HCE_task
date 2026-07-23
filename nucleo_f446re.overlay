@@ -15,13 +15,13 @@
         reg = <0x76>;
         status = "okay";
     };
-    pav3015: pav3015@50 {
+    pav3015: pav3015@28 {
         compatible = "vnd,i2c-device";
-        reg = <0x50>;
+        reg = <0x28>;
         status = "okay";
     };
     ina226: ina226@40 {
-        compatible = "vnd,ina226";   
+        compatible = "ti,ina226";   
         reg = <0x40>;
         status = "okay";
     };
