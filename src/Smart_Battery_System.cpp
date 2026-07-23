@@ -28,7 +28,6 @@ extern "C" void daly_watchdog_feed_hook(void) {
 #endif
 
 namespace {
-    // Pure fixed-point math for absolutes (removes <cmath> dependency)
     template <typename T>
     constexpr T absolute(T val) { return (val < 0) ? -val : val; }
 
@@ -45,9 +44,6 @@ namespace {
     }
 }
 
-// -----------------------------------------------------------------------------
-// Battery Chemistry Profiles (Fixed-Point Look-Up Tables)
-// -----------------------------------------------------------------------------
 namespace CurveFitting {
     struct OcvPoint { uint16_t mv; uint8_t soc_pct; };
     struct NtcPoint { int32_t mv; int16_t temp_tenths; };
@@ -59,13 +55,6 @@ namespace CurveFitting {
         { 12600, 100 }
     };
 
-    // Assumes an NTC-to-GND divider (see comment on NTC_LUT usage in the
-    // header): voltage falls as temperature rises. If your board wires the
-    // NTC on top instead, this table's mv column needs to be re-derived.
-    //
-    // Computed from the Beta equation at 5C steps (R_FIXED=10k, R0=10k @25C,
-    // Beta=3950, Vcc=3.3V -- the same constants implied by the original
-    // 8-point table, which this replaces for ~5x finer interpolation).
     static constexpr NtcPoint NTC_LUT[] = {
         { 3220, -400 }, { 3187, -350 }, { 3143, -300 }, { 3086, -250 },
         { 3014, -200 }, { 2925, -150 }, { 2816, -100 }, { 2689,  -50 },
@@ -111,16 +100,11 @@ namespace CurveFitting {
     }
 }
 
-// -----------------------------------------------------------------------------
-// Thermistor Sensor Implementation
-// -----------------------------------------------------------------------------
 namespace Thermistor {
-
 #ifdef CONFIG_BOARD_QEMU_CORTEX_M3
 bool init() { return true; }
 Reading<int16_t> readCelsius() { return Reading<int16_t>::Ok(250); }
 #else
-
 const struct adc_dt_spec thermistor_adc_chan = ADC_DT_SPEC_GET_BY_IDX(DT_NODELABEL(zephyr_user), 0);
 
 bool init() {
@@ -162,11 +146,8 @@ Reading<int16_t> readCelsius() {
     return Reading<int16_t>::Ok(celsius_tenths);
 }
 #endif 
-} // namespace Thermistor
+}
 
-// -----------------------------------------------------------------------------
-// INA226 Driver Implementation
-// -----------------------------------------------------------------------------
 namespace INA226 {
 
 Driver::Driver(I2CManager* i2c) : i2c(i2c) {}
@@ -181,20 +162,22 @@ bool Driver::init() {
 Result<int16_t> Driver::readBusVoltageRaw() {
     const Result<uint16_t> r = i2c->readWord(I2C_ADDR, REG_BUS_VOLT);
     if (!r.isOk()) return Result<int16_t>::Err(r.error);
-    return Result<int16_t>::Ok(static_cast<int16_t>(sys_be16_to_cpu(r.unwrap())));
+    
+    // Explicit manual byte-swap to guarantee endianness translation regardless of I2CManager's pointer casting
+    uint16_t raw_val = r.unwrap();
+    return Result<int16_t>::Ok(static_cast<int16_t>((raw_val << 8) | (raw_val >> 8)));
 }
 
 Result<int16_t> Driver::readCurrentRaw() {
     const Result<uint16_t> r = i2c->readWord(I2C_ADDR, REG_CURRENT);
     if (!r.isOk()) return Result<int16_t>::Err(r.error);
-    return Result<int16_t>::Ok(static_cast<int16_t>(sys_be16_to_cpu(r.unwrap())));
+    
+    // Explicit manual byte-swap
+    uint16_t raw_val = r.unwrap();
+    return Result<int16_t>::Ok(static_cast<int16_t>((raw_val << 8) | (raw_val >> 8)));
 }
 
-} // namespace INA226
-
-// -----------------------------------------------------------------------------
-// Smart Battery System Implementation
-// -----------------------------------------------------------------------------
+}
 
 SbsBattery::SbsBattery(I2CManager* i2c_bus, DeviceContext* context, WatchdogFeedHook hook)
     : ina226(i2c_bus), sys_context(context), current_state(BatteryFSM::IDLE),
@@ -307,18 +290,13 @@ void SbsBattery::seedOrResyncCoulombCounter(uint16_t pack_mv, int32_t current_ma
 
     const uint32_t now = k_uptime_get_32();
 
-    // Track how long the pack has been continuously at rest. Once that
-    // exceeds REST_RESYNC_DURATION_MS, resync against the OCV curve even at
-    // a mid-range SoC where the full/empty-only resync below wouldn't fire --
-    // otherwise a pack left resting mid-charge for hours never gets its
-    // coulomb-counter drift corrected.
     bool long_rest_resync = false;
     if (at_rest) {
         if (rest_period_start_ms == 0U) {
             rest_period_start_ms = now;
         } else if ((now - rest_period_start_ms) >= BatteryLimits::REST_RESYNC_DURATION_MS) {
             long_rest_resync = true;
-            rest_period_start_ms = now; // restart the window so it can resync again after another rest period
+            rest_period_start_ms = now;
         }
     } else {
         rest_period_start_ms = 0U;
@@ -337,10 +315,6 @@ void SbsBattery::seedOrResyncCoulombCounter(uint16_t pack_mv, int32_t current_ma
 void SbsBattery::updateStateAndPublish(uint16_t pack_mv, int32_t current_ma, int16_t temp_tenths) {
     if (k_mutex_lock(&cache_mutex, K_MSEC(BatteryLimits::MUTEX_TIMEOUT_MS)) != 0) {
         atomic_inc(&stats.validation_errors);
-        // Route through the standard fault-escalation path instead of just
-        // counting it -- repeated lock contention should count toward the
-        // comm-failure watchdog the same way an I2C fault would, otherwise a
-        // stuck cache_mutex could go unnoticed indefinitely.
         publishError(CommFault::MUTEX_TIMEOUT);
         return;
     }
@@ -352,7 +326,6 @@ void SbsBattery::updateStateAndPublish(uint16_t pack_mv, int32_t current_ma, int
         last_poll_time_ms = now;
     } else {
         const uint32_t delta_ms = now - last_poll_time_ms;
-        // uAh = mA * hours * 1000 = mA * ms / 3600 (see derivation in review notes)
         const int64_t uAh_change = (static_cast<int64_t>(current_ma) * static_cast<int64_t>(delta_ms)) / 3600LL;
         accumulated_uAh += uAh_change;
         last_poll_time_ms = now;
@@ -405,7 +378,6 @@ void SbsBattery::pollHardwareAndUpdateCache() {
         return;
     }
     
-    // current_ma = raw_codes * CURRENT_LSB[uA/code] / 1000
     const int32_t current_ma = (static_cast<int32_t>(current_raw.value) * static_cast<int32_t>(INA226::CURRENT_LSB_UA)) / 1000;
     if (absolute(current_ma) > BatteryLimits::MAX_VALID_CURRENT_MA) {
         atomic_inc(&stats.validation_errors);
@@ -419,11 +391,9 @@ void SbsBattery::pollHardwareAndUpdateCache() {
         return;
     }
 
-    // Rate-of-change validation against the last published snapshot. A
-    // single noisy sample doesn't immediately reject/fault -- see
-    // BatteryLimits::MAX_CONSECUTIVE_JUMP_REJECTS.
     const BmsCache snapshot = getCacheSnapshot();
-    if (snapshot.valid && snapshot.last_error == CommFault::NONE) {
+    // Maintain checks if we are actively guarding a jump fault
+    if (snapshot.valid || snapshot.last_error == CommFault::VALIDATION_ERROR) {
         const int32_t v_delta = absolute(static_cast<int32_t>(pack_mv) - static_cast<int32_t>(snapshot.voltage.value));
         const int32_t c_delta = absolute(current_ma - snapshot.current.value);
         const int32_t prev_temp_tenths_c = static_cast<int32_t>(snapshot.temperature.value) - Thermistor::KELVIN_OFFSET_TENTHS;
@@ -439,9 +409,6 @@ void SbsBattery::pollHardwareAndUpdateCache() {
             if (consecutive_jump_rejects >= BatteryLimits::MAX_CONSECUTIVE_JUMP_REJECTS) {
                 publishError(CommFault::VALIDATION_ERROR);
             }
-            // Below threshold: drop this sample and keep the prior cache
-            // value rather than escalating -- the watchdog was already fed
-            // by the fetch retries above, so nothing times out from this.
             return;
         }
     }
@@ -467,9 +434,6 @@ void SbsBattery::publishError(CommFault fault) {
             threshold_reached = (consecutive_mutex_failures >= WATCHDOG_MUTEX_FAILURE_THRESHOLD);
         } else {
             ++consecutive_comm_failures;
-            // A hardware fault that we could still lock the mutex to record
-            // proves the mutex itself isn't stuck -- don't let unrelated
-            // mutex-contention history linger.
             consecutive_mutex_failures = 0U;
             threshold_reached = (consecutive_comm_failures >= WATCHDOG_FAILURE_THRESHOLD);
         }
@@ -477,9 +441,6 @@ void SbsBattery::publishError(CommFault fault) {
         timeout_reached = ((k_uptime_get_32() - last_valid_comm_time) > COMM_TIMEOUT_MS);
         k_mutex_unlock(&cache_mutex);
     } else {
-        // Couldn't even lock to record the fault -- the mutex itself is
-        // stuck, which is unambiguously a software contention issue rather
-        // than a hardware comm failure, regardless of what `fault` was.
         ++consecutive_mutex_failures;
         threshold_reached = (consecutive_mutex_failures >= WATCHDOG_MUTEX_FAILURE_THRESHOLD);
     }
@@ -701,9 +662,5 @@ void battery_monitor_thread(void) {
     } while(THREAD_LOOP_CONDITION);
 }
 
-// K_FP_REGS dropped: this file no longer does any floating-point math
-// (coulomb counting, calibration, and the OCV/NTC curves are all fixed-point
-// integer arithmetic now), so reserving FPU register context for these
-// threads is unnecessary stack/context-switch overhead.
 K_THREAD_DEFINE(bms_comm_tid, 1536, bms_comm_thread, NULL, NULL, NULL, BatteryLimits::BMS_THREAD_PRIO, 0, 0);
 K_THREAD_DEFINE(battery_tid, 1024, battery_monitor_thread, NULL, NULL, NULL, BatteryLimits::MONITOR_THREAD_PRIO, 0, 0);

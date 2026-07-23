@@ -172,7 +172,7 @@ struct BatteryLimits {
     static constexpr int MONITOR_THREAD_PRIO = 11; // consumer: battery_monitor_thread, runs the FSM
 
     static constexpr uint16_t MAX_VALID_VOLTAGE_MV = 20000U;
-    static constexpr int32_t MAX_VALID_CURRENT_MA = 12000;
+    static constexpr int32_t MAX_VALID_CURRENT_MA = 750;
 
     // Jump detection constraints (per sample cycle)
     static constexpr uint16_t MAX_VOLTAGE_DELTA_MV = 2000U;
