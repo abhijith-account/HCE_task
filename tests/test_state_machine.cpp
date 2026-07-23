@@ -254,3 +254,38 @@ TEST_F(StateMachineTestSuite, PowerObserverCallbacks) {
     EXPECT_NO_FATAL_FAILURE(ctx.afterWakeup()) << "afterWakeup() crashed";
     EXPECT_NO_FATAL_FAILURE(ctx.sleepAborted()) << "sleepAborted() crashed";
 }
+
+TEST_F(StateMachineTestSuite, IsLegalTransitionBranches)
+{
+    DeviceContext ctx;
+
+    // from == to
+    EXPECT_TRUE(ctx.isLegalTransition(SystemState::INIT, SystemState::INIT));
+    EXPECT_TRUE(ctx.isLegalTransition(SystemState::RUNNING, SystemState::RUNNING));
+    EXPECT_TRUE(ctx.isLegalTransition(SystemState::FAULT, SystemState::FAULT));
+    EXPECT_TRUE(ctx.isLegalTransition(SystemState::SAFE_HALT, SystemState::SAFE_HALT));
+
+    // INIT
+    EXPECT_TRUE(ctx.isLegalTransition(SystemState::INIT, SystemState::RUNNING));
+    EXPECT_TRUE(ctx.isLegalTransition(SystemState::INIT, SystemState::FAULT));
+    EXPECT_TRUE(ctx.isLegalTransition(SystemState::INIT, SystemState::SAFE_HALT));
+    EXPECT_FALSE(ctx.isLegalTransition(SystemState::INIT, static_cast<SystemState>(99)));
+
+    // RUNNING
+    EXPECT_TRUE(ctx.isLegalTransition(SystemState::RUNNING, SystemState::INIT));
+    EXPECT_TRUE(ctx.isLegalTransition(SystemState::RUNNING, SystemState::FAULT));
+    EXPECT_TRUE(ctx.isLegalTransition(SystemState::RUNNING, SystemState::SAFE_HALT));
+    EXPECT_FALSE(ctx.isLegalTransition(SystemState::RUNNING, static_cast<SystemState>(99)));
+
+    // FAULT
+    EXPECT_TRUE(ctx.isLegalTransition(SystemState::FAULT, SystemState::SAFE_HALT));
+    EXPECT_FALSE(ctx.isLegalTransition(SystemState::FAULT, SystemState::RUNNING));
+
+    // SAFE_HALT
+    EXPECT_TRUE(ctx.isLegalTransition(SystemState::SAFE_HALT, SystemState::INIT));
+    EXPECT_FALSE(ctx.isLegalTransition(SystemState::SAFE_HALT, SystemState::FAULT));
+
+    // default
+    EXPECT_FALSE(ctx.isLegalTransition(static_cast<SystemState>(99),
+                                       SystemState::INIT));
+}

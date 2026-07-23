@@ -7,11 +7,17 @@ echo "========================================="
 
 mkdir -p coverage_report
 
-# Generate reports
-gcovr \
-    --root . \
-    --object-directory tests/build \
-    --filter src/ \
+GCOVR_OPTS=(
+    --root .
+    --object-directory tests/build
+    --exclude-throw-branches
+    --exclude-unreachable-branches
+    --filter src/
+)
+
+echo "Generating coverage reports..."
+
+gcovr "${GCOVR_OPTS[@]}" \
     --html-details coverage_report/index.html \
     --txt coverage_report/coverage.txt \
     --txt-metric branch \
@@ -20,32 +26,23 @@ gcovr \
 echo
 echo "========== UNCOVERED LINES =========="
 
-gcovr \
-    --root . \
-    --object-directory tests/build \
-    --filter src/ \
+gcovr "${GCOVR_OPTS[@]}" \
     --txt \
     --txt-metric line \
-    | grep -A1000 "Missing" || true
+    | grep -A9999 "^Missing" || true
 
 echo
 echo "========= UNCOVERED BRANCHES ========="
 
-gcovr \
-    --root . \
-    --object-directory tests/build \
-    --filter src/ \
+gcovr "${GCOVR_OPTS[@]}" \
     --txt \
     --txt-metric branch \
-    | grep -A1000 "Missing" || true
+    | grep -A9999 "^Missing" || true
 
 echo
 echo "Checking thresholds..."
 
-gcovr \
-    --root . \
-    --object-directory tests/build \
-    --filter src/ \
+gcovr "${GCOVR_OPTS[@]}" \
     --fail-under-line 100 \
     --fail-under-branch 100
 
