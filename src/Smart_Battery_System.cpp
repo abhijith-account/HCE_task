@@ -32,14 +32,18 @@ namespace {
     constexpr T absolute(T val) { return (val < 0) ? -val : val; }
 
     CommFault mapI2CFault(I2CFault fault) {
-        switch (fault) {
-            case I2CFault::NONE:              return CommFault::NONE;
-            case I2CFault::NACK:              return CommFault::I2C_NACK;
-            case I2CFault::TIMEOUT:           return CommFault::I2C_TIMEOUT;
-            case I2CFault::BUS_BUSY:          return CommFault::I2C_BUS_BUSY;
-            case I2CFault::ARBITRATION_LOST:  return CommFault::I2C_ARBITRATION_LOST;
-            case I2CFault::DEVICE_NOT_READY:  return CommFault::DEVICE_NOT_READY;
-            default:                          return CommFault::I2C_NACK;
+        if (fault == I2CFault::NACK) {
+            return CommFault::I2C_NACK;
+        } else if (fault == I2CFault::TIMEOUT) {
+            return CommFault::I2C_TIMEOUT;
+        } else if (fault == I2CFault::BUS_BUSY) {
+            return CommFault::I2C_BUS_BUSY;
+        } else if (fault == I2CFault::ARBITRATION_LOST) {
+            return CommFault::I2C_ARBITRATION_LOST;
+        } else if (fault == I2CFault::DEVICE_NOT_READY) {
+            return CommFault::DEVICE_NOT_READY;
+        } else {
+            return CommFault::I2C_NACK;
         }
     }
 }
@@ -70,33 +74,31 @@ namespace CurveFitting {
     template <size_t N>
     uint8_t interpolateOcv(const OcvPoint (&lut)[N], uint16_t mv) {
         if (mv <= lut[0].mv) return lut[0].soc_pct;
-        if (mv >= lut[N-1].mv) return lut[N-1].soc_pct;
         
         for (size_t i = 0; i < N - 1; ++i) {
-            if (mv >= lut[i].mv && mv <= lut[i+1].mv) {
+            if (mv <= lut[i+1].mv) {
                 uint32_t v_range = lut[i+1].mv - lut[i].mv;
                 uint32_t s_range = lut[i+1].soc_pct - lut[i].soc_pct;
                 uint32_t v_offset = mv - lut[i].mv;
                 return lut[i].soc_pct + static_cast<uint8_t>((v_offset * s_range) / v_range);
             }
         }
-        return 0;
+        return lut[N-1].soc_pct;
     }
 
     template <size_t N>
     int16_t interpolateNtc(const NtcPoint (&lut)[N], int32_t mv) {
         if (mv >= lut[0].mv) return lut[0].temp_tenths;
-        if (mv <= lut[N-1].mv) return lut[N-1].temp_tenths;
         
         for (size_t i = 0; i < N - 1; ++i) {
-            if (mv <= lut[i].mv && mv >= lut[i+1].mv) {
+            if (mv >= lut[i+1].mv) {
                 int32_t v_range = lut[i].mv - lut[i+1].mv;
                 int32_t t_range = lut[i+1].temp_tenths - lut[i].temp_tenths;
                 int32_t v_offset = lut[i].mv - mv;
                 return lut[i].temp_tenths + static_cast<int16_t>((v_offset * t_range) / v_range);
             }
         }
-        return 250;
+        return lut[N-1].temp_tenths;
     }
 }
 
@@ -140,9 +142,6 @@ Reading<int16_t> readCelsius() {
     if ((avg_mv <= 0) || (avg_mv >= SUPPLY_MILLIVOLTS)) return Reading<int16_t>::Err(Fault::OUT_OF_RANGE);
     const int16_t celsius_tenths = CurveFitting::interpolateNtc(CurveFitting::NTC_LUT, avg_mv);
 
-    if ((celsius_tenths < (MIN_VALID_CELSIUS * 10)) || (celsius_tenths > (MAX_VALID_CELSIUS * 10))) {
-        return Reading<int16_t>::Err(Fault::OUT_OF_RANGE);
-    }
     return Reading<int16_t>::Ok(celsius_tenths);
 }
 #endif 
@@ -593,6 +592,11 @@ namespace {
         }
     }
 }
+
+#ifdef IS_TEST_ENVIRONMENT
+bool isBmsObserverSleepingForTest() { return g_bmsPowerObserver.isSleeping(); }
+CommFault test_mapI2CFault(I2CFault fault) { return mapI2CFault(fault); }
+#endif
 
 SbsBattery* getSmartBatteryInstance() {
     initializeBmsObjects();

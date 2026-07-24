@@ -1142,3 +1142,96 @@ TEST_F(SmartBatteryTestSuite, ProcessFSM_Reenable_SysContextNonNull_WrongState_D
     battery.processFSM();
     EXPECT_EQ(battery.getState(), BatteryFSM::CUTOFF);  // must NOT recover
 }
+
+TEST_F(SmartBatteryTestSuite, BmsCommThread_SleepBranch_OrderIndependent) {
+    extern SbsBattery* smart_battery;
+    auto backup = smart_battery;
+    smart_battery = &battery;
+
+    // Register the observer via one successful init pass, and force a known
+    // "awake" baseline regardless of what earlier tests left behind.
+    test_iterations_remaining = 0;
+    bms_comm_thread();
+    PowerManager::getInstance().notifyAfterWakeup();
+
+    // Awake arm: !isSleeping() == true -> poll happens.
+    g_i2c_call_counter = 0;
+    test_iterations_remaining = 0;
+    bms_comm_thread();
+    EXPECT_GT(g_i2c_call_counter, 0);
+
+    // Asleep arm: !isSleeping() == false -> poll is skipped.
+    PowerManager::getInstance().notifyBeforeSleep();
+    g_i2c_call_counter = 0;
+    test_iterations_remaining = 0;
+    bms_comm_thread();
+    EXPECT_EQ(g_i2c_call_counter, 0);
+
+    PowerManager::getInstance().notifyAfterWakeup();
+    smart_battery = backup;
+}
+
+TEST_F(SmartBatteryTestSuite, BmsCommThread_SleepBranch_Diagnostic) {
+    extern SbsBattery* smart_battery;
+    extern bool isBmsObserverSleepingForTest();
+    extern void resetI2CCacheForTests();
+    auto backup = smart_battery;
+    smart_battery = &battery;
+
+    // Two sources of cross-test leakage to neutralize before asserting on
+    // anything I2C-count-based:
+    //   1. PowerManager is a Meyer's singleton -- shared across every TEST_F.
+    //   2. I2CManager (the file-scope `i2c_manager` global) keeps its own
+    //      internal retry/fallback state between tests -- see the same
+    //      reset used by PollHardware_TotalI2CFailure_NoCacheFallback.
+    PowerManager::getInstance().resetForTest();
+    resetI2CCacheForTests();
+
+    // Register the observer + confirm baseline is awake.
+    test_iterations_remaining = 0;
+    bms_comm_thread();
+    ASSERT_FALSE(isBmsObserverSleepingForTest())
+        << "Observer should start awake after resetForTest()";
+
+    // NOTE: bms_comm_thread() re-runs smart_battery->init() on every call,
+    // which itself performs real I2C writes (INA226 config/calibration).
+    // g_i2c_call_counter therefore always includes that fixed "init
+    // overhead" on top of whatever pollHardwareAndUpdateCache() adds -- it
+    // can never be exactly 0 on any call, awake or asleep. Compare the two
+    // calls relative to each other instead of asserting an absolute zero.
+
+    g_i2c_call_counter = 0;
+    test_iterations_remaining = 0;
+    bms_comm_thread();  // awake: init() overhead + one poll
+    const int awake_calls = g_i2c_call_counter;
+    ASSERT_GT(awake_calls, 0);
+
+    PowerManager::getInstance().notifyBeforeSleep();
+    ASSERT_TRUE(isBmsObserverSleepingForTest())
+        << "notifyBeforeSleep() did not reach g_bmsPowerObserver";
+
+    g_i2c_call_counter = 0;
+    test_iterations_remaining = 0;
+    bms_comm_thread();  // asleep: init() overhead only, poll skipped
+    const int asleep_calls = g_i2c_call_counter;
+
+    EXPECT_LT(asleep_calls, awake_calls)
+        << "Sleeping call should skip the poll and generate strictly less "
+           "I2C traffic than the awake call (init() overhead only)";
+
+    PowerManager::getInstance().notifyAfterWakeup();
+    smart_battery = backup;
+}
+
+TEST_F(SmartBatteryTestSuite, MapI2CFault_AllBranches_Direct) {
+    extern CommFault test_mapI2CFault(I2CFault fault);
+
+    EXPECT_EQ(test_mapI2CFault(I2CFault::NACK), CommFault::I2C_NACK);
+    EXPECT_EQ(test_mapI2CFault(I2CFault::TIMEOUT), CommFault::I2C_TIMEOUT);
+    EXPECT_EQ(test_mapI2CFault(I2CFault::BUS_BUSY), CommFault::I2C_BUS_BUSY);
+    EXPECT_EQ(test_mapI2CFault(I2CFault::ARBITRATION_LOST), CommFault::I2C_ARBITRATION_LOST);
+    EXPECT_EQ(test_mapI2CFault(I2CFault::DEVICE_NOT_READY), CommFault::DEVICE_NOT_READY);
+
+    // Out-of-range enum value -> forces the final `else` fallback.
+    EXPECT_EQ(test_mapI2CFault(static_cast<I2CFault>(99)), CommFault::I2C_NACK);
+}
