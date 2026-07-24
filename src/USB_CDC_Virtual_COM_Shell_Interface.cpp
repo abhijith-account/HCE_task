@@ -10,9 +10,15 @@
 #include <cstdarg>
 #include <stdio.h>
 #include <cstdio>
+#include <utility>
 #ifdef IS_TEST_ENVIRONMENT
     extern bool run_thread_once;
-    #define THREAD_LOOP_CONDITION (run_thread_once ? (run_thread_once = false, true) : false)
+    static inline bool evaluate_and_clear_loop() noexcept {
+        bool current = run_thread_once;
+        run_thread_once = false;
+        return current;
+    }
+    #define THREAD_LOOP_CONDITION evaluate_and_clear_loop()
     extern int mock_snprintf_call_count;
     extern int mock_snprintf_fail_on_call;
     extern int mock_snprintf_truncate_on_call;

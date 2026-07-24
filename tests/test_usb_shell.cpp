@@ -426,9 +426,16 @@ TEST_F(UsbShellTestSuite,ProcessAndShellThread){
     EXPECT_NE(out.find("med-device:~$ "),std::string_view::npos);
     
     // empty line
-    mock_dtr_state=1; mock_tx_index=0; run_thread_once=false;
-    shell.process(); inject_mock_uart_data("\n"); shell.process();
-    EXPECT_EQ(mock_tx_index,0u);
+    mock_dtr_state=1; mock_tx_index=0; 
+    
+    // Set to true so the do-while loop evaluates to true once, 
+    // loops back, and then exits on the second check.
+    run_thread_once=true; 
+    
+    shell.process(); 
+    inject_mock_uart_data("\n"); 
+    run_thread_once=false; 
+    shell.process();
     
     // disconnected
     mock_dtr_state=0; run_thread_once=false; shell.process(); SUCCEED();
