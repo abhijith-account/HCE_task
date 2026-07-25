@@ -19,8 +19,8 @@ void memory_monitor_thread(void){
         LOG_INF("=== [System Health] Thread Stack Watermarks ===");
         thread_analyzer_print(0);
     }
-    k_msleep(5000);
+    k_msleep(30000);
     }while(THREAD_LOOP_CONDITION);
 }
 
-K_THREAD_DEFINE(mem_mon_tid,1536,memory_monitor_thread,NULL,NULL,NULL,12,0,0);
+K_THREAD_DEFINE(mem_mon_tid,768,memory_monitor_thread,NULL,NULL,NULL,12,0,0);

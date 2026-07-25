@@ -1,0 +1,15 @@
+source "Kconfig.zephyr"
+
+config LOG_PREEMPTION_DELAY
+    bool "Enable logging for thread pre-emption cycle delays"
+    default n
+    help
+      Enables the LOG_INF statements that print the cycle delay between
+      command queue insertion and thread dispatch.
+      
+config LOG_EXECUTION_CYCLES
+    bool "Enable logging for command execution cycle times"
+    default n
+    help
+      Enables the LOG_INF statements inside the CycleProfiler that print
+      how many CPU cycles it took to execute a command.

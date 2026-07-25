@@ -40,7 +40,7 @@ static constexpr int32_t SUPPLY_MILLIVOLTS = 3300; // 3.3V divider supply
 // (VCC -> NTC -> ADC_NODE -> R_FIXED -> GND), the voltage-vs-temperature
 // relationship inverts and the table needs to be re-derived/reversed.
 
-#ifndef CONFIG_BOARD_QEMU_CORTEX_M3
+#ifndef CONFIG_BOARD_MPS2_AN386
 extern const struct adc_dt_spec thermistor_adc_chan;
 #endif
 

@@ -4,7 +4,7 @@
 #include <zephyr/logging/log.h>
 #include <zephyr/sys/atomic.h>
 
-LOG_MODULE_REGISTER(SYNC_LAYER, LOG_LEVEL_WRN);
+LOG_MODULE_REGISTER(SYNC_LAYER, LOG_LEVEL_INF);
 
 #ifndef CONTAINER_OF
 #define CONTAINER_OF(ptr, type, field) ((type *)(((char *)(ptr)) - offsetof(type, field)))
@@ -121,16 +121,38 @@ ZephyrWorkQueue status_work(print_status);
 
 void heart_rate_producer_thread(void){
     ensure_sync_observer_registered();
-    static uint32_t mock_hr=60;
+    
+    // State variables to simulate a realistic workout cycle
+    static uint32_t mock_hr = 70;
+    static bool warming_up = true;
+    static uint32_t hold_ticks = 15; 
     
     do{
         // Gate production so we don't wake devices checking memory during Deep Sleep
         if (!g_syncPowerObserver.isSleeping() && sys_context.getState() != SystemState::SAFE_HALT) {
             hr_buffer.mutex.lock();
             
-            hr_buffer.data[hr_buffer.head]=mock_hr;
-            hr_buffer.head=(hr_buffer.head+1)%hr_buffer.data.size();
-            mock_hr=(mock_hr>=120)?60:mock_hr+1;
+            hr_buffer.data[hr_buffer.head] = mock_hr;
+            hr_buffer.head = (hr_buffer.head + 1) % hr_buffer.data.size();
+            
+            // Realistic HR physics: resting, working out, and natural +/- 1 bpm variations
+            if (hold_ticks > 0) {
+                hold_ticks--;
+                // Add natural micro-fluctuations (Heart Rate Variability)
+                mock_hr += (hold_ticks % 2 == 0) ? 1 : -1; 
+            } else if (warming_up) {
+                mock_hr += 2; // HR rises quickly during exertion
+                if (mock_hr >= 145) {
+                    warming_up = false;
+                    hold_ticks = 20; // Hold at high HR for a brief "sprint" (10 seconds)
+                }
+            } else {
+                mock_hr -= 1; // HR recovers slower than it spikes
+                if (mock_hr <= 65) {
+                    warming_up = true;
+                    hold_ticks = 30; // Hold at resting rate (15 seconds)
+                }
+            }
             
             hr_buffer.mutex.unlock();
             

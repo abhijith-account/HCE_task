@@ -5,35 +5,12 @@ project(medical_firmware)
 
 zephyr_cc_option(-Wno-deprecated-declarations -Wno-deprecated)
 
-option(QEMU_RUNTIME_PROBE "Enable QEMU runtime probe markers and hardware stubs" OFF)
-
 target_include_directories(app PRIVATE include)
 
 target_sources(app PRIVATE
-    src/main.cpp
-    src/RTOS_Command_based_thread_system.cpp
-    src/RTOS_Synchronization_Layer.cpp
-)
-
-if(QEMU_RUNTIME_PROBE)
-    # THE FIX: This injects the macro into your C++ preprocessor 
-    # so main() knows to print the boot marker!
-    target_compile_definitions(app PRIVATE 
-        QEMU_RUNTIME_PROBE=1
-    )
-
-    target_sources(app PRIVATE
-        qemu_stubs/QEMU_Startup_Probe.c
-        qemu_stubs/Device_State_Machine_QEMU_Stub.cpp
-        qemu_stubs/Persistent_Configuration_System_QEMU_Stub.cpp
-        qemu_stubs/Power_Management_System_QEMU_Stub.cpp
-        qemu_stubs/Smart_Battery_System_QEMU_Stub.cpp
-        qemu_stubs/USB_CDC_Virtual_COM_Shell_Interface_QEMU_Stub.cpp
-        qemu_stubs/Fault_Tolerant_I2C_Communication_Layer_QEMU_Stub.cpp
-        qemu_stubs/Static_Memory_QEMU_Stub.cpp
-    )
-else()
-    target_sources(app PRIVATE
+	src/main.cpp
+    	src/RTOS_Command_based_thread_system.cpp
+    	src/RTOS_Synchronization_Layer.cpp
         src/Device_State_Machine+Watchdog.cpp
         src/Fault_Tolerant_I2C_Communication_Layer.cpp
         src/Persistent_Configuration_System.cpp
@@ -41,8 +18,7 @@ else()
         src/Smart_Battery_System.cpp
         src/Static_Memory+MISRA_Compliance_Layer.cpp
         src/USB_CDC_Virtual_COM_Shell_Interface.cpp
-    )
-endif()
+)
 
 target_compile_options(app PRIVATE
     -Wall

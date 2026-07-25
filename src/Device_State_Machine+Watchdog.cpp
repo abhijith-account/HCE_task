@@ -3,7 +3,7 @@
 #include <zephyr/device.h>
 #include <zephyr/drivers/watchdog.h>
 
-LOG_MODULE_REGISTER(DEVICE_STATE, LOG_LEVEL_WRN);
+LOG_MODULE_REGISTER(DEVICE_STATE, LOG_LEVEL_INF);
   
 WatchdogTimer::WatchdogTimer() : wdt_dev(DEVICE_DT_GET(DT_NODELABEL(iwdg))), channel_id(-1) {}
 

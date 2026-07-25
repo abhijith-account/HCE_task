@@ -289,11 +289,23 @@ TEST_F(RTOSCommandsTestSuite, PrintMeasurementLoggerQueueFull) {
 }
 
 // --- ComputeCmd::execute(): LPS22HB and PAV3015 ---
+// --- ComputeCmd::execute(): LPS22HB and PAV3015 ---
 TEST_F(RTOSCommandsTestSuite, ComputeCmdLPS22HBBranches) {
+    // 1. Send Temperature first to hit the `if (has_pressure)` FALSE branch
+    ComputeCmd temp_early(SensorID::LPS22HB, SensorReg::LPS_T_DESC.reg, 0x0032ULL);
+    temp_early.execute();
+
+    // 2. Send Pressure to buffer the pressure value (has_pressure becomes true)
     ComputeCmd press(SensorID::LPS22HB, SensorReg::LPS_P_DESC.reg, 0x00640032ULL);
     press.execute();
-    ComputeCmd temp(SensorID::LPS22HB, SensorReg::LPS_T_DESC.reg, 0x0032ULL);
-    temp.execute();
+
+    // 3. Send Temperature again to hit the `if (has_pressure)` TRUE branch
+    ComputeCmd temp_late(SensorID::LPS22HB, SensorReg::LPS_T_DESC.reg, 0x0032ULL);
+    temp_late.execute();
+
+    // 4. Send an unknown register to hit the `else if (reg_addr == ...)` FALSE branch
+    ComputeCmd unknown_reg(SensorID::LPS22HB, 0xFF, 0x00ULL);
+    unknown_reg.execute();
 }
 TEST_F(RTOSCommandsTestSuite, ComputeCmdPAV3015Branch) {
     ComputeCmd cmd(SensorID::PAV3015, SensorReg::PAV_DESC.reg, 0x0032ULL);
@@ -757,4 +769,55 @@ TEST_F(RTOSCommandsTestSuite, ProducerThreadBME280InitFirstWriteFailsSecondSucce
 
     EXPECT_NE(out.find("Failed to initialize BME280"), std::string_view::npos);
     g_i2c_fail_on_call_n = 0;
+}
+
+TEST_F(RTOSCommandsTestSuite, MockDataFullEnvironmentalCycle) {
+    SensorReadCmd cmd(SensorID::BME280, SensorReg::BME280_DATA_START, ReadLength::Block);
+    for (int i = 0; i < 1700; ++i) {
+        (void)cmd.readMockData();
+    }    
+    SUCCEED();
+}
+
+TEST_F(RTOSCommandsTestSuite, PrintCmdUnknownSensorDirectCall) {
+    PrintCmd cmd(static_cast<SensorID>(0xFFFF), 1.0f);
+    EXPECT_STREQ(cmd.getSensorName(), "Unknown Sensor");
+}
+
+// --- Explicitly Execute Typed Print Commands ---
+TEST_F(RTOSCommandsTestSuite, PrintBME280AndLPS22HBExecuteDirectly) {
+    BME280Data bme_data{25.0f, 1013.25f, 50.0f};
+    PrintBME280Cmd bme_cmd(bme_data);
+    
+    testing::internal::CaptureStdout();
+    bme_cmd.execute();
+    std::string_view out_bme(testing::internal::GetCapturedStdout());
+    EXPECT_NE(out_bme.find("BME280 Temp ="), std::string_view::npos);
+
+    LPS22HBData lps_data{25.0f, 1013.25f};
+    PrintLPS22HBCmd lps_cmd(lps_data);
+    
+    testing::internal::CaptureStdout();
+    lps_cmd.execute();
+    std::string_view out_lps(testing::internal::GetCapturedStdout());
+    EXPECT_NE(out_lps.find("LPS22HB Temp ="), std::string_view::npos);
+}
+
+// --- LPS22HB Logger Queue Full Branch ---
+TEST_F(RTOSCommandsTestSuite, PrintLPS22HBMeasurementLoggerQueueFull) {
+    // Fill the logger queue to capacity
+    for (int i = 0; i < QueueConfig::Depth; i++) {
+        ASSERT_TRUE(enqueueCommand<PreemptionTestCmd>(LOGGER_Q, i));
+    }
+    
+    LPS22HBData mock_data{25.0f, 1013.0f};
+    testing::internal::CaptureStdout();
+    
+    // Attempting to print should now fail and hit the error branch
+    EXPECT_FALSE(printLPS22HBMeasurement(mock_data));
+    
+    const auto raw_out = testing::internal::GetCapturedStdout();
+    std::string_view out(raw_out);
+    EXPECT_NE(out.find("Logger queue full"), std::string_view::npos);
+    EXPECT_GT(g_queueStats.loggerQueueFull, 0u);
 }

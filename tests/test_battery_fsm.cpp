@@ -12,6 +12,7 @@
 #define private public
 #define protected public
 #include "Smart_Battery_System.h"
+#include "Persistent_Configuration_System.h"
 #undef private
 #undef protected
 
@@ -27,6 +28,11 @@ extern int test_iterations_remaining;
 extern int g_mutex_lock_force_errno;
 extern bool g_adc_ready_mock;
 extern int g_adc_read_force_errno;
+extern int g_mutex_lock_call_counter;
+extern int g_mutex_lock_fail_on_call_n;
+extern void* g_mutex_lock_target_ptr;
+extern int g_mutex_lock_target_call_counter;
+extern int g_mutex_lock_target_fail_on_call_n;
 
 uint16_t g_i2c_mock_read_val = 0;
 uint16_t g_i2c_mock_v_val = 10000;
@@ -35,8 +41,21 @@ int32_t g_adc_mock_mv_val = 2500;
 int g_adc_raw_to_mv_errno = 0;
 int g_i2c_consecutive_failures = 0;
 int g_i2c_fail_after_reads = -1; 
+int g_nvs_write_force_errno = 0;
 
 extern "C" {
+    int nvs_mount(struct nvs_fs *fs) {
+        return 0; // Return 0 to simulate a successful mount
+    }
+    ssize_t nvs_write(struct nvs_fs *fs, uint16_t id, const void *data, size_t len) {
+    if (g_nvs_write_force_errno != 0) return g_nvs_write_force_errno;
+    return len;
+    }
+    
+    ssize_t nvs_read(struct nvs_fs *fs, uint16_t id, void *data, size_t len) {
+        return -ENOENT; // Pretend nothing is stored yet
+    }
+    
     // Strongly override Zephyr I2C and ADC mocks to inject dynamic payloads/faults
     int i2c_burst_read(const struct device *dev, uint16_t dev_addr, uint8_t start_addr, uint8_t *buf, uint32_t num_bytes) {
         ++g_i2c_call_counter;
@@ -139,6 +158,12 @@ protected:
         g_mutex_lock_force_errno = 0;
         custom_hook_called = false;
         g_adc_sequence_init_dt_errno = 0; 
+        g_mutex_lock_call_counter = 0;
+        g_mutex_lock_fail_on_call_n = 0;
+        g_mutex_lock_target_ptr = nullptr;
+        g_mutex_lock_target_call_counter = 0;
+        g_mutex_lock_target_fail_on_call_n = 0;
+        g_nvs_write_force_errno = 0;
         
         battery.cache = BmsCache{};
         battery.cache.valid = true;
@@ -552,28 +577,28 @@ TEST_F(SmartBatteryTestSuite, FSM_DeepCoverage) {
     EXPECT_EQ(battery.getState(), BatteryFSM::DISCHARGING);
 
     // Critical low discharge triggers fault & CUTOFF transition
-    battery.cache.soc.value = BatteryLimits::CUTOFF_SOC_PCT;
+    battery.cache.soc.value = BatteryLimits::CUTOFF_SOC_PCT - 1; // FIX: Fall below 10%
     battery.current_state.store(BatteryFSM::DISCHARGING);
     battery.processFSM();
     EXPECT_EQ(battery.getState(), BatteryFSM::CUTOFF);
     
     // Critical low discharge WHEN ALREADY IN CUTOFF (should skip fault trigger block)
-    battery.cache.soc.value = BatteryLimits::CUTOFF_SOC_PCT - 1;
+    battery.cache.soc.value = BatteryLimits::CUTOFF_SOC_PCT - 1; // FIX: Fall below 10%
     battery.processFSM(); 
     
     // Recovery transition requested safely
-    battery.cache.soc.value = BatteryLimits::REENABLE_SOC_PCT;
+    battery.cache.soc.value = BatteryLimits::REENABLE_SOC_PCT + 1; // FIX: Rise above 15%
     sys_context.requestTransition(SystemState::SAFE_HALT); 
     battery.processFSM(); 
     
     // Recovery threshold reached but NOT in SAFE_HALT (should skip transition block)
     battery.current_state.store(BatteryFSM::CUTOFF);
-    battery.cache.soc.value = BatteryLimits::REENABLE_SOC_PCT;
+    battery.cache.soc.value = BatteryLimits::REENABLE_SOC_PCT + 1; // FIX: Rise above 15%
     sys_context.requestTransition(SystemState::RUNNING); 
     battery.processFSM(); 
     
     battery.cache.current.value = 0;
-    battery.cache.soc.value = BatteryLimits::REENABLE_SOC_PCT;
+    battery.cache.soc.value = BatteryLimits::REENABLE_SOC_PCT + 1; // FIX: Rise above 15%
     sys_context.requestTransition(SystemState::SAFE_HALT);
     battery.current_state.store(BatteryFSM::CUTOFF);
     battery.processFSM();
@@ -888,7 +913,7 @@ TEST_F(SmartBatteryTestSuite, ProcessFSM_MidBandsAndChargingRecovery) {
     // leaves current negative, so only the IDLE arm is exercised. Do it again
     // with a positive current to hit the CHARGING arm.
     battery.cache.current.value = 100;
-    battery.cache.soc.value = BatteryLimits::REENABLE_SOC_PCT;
+    battery.cache.soc.value = BatteryLimits::REENABLE_SOC_PCT + 1; // FIX: Rise above 15%
     battery.current_state.store(BatteryFSM::CUTOFF);
     sys_context.requestTransition(SystemState::SAFE_HALT);
     battery.processFSM();
@@ -1058,7 +1083,7 @@ TEST_F(SmartBatteryTestSuite, ProcessFSM_CutoffTrigger_NullContextSkipsFaultCall
     battery.cache.last_error = CommFault::NONE;
     battery.cache.timestamp_ms = virtual_uptime;
     battery.cache.current.value = -100;
-    battery.cache.soc.value = BatteryLimits::CUTOFF_SOC_PCT;
+    battery.cache.soc.value = BatteryLimits::CUTOFF_SOC_PCT - 1; // FIX: Fall below 10%
     battery.current_state.store(BatteryFSM::DISCHARGING);
 
     battery.processFSM();
@@ -1234,4 +1259,94 @@ TEST_F(SmartBatteryTestSuite, MapI2CFault_AllBranches_Direct) {
 
     // Out-of-range enum value -> forces the final `else` fallback.
     EXPECT_EQ(test_mapI2CFault(static_cast<I2CFault>(99)), CommFault::I2C_NACK);
+}
+
+TEST_F(SmartBatteryTestSuite, MonitorThread_SocFailsAloneCoversLine688) {
+    extern SbsBattery* smart_battery;
+    auto backup = smart_battery;
+    smart_battery = &battery;
+
+    battery.cache.valid = true;
+    battery.cache.last_error = CommFault::NONE;
+    battery.cache.timestamp_ms = virtual_uptime;
+    battery.cache.current.value = 0;
+    battery.cache.soc.value = 50;
+
+    // Target cache_mutex by pointer identity so DeviceContext's/PowerManager's
+    // own internal mutex calls (e.g. from processFSM()'s reenable-check
+    // touching sys_context->getState()) can never shift the count. Call
+    // order against cache_mutex specifically: processFSM()->#1,
+    // getVoltage()->#2, getStateOfCharge()->#3, getTemperature()->#4.
+    g_mutex_lock_target_ptr = &battery.cache_mutex;
+    g_mutex_lock_target_call_counter = 0;
+    g_mutex_lock_target_fail_on_call_n = 3;   // fails getStateOfCharge() only
+    test_iterations_remaining = 0;
+    battery_monitor_thread();
+    g_mutex_lock_target_ptr = nullptr;
+    g_mutex_lock_target_fail_on_call_n = 0;
+
+    smart_battery = backup;
+}
+
+TEST_F(SmartBatteryTestSuite, MonitorThread_TempFailsAloneCoversLine688) {
+    extern SbsBattery* smart_battery;
+    auto backup = smart_battery;
+    smart_battery = &battery;
+
+    battery.cache.valid = true;
+    battery.cache.last_error = CommFault::NONE;
+    battery.cache.timestamp_ms = virtual_uptime;
+    battery.cache.current.value = 0;
+    battery.cache.soc.value = 50;
+
+    g_mutex_lock_target_ptr = &battery.cache_mutex;
+    g_mutex_lock_target_call_counter = 0;
+    g_mutex_lock_target_fail_on_call_n = 4;   // fails getTemperature() only
+    test_iterations_remaining = 0;
+    battery_monitor_thread();
+    g_mutex_lock_target_ptr = nullptr;
+    g_mutex_lock_target_fail_on_call_n = 0;
+
+    smart_battery = backup;
+}
+
+TEST_F(SmartBatteryTestSuite, FullChargeLog_NvsWriteFailureCoversLine550) {
+    extern int g_nvs_write_force_errno;
+
+    // Force ConfigStore to a known-initialized state so both calls below
+    // deterministically take set()'s "initialized == true" branch, regardless
+    // of whether any other test in this binary ever called
+    // ConfigStore::getInstance().init().
+    ConfigStore::getInstance().initialized = true;
+
+    battery.cache.valid = true;
+    battery.cache.last_error = CommFault::NONE;
+    battery.cache.timestamp_ms = virtual_uptime;
+    battery.cache.soc.value = 100;
+    battery.full_charge_logged.store(false);
+
+    g_nvs_write_force_errno = -EIO;
+    battery.processFSM();   // set(): initialized==true, written<0  -> LOG_WRN branch
+    g_nvs_write_force_errno = 0;
+
+    battery.full_charge_logged.store(false);
+    battery.processFSM();   // set(): initialized==true, written>=0 -> success branch
+}
+
+TEST_F(SmartBatteryTestSuite, FullChargeLog_ConfigStoreUninitializedCoversLine550) {
+    // Line 550's remaining uncovered branch: set()'s `if (!initialized)`
+    // early-return path. No test drives ConfigStore into this state
+    // otherwise, so force it directly via white-box access.
+    const bool backup_initialized = ConfigStore::getInstance().initialized;
+    ConfigStore::getInstance().initialized = false;
+
+    battery.cache.valid = true;
+    battery.cache.last_error = CommFault::NONE;
+    battery.cache.timestamp_ms = virtual_uptime;
+    battery.cache.soc.value = 100;
+    battery.full_charge_logged.store(false);
+
+    battery.processFSM();   // set() short-circuits on !initialized -> LOG_WRN branch
+
+    ConfigStore::getInstance().initialized = backup_initialized;
 }

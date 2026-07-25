@@ -28,9 +28,14 @@ static bool g_bme280_initialized = false;
 static_assert(sizeof(SensorReadCmd) <= sizeof(MaxCommandSize), "SensorReadCmd exceeds memory pool size");
 static_assert(sizeof(ComputeCmd) <= sizeof(MaxCommandSize), "ComputeCmd exceeds memory pool size");
 static_assert(sizeof(PrintCmd) <= sizeof(MaxCommandSize), "PrintCmd exceeds memory pool size");
+static_assert(sizeof(PrintBME280Cmd) <= sizeof(MaxCommandSize), "PrintBME280Cmd exceeds memory pool size");
+static_assert(sizeof(PrintLPS22HBCmd) <= sizeof(MaxCommandSize), "PrintLPS22HBCmd exceeds memory pool size");
+
+static_assert(alignof(MaxCommandSize) >= alignof(PrintLPS22HBCmd), "Alignment mismatch on PrintLPS22HBCmd");
 static_assert(alignof(MaxCommandSize) >= alignof(SensorReadCmd), "Alignment mismatch on SensorReadCmd");
 static_assert(alignof(MaxCommandSize) >= alignof(ComputeCmd), "Alignment mismatch on ComputeCmd");
 static_assert(alignof(MaxCommandSize) >= alignof(PrintCmd), "Alignment mismatch on PrintCmd");
+static_assert(alignof(MaxCommandSize) >= alignof(PrintBME280Cmd), "Alignment mismatch on PrintBME280Cmd");
 
 K_MSGQ_DEFINE(processor_queue, sizeof(ICommand*), QueueConfig::Depth, QueueConfig::Alignment);
 K_MSGQ_DEFINE(logger_queue, sizeof(ICommand*), QueueConfig::Depth, QueueConfig::Alignment);
@@ -43,7 +48,9 @@ private:
 public:
     CycleProfiler(const char* t, uint32_t cmd_id) noexcept : tag(t), id(cmd_id), start(k_cycle_get_32()) {}
     ~CycleProfiler() {
+        #ifdef CONFIG_LOG_EXECUTION_CYCLES
         LOG_INF("[%s] #%u: Execution took %u cycles", tag, id, k_cycle_get_32() - start);
+        #endif
     }
 };
 
@@ -169,7 +176,7 @@ namespace {
             calib_mutex_initialized = true;
         }
     }
-    
+    #ifndef CONFIG_BOARD_MPS2_AN386
     [[nodiscard]] bool readTempCalibration(uint16_t addr) noexcept {
         auto t1 = SystemObjects::i2c().readWord(addr, BME280CalibReg::DIG_T1); if (!t1.isOk()) return false; 
         auto t2 = SystemObjects::i2c().readWord(addr, BME280CalibReg::DIG_T2); if (!t2.isOk()) return false; 
@@ -223,7 +230,7 @@ namespace {
         g_bme280Calib.dig_H6 = static_cast<int8_t>(h6.unwrap());
         return true;
     }
-    
+    #endif
     [[nodiscard]] bool loadBME280Calibration(uint16_t addr) noexcept {
         ensureCalibMutex();
         k_mutex_lock(&calib_mutex, K_FOREVER);
@@ -231,6 +238,20 @@ namespace {
             k_mutex_unlock(&calib_mutex);
             return true;
         }
+
+#ifdef CONFIG_BOARD_MPS2_AN386
+        // Provide standard factory calibration values so QEMU math yields realistic results
+        g_bme280Calib.dig_T1 = 27504; g_bme280Calib.dig_T2 = 26435; g_bme280Calib.dig_T3 = -1000;
+        g_bme280Calib.dig_P1 = 36477; g_bme280Calib.dig_P2 = -10685; g_bme280Calib.dig_P3 = 3024;
+        g_bme280Calib.dig_P4 = 2855;  g_bme280Calib.dig_P5 = 140;    g_bme280Calib.dig_P6 = -7;
+        g_bme280Calib.dig_P7 = 15500; g_bme280Calib.dig_P8 = -14600; g_bme280Calib.dig_P9 = 6000;
+        g_bme280Calib.dig_H1 = 75;    g_bme280Calib.dig_H2 = 360;    g_bme280Calib.dig_H3 = 0;
+        g_bme280Calib.dig_H4 = 315;   g_bme280Calib.dig_H5 = 50;     g_bme280Calib.dig_H6 = 30;
+        g_bme280Calib.is_loaded = true;
+        k_mutex_unlock(&calib_mutex);
+        LOG_INF("[%s] BME280 MOCK Calibration Loaded Successfully.", LogTags::PRODUCER);
+        return true;
+#else
         if (!readTempCalibration(addr) || !readPressureCalibration(addr) || !readHumidityCalibration(addr)) {
             k_mutex_unlock(&calib_mutex);
             return false;
@@ -239,6 +260,7 @@ namespace {
         k_mutex_unlock(&calib_mutex);
         LOG_INF("[%s] BME280 ROM Calibration Loaded Successfully.", LogTags::PRODUCER);
         return true;
+#endif
     }
 }
 
@@ -325,20 +347,60 @@ SensorReadCmd::SensorReadCmd(SensorID s_id, uint8_t r_addr, ReadLength len) noex
     : sensor_id(s_id), reg_addr(r_addr), length(len) {}
 
 uint64_t SensorReadCmd::readMockData() const noexcept {
-    static uint16_t counter = 0; 
-    counter += MockValues::STEP; 
-    const uint16_t offset = counter % 1000;
+    // Retain state across loop iterations to simulate continuous environmental drift
+    static int32_t mock_bme_t = MockValues::BME_T_BASE;
+    static int32_t mock_bme_p = MockValues::BME_P_BASE;
+    static int32_t mock_bme_h = MockValues::BME_H_BASE;
+    static int32_t mock_lps_t = MockValues::LPS_T_BASE;
+    static int32_t mock_lps_p = MockValues::LPS_P_BASE;
+    static int32_t mock_pav   = MockValues::PAV_BASE;
+
+    static bool heating_up = true;
+
+    // Simulate realistic physics: as temperature rises, humidity typically drops 
+    // and pressure fluctuates slightly.
+    if (heating_up) {
+        mock_bme_t += 15;   // Temp rises smoothly
+        mock_bme_p -= 5;    // Pressure drops slightly
+        mock_bme_h -= 10;   // Humidity decreases as air warms
+        mock_lps_t += 2;    
+        mock_lps_p -= 10;
+        mock_pav   += 1;
+        
+        // Reverse direction at the upper bound (simulating afternoon cooling)
+        if (mock_bme_t > static_cast<int32_t>(MockValues::BME_T_BASE) + 8000) {
+            heating_up = false;
+        }
+    } else {
+        mock_bme_t -= 15;   // Temp drops
+        mock_bme_p += 5;    // Pressure rises
+        mock_bme_h += 10;   // Humidity increases as air cools
+        mock_lps_t -= 2;
+        mock_lps_p += 10;
+        mock_pav   -= 1;
+
+        // Reverse direction at the lower bound (simulating morning heating)
+        if (mock_bme_t < static_cast<int32_t>(MockValues::BME_T_BASE) - 8000) {
+            heating_up = true;
+        }
+    }
 
     switch (sensor_id) {
         case SensorID::BME280:
-            return (((MockValues::BME_P_BASE + offset) << 4) << 40) | 
-                   (((MockValues::BME_T_BASE + offset) << 4) << 16) | 
-                   (MockValues::BME_H_BASE + offset);
+            // BME280 math requires 20-bit raw ADC values shifted by 4 in a 24-bit space
+            return ((static_cast<uint64_t>(mock_bme_p) << 4) << 40) | 
+                   ((static_cast<uint64_t>(mock_bme_t) << 4) << 16) | 
+                   (static_cast<uint64_t>(mock_bme_h));
         case SensorID::LPS22HB:
-            if (reg_addr == SensorReg::LPS_T_DESC.reg) return MockValues::LPS_T_BASE + (offset % 500); 
-            return MockValues::LPS_P_BASE + offset;
+            if (reg_addr == SensorReg::LPS_T_DESC.reg) return mock_lps_t; 
+            
+            // LPS22HB hardware outputs LSB first, but the decode function reads byte3 as MSB.
+            // We must reverse the bytes of the mock integer so the decoder parses it correctly.
+            return ((static_cast<uint64_t>(mock_lps_p) & 0xFF) << 16) | 
+                   (static_cast<uint64_t>(mock_lps_p) & 0xFF00) | 
+                   ((static_cast<uint64_t>(mock_lps_p) >> 16) & 0xFF);
         case SensorID::PAV3015:
-            return MockValues::PAV_BASE + (offset % 3426);
+            return mock_pav;
         default: return 0;
     }
 }
@@ -369,8 +431,7 @@ void SensorReadCmd::execute() noexcept {
     CycleProfiler profiler(LogTags::READ, command_id);
     uint64_t raw = 0;
 
-#ifdef CONFIG_BOARD_QEMU_CORTEX_M3
-    k_msleep(50);
+#ifdef CONFIG_BOARD_MPS2_AN386
     raw = readMockData();
 #else
     auto res = readHardwareData();
@@ -399,17 +460,25 @@ void ComputeCmd::execute() noexcept {
                 return;
             }
             BME280Data result = BME280Math::decode(raw_data, g_bme280Calib);
-            (void)printMeasurement(SensorID::BME280, result.temperature);
-            (void)printMeasurement(SensorID::BME280_PRESS, result.pressure);
-            (void)printMeasurement(SensorID::BME280_HUM, result.humidity);
+            (void)printBME280Measurement(result);
             break;
         }
         case SensorID::LPS22HB: {
-            float val = (reg_addr == SensorReg::LPS_T_DESC.reg) ? 
-                        LPS22HBMath::decodeTemperature(raw_data) : 
-                        LPS22HBMath::decodePressure(raw_data);
-            SensorID v_id = (reg_addr == SensorReg::LPS_T_DESC.reg) ? SensorID::LPS22HB_TEMP : SensorID::LPS22HB;
-            (void)printMeasurement(v_id, val);
+            static LPS22HBData lps_data{};
+            static bool has_pressure = false;
+
+            if (reg_addr == SensorReg::LPS_P_DESC.reg) {
+                // Buffer the pressure data when it arrives
+                lps_data.pressure = LPS22HBMath::decodePressure(raw_data);
+                has_pressure = true;
+            } else if (reg_addr == SensorReg::LPS_T_DESC.reg) {
+                // Process temperature and enqueue the combined print command
+                lps_data.temperature = LPS22HBMath::decodeTemperature(raw_data);
+                if (has_pressure) {
+                    (void)printLPS22HBMeasurement(lps_data);
+                    has_pressure = false; // Reset for the next cycle
+                }
+            }
             break;
         }
         case SensorID::PAV3015: {
@@ -448,6 +517,40 @@ void PrintCmd::execute() noexcept {
     LOG_INF("[%s] #%u: Metric: %s = %.2f", LogTags::PRINT, command_id, getSensorName(), (double)final_value);
 }
 
+PrintBME280Cmd::PrintBME280Cmd(const BME280Data& d) noexcept : data(d) {}
+
+void PrintBME280Cmd::execute() noexcept {
+    // Log all three values in a single execution to clear the queue faster
+    LOG_INF("[%s] #%u: Metric: BME280 Temp = %.2f C | Press = %.2f hPa | Hum = %.2f %%RH", 
+            LogTags::PRINT, command_id, 
+            (double)data.temperature, (double)data.pressure, (double)data.humidity);
+}
+
+bool printBME280Measurement(const BME280Data& data) noexcept {
+    if (!enqueueCommand<PrintBME280Cmd>(LOGGER_Q, data)) {
+        g_queueStats.loggerQueueFull++;
+        LOG_ERR("[%s] Logger queue full. BME280 metrics dropped.", LogTags::PRINT);
+        return false;
+    }
+    return true;
+}
+
+PrintLPS22HBCmd::PrintLPS22HBCmd(const LPS22HBData& d) noexcept : data(d) {}
+
+void PrintLPS22HBCmd::execute() noexcept {
+    LOG_INF("[%s] #%u: Metric: LPS22HB Temp = %.2f C | Press = %.2f hPa", 
+            LogTags::PRINT, command_id, 
+            (double)data.temperature, (double)data.pressure);
+}
+
+bool printLPS22HBMeasurement(const LPS22HBData& data) noexcept {
+    if (!enqueueCommand<PrintLPS22HBCmd>(LOGGER_Q, data)) {
+        g_queueStats.loggerQueueFull++;
+        LOG_ERR("[%s] Logger queue full. LPS22HB metrics dropped.", LogTags::PRINT);
+        return false;
+    }
+    return true;
+}
 
 void producer_thread(void) {
     ProducerState state = ProducerState::ReadBME; 
@@ -505,8 +608,10 @@ void processor_thread(void) {
             // Time between when this command was queued and when the
             // processor thread was actually scheduled to pick it up --
             // i.e. how long dispatch was held off by pre-emption.
+            #ifdef CONFIG_LOG_PREEMPTION_DELAY
             LOG_INF("[%s] #%u: waited %u cycles before dispatch (pre-emption delay)",
                     LogTags::COMPUTE, incoming_cmd->command_id, incoming_cmd->queueDelay());
+            #endif
             incoming_cmd->execute();
             incoming_cmd->destroy();
         } else {
@@ -519,8 +624,10 @@ void logger_thread(void) {
     ICommand* incoming_cmd;
     do {
         if (k_msgq_get(LOGGER_Q, &incoming_cmd, K_SECONDS(2)) == 0) {
+            #ifdef CONFIG_LOG_PREEMPTION_DELAY
             LOG_INF("[%s] #%u: waited %u cycles before dispatch (pre-emption delay)",
                     LogTags::PRINT, incoming_cmd->command_id, incoming_cmd->queueDelay());
+            #endif
             incoming_cmd->execute();
             incoming_cmd->destroy();
         }
@@ -529,7 +636,7 @@ void logger_thread(void) {
 
 K_THREAD_DEFINE(producer_tid,  ThreadConfig::StackSmall, producer_thread,  NULL, NULL, NULL, ThreadConfig::PrioProducer,  0, 0);
 K_THREAD_DEFINE(processor_tid, ThreadConfig::StackLarge, processor_thread, NULL, NULL, NULL, ThreadConfig::PrioProcessor, 0, 0);
-K_THREAD_DEFINE(logger_tid,    ThreadConfig::StackLarge, logger_thread,    NULL, NULL, NULL, ThreadConfig::PrioLogger,    0, 0);
+K_THREAD_DEFINE(logger_tid,    ThreadConfig::StackSmall, logger_thread,    NULL, NULL, NULL, ThreadConfig::PrioLogger,    0, 0);
 
 extern "C" void sys_trace_thread_switched_in_user(struct k_thread *thread) {
     if (thread == producer_tid || thread == processor_tid || thread == logger_tid) {

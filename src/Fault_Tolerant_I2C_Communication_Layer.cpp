@@ -10,7 +10,7 @@
 #include <new>
 #include <cstdint>
 
-LOG_MODULE_REGISTER(I2C_HW, LOG_LEVEL_WRN);
+LOG_MODULE_REGISTER(I2C_HW, LOG_LEVEL_INF);
 
 constexpr size_t MAX_CACHED_REGISTERS = 15U;
 constexpr uint8_t CACHE_RELIABILITY_MAX = 100U;
@@ -32,7 +32,7 @@ static CacheEntry* active_entries[MAX_CACHED_REGISTERS] = {nullptr};
 static struct k_mutex cache_tracker_mutex;
 static bool cache_mutex_init = false;
 
-#ifdef CONFIG_BOARD_QEMU_CORTEX_M3
+#ifdef CONFIG_BOARD_MPS2_AN386
 
 const struct device *i2c_hardware = nullptr;
 
@@ -103,7 +103,7 @@ static void update_cache(uint32_t key, uint64_t value, bool calibrated = true) {
     k_mutex_unlock(&cache_tracker_mutex);
 }
 
-#ifndef CONFIG_BOARD_QEMU_CORTEX_M3
+#ifndef CONFIG_BOARD_MPS2_AN386
 
 static bool get_cached_value(uint32_t key, uint64_t* out_val, uint32_t max_age_ms) {
     if (out_val == nullptr) {
@@ -220,7 +220,7 @@ Result<uint8_t> I2CManager::readRegister(uint16_t sensor_addr, uint8_t reg_addr)
     
     ensure_power_observer_registered();
     if (g_i2cPowerObserver.isSleeping()) {
-#ifndef CONFIG_BOARD_QEMU_CORTEX_M3
+#ifndef CONFIG_BOARD_MPS2_AN386
         // If bus is sleeping, seamlessly attempt to serve from cache rather than failing
         uint64_t cached_val = 0U;
         if (get_cached_value(cache_key, &cached_val, 3000U)) {
@@ -230,7 +230,7 @@ Result<uint8_t> I2CManager::readRegister(uint16_t sensor_addr, uint8_t reg_addr)
         return Result<uint8_t>::Err(I2CFault::DEVICE_NOT_READY);
     }
     
-#ifdef CONFIG_BOARD_QEMU_CORTEX_M3
+#ifdef CONFIG_BOARD_MPS2_AN386
     k_msleep(50); 
     uint8_t mock_data = 60U;
     update_cache(cache_key, mock_data);
@@ -278,7 +278,7 @@ Result<bool> I2CManager::writeRegister(uint16_t sensor_addr, uint8_t reg_addr, u
         return Result<bool>::Err(I2CFault::DEVICE_NOT_READY);
     }
 
-#ifdef CONFIG_BOARD_QEMU_CORTEX_M3
+#ifdef CONFIG_BOARD_MPS2_AN386
     k_msleep(10);
     return Result<bool>::Ok(true);
 #else
@@ -314,7 +314,7 @@ Result<uint16_t> I2CManager::readWord(uint16_t sensor_addr, uint8_t reg_addr) {
     
     ensure_power_observer_registered();
     if (g_i2cPowerObserver.isSleeping()) {
-#ifndef CONFIG_BOARD_QEMU_CORTEX_M3
+#ifndef CONFIG_BOARD_MPS2_AN386
         uint64_t cached_val = 0U;
         if (get_cached_value(cache_key, &cached_val, 3000U)) {
             return Result<uint16_t>::Ok(static_cast<uint16_t>(cached_val & 0xFFFFU));
@@ -323,7 +323,7 @@ Result<uint16_t> I2CManager::readWord(uint16_t sensor_addr, uint8_t reg_addr) {
         return Result<uint16_t>::Err(I2CFault::DEVICE_NOT_READY);
     }
 
-#ifdef CONFIG_BOARD_QEMU_CORTEX_M3
+#ifdef CONFIG_BOARD_MPS2_AN386
     k_msleep(50);
     uint16_t mock_val = 900U;
     update_cache(cache_key, mock_val);
@@ -380,7 +380,7 @@ Result<uint32_t> I2CManager::read24Bit(uint16_t sensor_addr, uint8_t reg_addr) {
     
     ensure_power_observer_registered();
     if (g_i2cPowerObserver.isSleeping()) {
-#ifndef CONFIG_BOARD_QEMU_CORTEX_M3
+#ifndef CONFIG_BOARD_MPS2_AN386
         uint64_t cached_val = 0U;
         if (get_cached_value(cache_key, &cached_val, 3000U)) {
             return Result<uint32_t>::Ok(static_cast<uint32_t>(cached_val & 0xFFFFFFU));
@@ -389,7 +389,7 @@ Result<uint32_t> I2CManager::read24Bit(uint16_t sensor_addr, uint8_t reg_addr) {
         return Result<uint32_t>::Err(I2CFault::DEVICE_NOT_READY);
     }
 
-#ifdef CONFIG_BOARD_QEMU_CORTEX_M3
+#ifdef CONFIG_BOARD_MPS2_AN386
     k_msleep(50);
     uint32_t mock_val = 101300U;
     update_cache(cache_key, mock_val);
@@ -436,7 +436,7 @@ Result<uint64_t> I2CManager::read64Bit(uint16_t sensor_addr, uint8_t reg_addr) {
   
     ensure_power_observer_registered();
     if (g_i2cPowerObserver.isSleeping()) {
-#ifndef CONFIG_BOARD_QEMU_CORTEX_M3
+#ifndef CONFIG_BOARD_MPS2_AN386
         uint64_t cached_val = 0U;
         if (get_cached_value(cache_key, &cached_val, 3000U)) {
             return Result<uint64_t>::Ok(cached_val);
@@ -445,7 +445,7 @@ Result<uint64_t> I2CManager::read64Bit(uint16_t sensor_addr, uint8_t reg_addr) {
         return Result<uint64_t>::Err(I2CFault::DEVICE_NOT_READY);
     }
 
-#ifdef CONFIG_BOARD_QEMU_CORTEX_M3
+#ifdef CONFIG_BOARD_MPS2_AN386
     k_msleep(50);
     uint64_t mock_val = 0U; 
     update_cache(cache_key, mock_val);

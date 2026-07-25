@@ -20,9 +20,9 @@ namespace PoolConfig {
 namespace ThreadConfig {
     constexpr size_t StackSmall = 512;
     constexpr size_t StackLarge = 1024;
-    constexpr int PrioProducer  = 5;
-    constexpr int PrioProcessor = 6;
-    constexpr int PrioLogger    = 7;
+    constexpr int PrioProducer  = 6;
+    constexpr int PrioProcessor = 5;
+    constexpr int PrioLogger    = 4;
 }
 
 enum class SensorID : uint16_t {
@@ -50,7 +50,7 @@ static_assert(sizeof(SensorID) == 2, "SensorID must be 16-bit");
 static_assert(sizeof(ReadLength) == 1, "ReadLength must be 8-bit");
 static_assert(QueueConfig::Depth > 0, "Queue depth must be greater than 0");
 static_assert(PoolConfig::Elements >= QueueConfig::Depth, "Pool must support peak queue depth");
-static_assert(ThreadConfig::PrioProducer < ThreadConfig::PrioProcessor, "Processor must have higher priority than Producer to prevent starvation");
+static_assert(ThreadConfig::PrioProcessor < ThreadConfig::PrioProducer, "Processor must have higher priority than Producer to prevent starvation");
 
 namespace LogTags {
     constexpr char READ[]     = "READ";
@@ -116,6 +116,11 @@ struct BME280Data {
     float temperature;
     float pressure;
     float humidity;
+};
+
+struct LPS22HBData {
+    float temperature;
+    float pressure;
 };
 
 namespace BME280Math {
@@ -188,6 +193,29 @@ public:
     PrintCmd(SensorID s_id, float val) noexcept;
     void execute() noexcept override final;
 };
+
+class PrintBME280Cmd final : public ICommand {
+private:
+    BME280Data data;
+
+public:
+    explicit PrintBME280Cmd(const BME280Data& d) noexcept;
+    void execute() noexcept override final;
+};
+
+class PrintLPS22HBCmd final : public ICommand {
+private:
+    LPS22HBData data;
+
+public:
+    explicit PrintLPS22HBCmd(const LPS22HBData& d) noexcept;
+    void execute() noexcept override final;
+};
+
+// 3. Add this declaration near `[[nodiscard]] bool printMeasurement(SensorID id, float value) noexcept;`:
+[[nodiscard]] bool printBME280Measurement(const BME280Data& data) noexcept;
+
+[[nodiscard]] bool printLPS22HBMeasurement(const LPS22HBData& data) noexcept;
 
 struct QueueStats {
     uint32_t commandsCreated = 0;

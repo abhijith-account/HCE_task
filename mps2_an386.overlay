@@ -36,7 +36,7 @@
         #size-cells = <1>;
         erase-value = <0xff>;
 
-        flash_sim0: flash_sim@0 {
+        my_sim_flash0: flash_sim@0 {
             status = "okay";
             compatible = "soc-nv-flash";
             erase-block-size = <1024>;
@@ -48,11 +48,16 @@
                 #address-cells = <1>;
                 #size-cells = <1>;
 
-                storage_partition: partition@6000 {
+                my_storage_partition: partition@6000 {
                     label = "storage";
                     reg = <0x00006000 0x00002000>;
                 };
             };
         };
     };
+};
+
+/* Explicitly bind uart0 for mps2_an386 */
+&uart0 {
+    status = "okay";
 };

@@ -1,4 +1,5 @@
 #include "Smart_Battery_System.h"
+#include "Persistent_Configuration_System.h"
 #include <zephyr/logging/log.h>
 #include <zephyr/device.h>
 #include <zephyr/sys/byteorder.h>
@@ -103,7 +104,7 @@ namespace CurveFitting {
 }
 
 namespace Thermistor {
-#ifdef CONFIG_BOARD_QEMU_CORTEX_M3
+#ifdef CONFIG_BOARD_MPS2_AN386
 bool init() { return true; }
 Reading<int16_t> readCelsius() { return Reading<int16_t>::Ok(250); }
 #else
@@ -352,7 +353,27 @@ void SbsBattery::updateStateAndPublish(uint16_t pack_mv, int32_t current_ma, int
 }
 
 void SbsBattery::pollHardwareAndUpdateCache() {
-#ifdef CONFIG_BOARD_QEMU_CORTEX_M3
+#ifdef CONFIG_BOARD_MPS2_AN386
+// Retain state across loop iterations to simulate changing data
+    static uint16_t mock_voltage_mv = 11100U;
+    static int32_t mock_current_ma = -200; // Start by discharging
+    static int16_t mock_temp_tenths = 250; // 25.0°C
+
+    // Simulate charge/discharge cycling based on pack limits
+    if (mock_voltage_mv <= BatteryLimits::PACK_MIN_VOLTAGE_MV + 200) {
+        mock_current_ma = 500; // Hit bottom; switch to charging
+    } else if (mock_voltage_mv >= BatteryLimits::PACK_MAX_VOLTAGE_MV - 200) {
+        mock_current_ma = -300; // Hit top; switch to discharging
+    }
+
+    // Apply simulated physics to voltage and temperature
+    if (mock_current_ma > 0) {
+        mock_voltage_mv += 12; // Voltage rises while charging
+        if (mock_temp_tenths < 400) mock_temp_tenths += 2; // Pack heats up to 40.0°C max
+    } else {
+        mock_voltage_mv -= 10; // Voltage drops while discharging
+        if (mock_temp_tenths > 220) mock_temp_tenths -= 1; // Pack cools to 22.0°C min
+    }
     updateStateAndPublish(11100U, -150, 250);
     feedWatchdog();
     return;
@@ -522,21 +543,25 @@ void SbsBattery::processFSM() {
     }
 
     if (soc_pct >= 100U) {
-        bool expected = false;
-        if (full_charge_logged.compare_exchange_strong(expected, true)) {
-            LOG_INF("BATTERY FULLY CHARGED. Triggering NVS Log entry.");
+    bool expected = false;
+    if (full_charge_logged.compare_exchange_strong(expected, true)) {
+        LOG_INF("BATTERY FULLY CHARGED. Logging event to NVS.");
+        const uint32_t event_timestamp = k_uptime_get_32();
+        if (!ConfigStore::getInstance().set(ConfigKey::FULL_CHARGE_LOG, event_timestamp)) {
+            LOG_WRN("Failed to persist full-charge event to NVS");
         }
+    }
     } else if (soc_pct < 95U) {
         full_charge_logged.store(false);
     }
 
-    if (soc_pct <= BatteryLimits::CUTOFF_SOC_PCT) {
+    if (soc_pct < BatteryLimits::CUTOFF_SOC_PCT) {
         if (current_fsm_state != BatteryFSM::CUTOFF) {
             LOG_ERR("DISCHARGE GUARD TRIGGERED! SoC:%u%%. Halting System.", soc_pct);
             if (sys_context != nullptr) sys_context->triggerFault("Battery Critically Low");
             current_state.store(BatteryFSM::CUTOFF);
         }
-    } else if (soc_pct >= BatteryLimits::REENABLE_SOC_PCT) {
+    } else if (soc_pct > BatteryLimits::REENABLE_SOC_PCT) {
         if (sys_context != nullptr && sys_context->getState() == SystemState::SAFE_HALT) {
             LOG_INF("Battery recovered to %u%%. System safe to restart.", soc_pct);
             sys_context->requestTransition(SystemState::INIT);
@@ -654,8 +679,23 @@ void battery_monitor_thread(void) {
             if (!g_bmsPowerObserver.isSleeping()) {
                 smart_battery->processFSM();
 
+                // Fetch metrics from the thread-safe cache
+                const auto vol = smart_battery->getVoltage();
+                const auto soc = smart_battery->getStateOfCharge();
+                const auto temp = smart_battery->getTemperature();
+
+                // Only print if all reads were successful
+                if (vol.success && soc.success && temp.success) {
+                    // Temperature is stored in Kelvin tenths. Convert back to Celsius tenths.
+                    int32_t temp_c_tenths = static_cast<int32_t>(temp.value.value) - Thermistor::KELVIN_OFFSET_TENTHS;
+                    
+                    LOG_INF("BATTERY: Voltage = %u mV | SoC = %u%% | Temp = %d.%d C", 
+                            vol.value.value, 
+                            soc.value.value,
+                            temp_c_tenths / 10, absolute(temp_c_tenths % 10));
+                }
+
                 if (smart_battery->getState() == BatteryFSM::DISCHARGING) {
-                    const auto soc = smart_battery->getStateOfCharge();
                     if (soc.success) {
                         LOG_DBG("Battery Discharging: %u%% remaining", soc.value.value);
                     }
@@ -666,5 +706,5 @@ void battery_monitor_thread(void) {
     } while(THREAD_LOOP_CONDITION);
 }
 
-K_THREAD_DEFINE(bms_comm_tid, 1536, bms_comm_thread, NULL, NULL, NULL, BatteryLimits::BMS_THREAD_PRIO, 0, 0);
-K_THREAD_DEFINE(battery_tid, 1024, battery_monitor_thread, NULL, NULL, NULL, BatteryLimits::MONITOR_THREAD_PRIO, 0, 0);
+K_THREAD_DEFINE(bms_comm_tid, 384, bms_comm_thread, NULL, NULL, NULL, BatteryLimits::BMS_THREAD_PRIO, 0, 0);
+K_THREAD_DEFINE(battery_tid, 512, battery_monitor_thread, NULL, NULL, NULL, BatteryLimits::MONITOR_THREAD_PRIO, 0, 0);
