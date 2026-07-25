@@ -145,7 +145,7 @@ TEST_F(SyncTestSuite,ProductionStatusReporting){
 
 TEST_F(SyncTestSuite,HeartRateRolloverBranch){
     run_thread_once=false;
-    for(int i=0;i<61;i++){
+    for(int i=0;i<200;i++){
         heart_rate_producer_thread();
     }
 }
