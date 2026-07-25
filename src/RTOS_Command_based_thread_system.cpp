@@ -48,7 +48,7 @@ private:
 public:
     CycleProfiler(const char* t, uint32_t cmd_id) noexcept : tag(t), id(cmd_id), start(k_cycle_get_32()) {}
     ~CycleProfiler() {
-        #ifdef CONFIG_LOG_EXECUTION_CYCLES
+        #if defined(CONFIG_LOG_EXECUTION_CYCLES) || defined(IS_TEST_ENVIRONMENT)
         LOG_INF("[%s] #%u: Execution took %u cycles", tag, id, k_cycle_get_32() - start);
         #endif
     }
