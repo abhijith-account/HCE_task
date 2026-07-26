@@ -6,6 +6,10 @@ config LOG_PREEMPTION_DELAY
     help
       Enables the LOG_INF statements that print the cycle delay between
       command queue insertion and thread dispatch.
+
+config SOC_MPS2_AN386
+    bool
+    select HAS_PM
       
 config LOG_EXECUTION_CYCLES
     bool "Enable logging for command execution cycle times"
