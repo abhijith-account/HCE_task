@@ -10,6 +10,33 @@
         status = "okay";
         #address-cells = <1>;
         #size-cells = <0>;
+
+        /* --- Simulated I2C Devices for PWR_SYS and other threads --- */
+        lps22hb: lps22hb@5c {
+            compatible = "st,lps22hb-press";
+            reg = <0x5c>;
+            status = "okay";
+        };
+        
+        bme280: bme280@76 {
+            compatible = "bosch,bme280";
+            reg = <0x76>;
+            status = "okay";
+        };
+        
+        pav3015: pav3015@28 {
+            compatible = "vnd,i2c-device";
+            reg = <0x28>;
+            status = "okay";
+        };
+        
+        ina226: ina226@40 {
+            compatible = "ti,ina226";
+            reg = <0x40>;
+            rshunt-micro-ohms = <100000>;
+            current-lsb-microamps = <25>;
+            status = "okay";
+        };
     };
 
     iwdg: fake_watchdog@40002000 {
