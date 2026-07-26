@@ -75,7 +75,7 @@ namespace CurveFitting {
     template <size_t N>
     uint8_t interpolateOcv(const OcvPoint (&lut)[N], uint16_t mv) {
         if (mv <= lut[0].mv) return lut[0].soc_pct;
-        
+
         for (size_t i = 0; i < N - 1; ++i) {
             if (mv <= lut[i+1].mv) {
                 uint32_t v_range = lut[i+1].mv - lut[i].mv;
@@ -90,7 +90,7 @@ namespace CurveFitting {
     template <size_t N>
     int16_t interpolateNtc(const NtcPoint (&lut)[N], int32_t mv) {
         if (mv >= lut[0].mv) return lut[0].temp_tenths;
-        
+
         for (size_t i = 0; i < N - 1; ++i) {
             if (mv >= lut[i+1].mv) {
                 int32_t v_range = lut[i].mv - lut[i+1].mv;
@@ -128,7 +128,7 @@ Reading<int16_t> readCelsius() {
         sequence.buffer = &raw;
         sequence.buffer_size = sizeof(raw);
 
-        if (adc_sequence_init_dt(&thermistor_adc_chan, &sequence) != 0 || 
+        if (adc_sequence_init_dt(&thermistor_adc_chan, &sequence) != 0 ||
             adc_read(thermistor_adc_chan.dev, &sequence) != 0) {
             return Reading<int16_t>::Err(Fault::ADC_READ_ERROR);
         }
@@ -145,7 +145,7 @@ Reading<int16_t> readCelsius() {
 
     return Reading<int16_t>::Ok(celsius_tenths);
 }
-#endif 
+#endif
 }
 
 namespace INA226 {
@@ -162,8 +162,7 @@ bool Driver::init() {
 Result<int16_t> Driver::readBusVoltageRaw() {
     const Result<uint16_t> r = i2c->readWord(I2C_ADDR, REG_BUS_VOLT);
     if (!r.isOk()) return Result<int16_t>::Err(r.error);
-    
-    // Explicit manual byte-swap to guarantee endianness translation regardless of I2CManager's pointer casting
+
     uint16_t raw_val = r.unwrap();
     return Result<int16_t>::Ok(static_cast<int16_t>((raw_val << 8) | (raw_val >> 8)));
 }
@@ -171,8 +170,7 @@ Result<int16_t> Driver::readBusVoltageRaw() {
 Result<int16_t> Driver::readCurrentRaw() {
     const Result<uint16_t> r = i2c->readWord(I2C_ADDR, REG_CURRENT);
     if (!r.isOk()) return Result<int16_t>::Err(r.error);
-    
-    // Explicit manual byte-swap
+
     uint16_t raw_val = r.unwrap();
     return Result<int16_t>::Ok(static_cast<int16_t>((raw_val << 8) | (raw_val >> 8)));
 }
@@ -354,25 +352,23 @@ void SbsBattery::updateStateAndPublish(uint16_t pack_mv, int32_t current_ma, int
 
 void SbsBattery::pollHardwareAndUpdateCache() {
 #ifdef CONFIG_BOARD_MPS2_AN386
-// Retain state across loop iterations to simulate changing data
-    static uint16_t mock_voltage_mv = 11100U;
-    static int32_t mock_current_ma = -200; // Start by discharging
-    static int16_t mock_temp_tenths = 250; // 25.0°C
 
-    // Simulate charge/discharge cycling based on pack limits
+    static uint16_t mock_voltage_mv = 11100U;
+    static int32_t mock_current_ma = -200;
+    static int16_t mock_temp_tenths = 250;
+
     if (mock_voltage_mv <= BatteryLimits::PACK_MIN_VOLTAGE_MV + 200) {
-        mock_current_ma = 500; // Hit bottom; switch to charging
+        mock_current_ma = 500;
     } else if (mock_voltage_mv >= BatteryLimits::PACK_MAX_VOLTAGE_MV - 200) {
-        mock_current_ma = -300; // Hit top; switch to discharging
+        mock_current_ma = -300;
     }
 
-    // Apply simulated physics to voltage and temperature
     if (mock_current_ma > 0) {
-        mock_voltage_mv += 12; // Voltage rises while charging
-        if (mock_temp_tenths < 400) mock_temp_tenths += 2; // Pack heats up to 40.0°C max
+        mock_voltage_mv += 12;
+        if (mock_temp_tenths < 400) mock_temp_tenths += 2;
     } else {
-        mock_voltage_mv -= 10; // Voltage drops while discharging
-        if (mock_temp_tenths > 220) mock_temp_tenths -= 1; // Pack cools to 22.0°C min
+        mock_voltage_mv -= 10;
+        if (mock_temp_tenths > 220) mock_temp_tenths -= 1;
     }
     updateStateAndPublish(11100U, -150, 250);
     feedWatchdog();
@@ -383,7 +379,7 @@ void SbsBattery::pollHardwareAndUpdateCache() {
         publishError(voltage_raw.error);
         return;
     }
-    
+
     const uint32_t pack_mv_32 = static_cast<uint32_t>(voltage_raw.value) + (static_cast<uint32_t>(voltage_raw.value) / 4U);
     if (pack_mv_32 > BatteryLimits::MAX_VALID_VOLTAGE_MV) {
         atomic_inc(&stats.validation_errors);
@@ -397,7 +393,7 @@ void SbsBattery::pollHardwareAndUpdateCache() {
         publishError(current_raw.error);
         return;
     }
-    
+
     const int32_t current_ma = (static_cast<int32_t>(current_raw.value) * static_cast<int32_t>(INA226::CURRENT_LSB_UA)) / 1000;
     if (absolute(current_ma) > BatteryLimits::MAX_VALID_CURRENT_MA) {
         atomic_inc(&stats.validation_errors);
@@ -412,7 +408,7 @@ void SbsBattery::pollHardwareAndUpdateCache() {
     }
 
     const BmsCache snapshot = getCacheSnapshot();
-    // Maintain checks if we are actively guarding a jump fault
+
     if (snapshot.valid || snapshot.last_error == CommFault::VALIDATION_ERROR) {
         const int32_t v_delta = absolute(static_cast<int32_t>(pack_mv) - static_cast<int32_t>(snapshot.voltage.value));
         const int32_t c_delta = absolute(current_ma - snapshot.current.value);
@@ -604,7 +600,7 @@ namespace {
         void sleepAborted() override { atomic_set(&is_sleeping, 0); }
         bool isSleeping() const noexcept { return atomic_get(&is_sleeping) != 0; }
     };
-    
+
     static BmsPowerObserver g_bmsPowerObserver;
     K_SEM_DEFINE(bms_objects_ready_sem, 0, 1);
 
@@ -640,8 +636,8 @@ void bms_comm_thread(void) {
 
     if (smart_battery == nullptr) {
         LOG_ERR("Smart battery instance is null.");
-        k_sem_give(&bms_objects_ready_sem); 
-        return; 
+        k_sem_give(&bms_objects_ready_sem);
+        return;
     }
 
     uint32_t init_attempts = 0U;
@@ -673,24 +669,22 @@ void bms_comm_thread(void) {
 
 void battery_monitor_thread(void) {
     k_sem_take(&bms_objects_ready_sem, K_FOREVER);
-    
+
     do {
         if (smart_battery != nullptr) {
             if (!g_bmsPowerObserver.isSleeping()) {
                 smart_battery->processFSM();
 
-                // Fetch metrics from the thread-safe cache
                 const auto vol = smart_battery->getVoltage();
                 const auto soc = smart_battery->getStateOfCharge();
                 const auto temp = smart_battery->getTemperature();
 
-                // Only print if all reads were successful
                 if (vol.success && soc.success && temp.success) {
-                    // Temperature is stored in Kelvin tenths. Convert back to Celsius tenths.
+
                     int32_t temp_c_tenths = static_cast<int32_t>(temp.value.value) - Thermistor::KELVIN_OFFSET_TENTHS;
-                    
-                    LOG_INF("BATTERY: Voltage = %u mV | SoC = %u%% | Temp = %d.%d C", 
-                            vol.value.value, 
+
+                    LOG_INF("BATTERY: Voltage = %u mV | SoC = %u%% | Temp = %d.%d C",
+                            vol.value.value,
                             soc.value.value,
                             temp_c_tenths / 10, absolute(temp_c_tenths % 10));
                 }
@@ -708,3 +702,4 @@ void battery_monitor_thread(void) {
 
 K_THREAD_DEFINE(bms_comm_tid, 384, bms_comm_thread, NULL, NULL, NULL, BatteryLimits::BMS_THREAD_PRIO, 0, 0);
 K_THREAD_DEFINE(battery_tid, 512, battery_monitor_thread, NULL, NULL, NULL, BatteryLimits::MONITOR_THREAD_PRIO, 0, 0);
+

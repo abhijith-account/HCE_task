@@ -4,8 +4,8 @@
 #include <cstdint>
 #include <utility>
 #include "Fault_Tolerant_I2C_Communication_Layer.h"
-#include "Device_State_Machine+Watchdog.h"   // for DeviceContext
-#include "Power_Management_System.h"         // for PowerManager
+#include "Device_State_Machine+Watchdog.h"
+#include "Power_Management_System.h"
 
 namespace QueueConfig {
     constexpr size_t Depth = 10;
@@ -30,7 +30,7 @@ enum class SensorID : uint16_t {
     BME280_PRESS = 0x176,
     BME280_HUM   = 0x276,
     LPS22HB      = 0x5C,
-    LPS22HB_TEMP = 0x15C, 
+    LPS22HB_TEMP = 0x15C,
     PAV3015      = 0x28
 };
 
@@ -70,10 +70,10 @@ namespace SensorReg {
     constexpr uint8_t BME280_CTRL_MEAS  = 0xF4;
     constexpr uint8_t BME280_DATA_START = 0xF7;
     constexpr SensorDescriptor BME_DESC = { SensorID::BME280, 0xF7, ReadLength::Block };
-    
+
     constexpr SensorDescriptor LPS_P_DESC = { SensorID::LPS22HB, 0x28, ReadLength::Triple };
     constexpr SensorDescriptor LPS_T_DESC = { SensorID::LPS22HB, 0x2B, ReadLength::Word };
-    
+
     constexpr SensorDescriptor PAV_DESC = { SensorID::PAV3015, 0x00, ReadLength::Word };
 }
 
@@ -93,7 +93,7 @@ namespace BME280Config {
 }
 
 namespace MockValues {
-    constexpr uint16_t STEP = 17; 
+    constexpr uint16_t STEP = 17;
     constexpr uint64_t BME_P_BASE = 512000ULL;
     constexpr uint64_t BME_T_BASE = 512000ULL;
     constexpr uint64_t BME_H_BASE = 25000ULL;
@@ -140,21 +140,21 @@ class ICommand {
 public:
     uint32_t timestamp_queued;
     uint32_t command_id;
-    
+
     ICommand();
     virtual ~ICommand() = default;
-    
+
     ICommand(const ICommand&) = delete;
     ICommand& operator=(const ICommand&) = delete;
     ICommand(ICommand&&) = delete;
     ICommand& operator=(ICommand&&) = delete;
-    
-    virtual void execute() noexcept = 0; 
-    
+
+    virtual void execute() noexcept = 0;
+
     void operator delete(void* ptr) noexcept;
     void destroy() noexcept;
-    
-    [[nodiscard]] uint32_t queueDelay() const noexcept; 
+
+    [[nodiscard]] uint32_t queueDelay() const noexcept;
 };
 
 class SensorReadCmd final : public ICommand {
@@ -162,21 +162,21 @@ private:
     SensorID sensor_id;
     uint8_t reg_addr;
     ReadLength length;
-    
-    [[nodiscard]] Result<uint64_t> readHardwareData() const noexcept; 
+
+    [[nodiscard]] Result<uint64_t> readHardwareData() const noexcept;
     [[nodiscard]] uint64_t readMockData() const noexcept;
 
 public:
     SensorReadCmd(SensorID s_id, uint8_t r_addr, ReadLength len) noexcept;
-    void execute() noexcept override final; 
+    void execute() noexcept override final;
 };
 
 class ComputeCmd final : public ICommand {
 private:
     SensorID sensor_id;
     uint8_t reg_addr;
-    uint64_t raw_data; 
-    
+    uint64_t raw_data;
+
 public:
     ComputeCmd(SensorID s_id, uint8_t r_addr, uint64_t data) noexcept;
     void execute() noexcept override final;
@@ -187,7 +187,7 @@ private:
     SensorID sensor_id;
     float final_value;
 
-    [[nodiscard]] const char* getSensorName() const noexcept; 
+    [[nodiscard]] const char* getSensorName() const noexcept;
 
 public:
     PrintCmd(SensorID s_id, float val) noexcept;
@@ -212,7 +212,6 @@ public:
     void execute() noexcept override final;
 };
 
-// 3. Add this declaration near `[[nodiscard]] bool printMeasurement(SensorID id, float value) noexcept;`:
 [[nodiscard]] bool printBME280Measurement(const BME280Data& data) noexcept;
 
 [[nodiscard]] bool printLPS22HBMeasurement(const LPS22HBData& data) noexcept;
@@ -233,12 +232,11 @@ namespace SystemObjects {
 }
 
 extern struct k_msgq processor_queue;
-extern struct k_msgq logger_queue;   
+extern struct k_msgq logger_queue;
 
 constexpr auto PROCESSOR_Q = &processor_queue;
 constexpr auto LOGGER_Q    = &logger_queue;
 
-// FIXED: Moved the template implementation into the header to allow test instantiations
 void* allocateCommandMemory() noexcept;
 bool enqueueCommandRaw(k_msgq* queue, ICommand* cmd) noexcept;
 
@@ -263,3 +261,4 @@ void logger_thread(void);
 extern const k_tid_t producer_tid;
 extern const k_tid_t processor_tid;
 extern const k_tid_t logger_tid;
+

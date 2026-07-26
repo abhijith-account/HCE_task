@@ -21,7 +21,7 @@ extern ZephyrWorkQueue status_work;
 int main(void)
 {
     LOG_INF("Command-Based RTOS Booting");
-    
+
     ConfigStore& config = ConfigStore::getInstance();
 
     if (config.init()) {
@@ -43,3 +43,4 @@ int main(void)
 
     return 0;
 }
+

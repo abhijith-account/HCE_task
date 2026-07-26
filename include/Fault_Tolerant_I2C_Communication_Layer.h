@@ -11,15 +11,15 @@ struct Result{
     T value;
     I2CFault error;
     bool success;
-    
+
     static Result<T> Ok(T val){
         return {val,I2CFault::NONE,true};
     }
-    
+
     static Result<T> Err(I2CFault err){
         return {T(),err,false};
     }
-    
+
     bool isOk() const {return success; }
     T unwrap() const{ return value; }
 };
@@ -53,7 +53,7 @@ class I2CManager{
   private:
       const device* i2c_dev;
       RetryStrategy retry_strategy;
-      BusResetStrategy reset_strategy; 
+      BusResetStrategy reset_strategy;
       FailSafeStrategy failsafe_strategy;
   public:
       explicit I2CManager(const device* dev);
@@ -64,3 +64,4 @@ class I2CManager{
       Result<uint32_t> read24Bit(uint16_t sensor_addr,uint8_t reg_addr);
       Result<uint64_t> read64Bit(uint16_t sensor_addr,uint8_t reg_addr);
 };
+

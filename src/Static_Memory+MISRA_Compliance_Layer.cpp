@@ -1,13 +1,13 @@
 #include <zephyr/kernel.h>
 #include "Static_Memory+MISRA_Compliance_Layer.h"
-#include "Device_State_Machine+Watchdog.h" // For sys_context.getState()
+#include "Device_State_Machine+Watchdog.h"
 #include <zephyr/logging/log.h>
 #include <zephyr/debug/thread_analyzer.h>
 
 #ifdef IS_TEST_ENVIRONMENT
     extern bool run_thread_once;
     #define THREAD_LOOP_CONDITION (run_thread_once ? (run_thread_once = false, true) : false)
-#else 
+#else
     #define THREAD_LOOP_CONDITION true
 #endif
 LOG_MODULE_REGISTER(MEM_SYS, LOG_LEVEL_INF);
@@ -24,3 +24,4 @@ void memory_monitor_thread(void){
 }
 
 K_THREAD_DEFINE(mem_mon_tid,768,memory_monitor_thread,NULL,NULL,NULL,12,0,0);
+

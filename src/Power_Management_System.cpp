@@ -1,5 +1,5 @@
 #include "Power_Management_System.h"
-#include "Device_State_Machine+Watchdog.h"   // DeviceContext::triggerFault()
+#include "Device_State_Machine+Watchdog.h"
 #include <zephyr/logging/log.h>
 #include <zephyr/pm/pm.h>
 #include <zephyr/pm/policy.h>
@@ -25,10 +25,8 @@ extern const struct device* uart_hardware;
 extern const struct device* usb_hardware;
 extern DeviceContext sys_context;
 
-// Mock the RTC hardware pointer injection for tests to avoid DEVICE_DT_GET null resolution
 #ifdef IS_TEST_ENVIRONMENT
-    // Using a weak symbol prevents undefined reference errors in other test suites 
-    // (like test_usb_shell) that link this file but don't define their own mock.
+
     __attribute__((weak)) const struct device* rtc_hardware = nullptr;
     __attribute__((weak)) const struct device* uart_hardware = nullptr;
     __attribute__((weak)) const struct device* usb_hardware = nullptr;
@@ -42,9 +40,6 @@ extern DeviceContext sys_context;
     #endif
 #endif
 
-// ---------------------------------------------------------
-// PowerManager Implementation
-// ---------------------------------------------------------
 PowerManager::PowerManager()
     : current_state(nullptr),
       last_sleep_time(0),
@@ -213,11 +208,6 @@ void PowerManager::transitionTo(IPowerState& next_state) {
 
     LOG_ERR("Power manager halted. Idle fallback failed.");
 
-    // Fire the fault handler first. It may re-enter the power manager
-    // (e.g. via reportActivity()) to force the system awake for safe-halt
-    // handling — that reentrant transition must not be allowed to
-    // resurrect the FSM out of the halted state, so current_state is
-    // pinned to nullptr *after* the callback returns, not before.
     if (fault_context) {
         fault_context->triggerFault("Power Manager FSM Halted");
     }
@@ -249,8 +239,8 @@ void PowerManager::processFSM() {
     }
 }
 
-void PowerManager::rtc_alarm_handler(const struct device* /* dev */, uint8_t /* chan_id */,
-                                      uint32_t /* ticks */, void* user_data) {
+void PowerManager::rtc_alarm_handler(const struct device* , uint8_t ,
+                                      uint32_t , void* user_data) {
     auto* self = static_cast<PowerManager*>(user_data);
     atomic_set(&self->wake_pending, 1);
 }
@@ -276,16 +266,11 @@ void PowerManager::resetForTest() {
 }
 #endif
 
-// ---------------------------------------------------------
-// State Pattern Concrete Types
-// ---------------------------------------------------------
-
-// --- ACTIVE STATE ---
 ActiveState& ActiveState::getInstance() {
-    static constinit ActiveState instance; 
+    static constinit ActiveState instance;
     return instance;
 }
-bool ActiveState::enter(PowerManager& /*pm*/) { return true; }
+bool ActiveState::enter(PowerManager& ) { return true; }
 IPowerState& ActiveState::execute(PowerManager& pm) {
     uint32_t elapsed = k_uptime_get_32() - pm.getLastActivityTime();
     if (elapsed >= ACTIVE_TIMEOUT_MS) {
@@ -293,24 +278,21 @@ IPowerState& ActiveState::execute(PowerManager& pm) {
     }
     return *this;
 }
-void ActiveState::exit(PowerManager& /*pm*/) {}
+void ActiveState::exit(PowerManager& ) {}
 
-// --- IDLE STATE ---
 IdleState& IdleState::getInstance() {
     static constinit IdleState instance;
     return instance;
 }
 #ifdef IS_TEST_ENVIRONMENT
-// 1. Weak definition moved to the global scope
 __attribute__((weak)) bool g_force_idle_enter_fail = false;
 #endif
 
-bool IdleState::enter(PowerManager& /*pm*/) { 
+bool IdleState::enter(PowerManager& ) {
 #ifdef IS_TEST_ENVIRONMENT
-    // 2. Only the evaluation remains inside the function
     if (g_force_idle_enter_fail) return false;
 #endif
-    return true; 
+    return true;
 }
 IPowerState& IdleState::execute(PowerManager& pm) {
     uint32_t elapsed = k_uptime_get_32() - pm.getLastActivityTime();
@@ -319,9 +301,8 @@ IPowerState& IdleState::execute(PowerManager& pm) {
     }
     return *this;
 }
-void IdleState::exit(PowerManager& /*pm*/) {}
+void IdleState::exit(PowerManager& ) {}
 
-// --- STOP STATE ---
 StopState& StopState::getInstance() {
     static constinit StopState instance;
     return instance;
@@ -371,10 +352,6 @@ bool StopState::enter(PowerManager& pm) {
         return false;
     }
 
-    // Suspended in I2C -> UART -> USB order; on failure, roll back only the
-    // peripherals that were already suspended by this same call (in reverse)
-    // before aborting, so a partial STOP entry never leaves hardware in a
-    // half-suspended state.
     err = pm_device_action_run(pm.getUartDev(), PM_DEVICE_ACTION_SUSPEND);
     if (err && err != -EALREADY) {
         LOG_ERR("Failed to suspend UART peripheral (err: %d). Rolling back.", err);
@@ -401,7 +378,7 @@ bool StopState::enter(PowerManager& pm) {
     return true;
 }
 
-IPowerState& StopState::execute(PowerManager& /*pm*/) {
+IPowerState& StopState::execute(PowerManager& ) {
     return *this;
 }
 
@@ -427,12 +404,6 @@ void StopState::exit(PowerManager& pm) {
         LOG_INF("System Awoken Early (External Preemption).");
     }
 
-    // Resumed in the reverse of suspend order (USB -> UART -> I2C). Each
-    // resume is attempted regardless of whether an earlier one failed --
-    // partial resume-on-error would leave working peripherals stuck
-    // suspended for no reason -- and the overall success/failure across all
-    // three is what drives reportPmFailure()/resetPmFailures(), matching the
-    // single-failure-counter contract documented on those methods.
     bool resume_ok = true;
 
     err = pm_device_action_run(pm.getUsbDev(), PM_DEVICE_ACTION_RESUME);
@@ -463,9 +434,6 @@ void StopState::exit(PowerManager& pm) {
     sleep_prepared = false;
 }
 
-// ---------------------------------------------------------
-// RTOS Thread
-// ---------------------------------------------------------
 void power_monitor_thread() {
     auto& pwr_manager = PowerManager::getInstance();
     if (!pwr_manager.init(rtc_hardware, i2c_hardware, uart_hardware, usb_hardware, &sys_context)) {
@@ -486,3 +454,4 @@ void power_monitor_thread() {
 }
 
 K_THREAD_DEFINE(pr_tid, 1024, power_monitor_thread, NULL, NULL, NULL, 14, 0, 0);
+

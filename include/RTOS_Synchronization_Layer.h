@@ -29,9 +29,8 @@ class ZephyrWorkQueue {
   public:
       explicit ZephyrWorkQueue(void (*cb)());
       void schedule(k_timeout_t delay);
-      
-      // ADDED: Needed to stop periodic timers from breaking Deep Sleep
-      void cancel();   
+
+      void cancel();
 };
 
 struct SharedHeartRateBuffer{
@@ -42,3 +41,4 @@ struct SharedHeartRateBuffer{
 };
 extern SharedHeartRateBuffer hr_buffer;
 extern ZephyrSemaphore display_sem;
+

@@ -1,6 +1,6 @@
 #include "RTOS_Synchronization_Layer.h"
-#include "Power_Management_System.h"       // Power Management Integration
-#include "Device_State_Machine+Watchdog.h" // DeviceContext integration
+#include "Power_Management_System.h"
+#include "Device_State_Machine+Watchdog.h"
 #include <zephyr/logging/log.h>
 #include <zephyr/sys/atomic.h>
 
@@ -73,23 +73,22 @@ void ZephyrWorkQueue::cancel() {
 extern ZephyrWorkQueue status_work;
 
 namespace {
-    // Power Observer to halt periodic workloads during Deep Sleep
     class SyncPowerObserver final : public IPowerObserver {
     private:
         atomic_t is_sleeping;
     public:
         SyncPowerObserver() { atomic_set(&is_sleeping, 0); }
-        void beforeSleep() override { 
-            atomic_set(&is_sleeping, 1); 
-            status_work.cancel(); // Stop the periodic timer from waking the MCU
+        void beforeSleep() override {
+            atomic_set(&is_sleeping, 1);
+            status_work.cancel();
         }
-        void afterWakeup() override { 
-            atomic_set(&is_sleeping, 0); 
-            status_work.schedule(K_SECONDS(1)); // Restart status reporting
-        }
-        void sleepAborted() override { 
+        void afterWakeup() override {
             atomic_set(&is_sleeping, 0);
-            status_work.schedule(K_SECONDS(1)); 
+            status_work.schedule(K_SECONDS(1));
+        }
+        void sleepAborted() override {
+            atomic_set(&is_sleeping, 0);
+            status_work.schedule(K_SECONDS(1));
         }
         bool isSleeping() const noexcept { return atomic_get(&is_sleeping) != 0; }
     };
@@ -98,9 +97,6 @@ namespace {
     atomic_t g_syncObserverRegistered = ATOMIC_INIT(0);
 
     void ensure_sync_observer_registered() {
-        // See identical rationale in Fault_Tolerant_I2C_Communication_Layer.cpp's
-        // ensure_power_observer_registered(): registerObserver() was already
-        // safe to call redundantly, this just removes the unguarded flag.
         if (atomic_cas(&g_syncObserverRegistered, 0, 1)) {
             PowerManager::getInstance().registerObserver(&g_syncPowerObserver);
         }
@@ -109,8 +105,7 @@ namespace {
 
 void print_status(){
     ensure_sync_observer_registered();
-    
-    // Only print and reschedule if the system is awake and not faulting
+
     if (!g_syncPowerObserver.isSleeping() && sys_context.getState() != SystemState::SAFE_HALT) {
         LOG_INF("--- [] 1-Second System Statistics Report ---");
         status_work.schedule(K_SECONDS(1));
@@ -121,41 +116,37 @@ ZephyrWorkQueue status_work(print_status);
 
 void heart_rate_producer_thread(void){
     ensure_sync_observer_registered();
-    
-    // State variables to simulate a realistic workout cycle
+
     static uint32_t mock_hr = 70;
     static bool warming_up = true;
-    static uint32_t hold_ticks = 15; 
-    
+    static uint32_t hold_ticks = 15;
+
     do{
-        // Gate production so we don't wake devices checking memory during Deep Sleep
         if (!g_syncPowerObserver.isSleeping() && sys_context.getState() != SystemState::SAFE_HALT) {
             hr_buffer.mutex.lock();
-            
+
             hr_buffer.data[hr_buffer.head] = mock_hr;
             hr_buffer.head = (hr_buffer.head + 1) % hr_buffer.data.size();
-            
-            // Realistic HR physics: resting, working out, and natural +/- 1 bpm variations
+
             if (hold_ticks > 0) {
                 hold_ticks--;
-                // Add natural micro-fluctuations (Heart Rate Variability)
-                mock_hr += (hold_ticks % 2 == 0) ? 1 : -1; 
+                mock_hr += (hold_ticks % 2 == 0) ? 1 : -1;
             } else if (warming_up) {
-                mock_hr += 2; // HR rises quickly during exertion
+                mock_hr += 2;
                 if (mock_hr >= 145) {
                     warming_up = false;
-                    hold_ticks = 20; // Hold at high HR for a brief "sprint" (10 seconds)
+                    hold_ticks = 20;
                 }
             } else {
-                mock_hr -= 1; // HR recovers slower than it spikes
+                mock_hr -= 1;
                 if (mock_hr <= 65) {
                     warming_up = true;
-                    hold_ticks = 30; // Hold at resting rate (15 seconds)
+                    hold_ticks = 30;
                 }
             }
-            
+
             hr_buffer.mutex.unlock();
-            
+
             display_sem.give();
         }
         k_msleep(500);
@@ -164,18 +155,15 @@ void heart_rate_producer_thread(void){
 
 void display_consumer_thread(void){
     do{
-        // We do not gate this on isSleeping() because display_sem.take() 
-        // naturally blocks if the producer stops yielding during sleep.
         display_sem.take(K_FOREVER);
-        
+
         hr_buffer.mutex.lock();
-        
+
         uint32_t hr_val=hr_buffer.data[hr_buffer.tail];
         hr_buffer.tail=(hr_buffer.tail+1)%hr_buffer.data.size();
-        
+
         hr_buffer.mutex.unlock();
-        
-        // Final sanity check before logging
+
         if (!g_syncPowerObserver.isSleeping() && sys_context.getState() != SystemState::SAFE_HALT) {
             LOG_INF("[Display Consumer] Rendered Heart Rate: %u bpm", hr_val);
         }
@@ -184,3 +172,4 @@ void display_consumer_thread(void){
 
 K_THREAD_DEFINE(hr_prod_tid,256,heart_rate_producer_thread,NULL,NULL,NULL,8,0,0);
 K_THREAD_DEFINE(disp_cons_tid,256,display_consumer_thread,NULL,NULL,NULL,9,0,0);
+

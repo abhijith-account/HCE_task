@@ -22,9 +22,7 @@
     extern int mock_snprintf_call_count;
     extern int mock_snprintf_fail_on_call;
     extern int mock_snprintf_truncate_on_call;
-    // NOTE: previously declared in the test file but never read here, so
-    // any test relying on it silently fell through to the real vsnprintf
-    // path. Wired up below alongside fail_on_call / truncate_on_call.
+
     extern int mock_snprintf_exact_return_on_call;
     extern int mock_snprintf_exact_return_value;
     static inline int testable_snprintf(char* str, size_t size, const char* format, ...) {
@@ -45,7 +43,7 @@
 #endif
 LOG_MODULE_REGISTER(USB_CLI, LOG_LEVEL_INF);
 namespace {
-    // Power Observer to safely halt Shell hardware interactions when the OS transitions to Sleep
+
     class ShellPowerObserver final : public IPowerObserver {
     private:
         atomic_t is_sleeping;
@@ -95,17 +93,7 @@ namespace {
 }
 
 #ifdef IS_TEST_ENVIRONMENT
-// White-box test shims.
-//
-// parseIntToken's `if (token.empty()) return false;` branch (and trim's
-// loop-entry-on-empty-string branches) cannot be reached through the
-// public dispatch API: cmdSetRate always calls trim() on its own `args`
-// before splitting into tokens, so by the time parseIntToken ever sees a
-// token it is guaranteed non-empty. These free functions re-expose the
-// anonymous-namespace helpers with external linkage, purely so tests can
-// call them directly and exercise that dead branch. They compile out
-// entirely outside IS_TEST_ENVIRONMENT and have no effect on production
-// behavior.
+
 bool test_parseIntToken(std::string_view token, int& out_value) noexcept {
     return parseIntToken(token, out_value);
 }
@@ -146,7 +134,7 @@ bool UsbCdcFacade::isConnected() {
             LOG_ERR("uart_line_ctrl_get failed (err %d)", ret);
             line_ctrl_get_failed_logged = true;
         }
-        return dtr_ready; 
+        return dtr_ready;
     }
     line_ctrl_get_failed_logged = false;
     const bool currently_connected = (dtr != 0);
@@ -183,7 +171,7 @@ void UsbCdcFacade::uartInterruptHandler(const device* dev, void* user_data) {
             if (next_head != tail) {
                 self->rx_buffer[head] = static_cast<char>(c);
                 self->rx_head.store(next_head, std::memory_order_release);
-                // Explicitly resets the log latch if it was previously triggered
+
                 if (self->overflow_logged.exchange(false, std::memory_order_relaxed)) {
                     self->dropped_bytes.store(0, std::memory_order_relaxed);
                 }
@@ -250,18 +238,17 @@ void UsbShell::process() {
         LOG_ERR("USB initialization failed");
         return;
     }
-    
-    // Register the Shell observer with the Power Manager
+
     PowerManager::getInstance().registerObserver(&g_shellPowerObserver);
 
     CommandBuffer cmd_buf;
     do {
-        // Halt shell polling/transmissions if we're sleeping or in SAFE_HALT
+
         if (!g_shellPowerObserver.isSleeping() && sys_ctx->getState() != SystemState::SAFE_HALT) {
             if (usb.isConnected() && usb.readLine(cmd_buf)) {
-                // Register activity to postpone automatic sleep
+
                 PowerManager::getInstance().reportActivity();
-                
+
                 if (cmd_buf[0] != '\0') {
                     dispatchCommand(std::string_view(cmd_buf.data()));
                     usb.transmit(PromptStr);
@@ -276,27 +263,15 @@ void UsbShell::dispatchCommand(std::string_view cmd) {
     cmd = trim(cmd);
     LOG_INF("CLI command: %.*s", static_cast<int>(cmd.size()), cmd.data());
 
-    // Dispatch is done via direct calls rather than through
-    // `entry.handler` (a pointer-to-member-function). Calling through a
-    // PMF requires the Itanium ABI to emit a runtime virtual/non-virtual
-    // check on every call site -- unavoidably one-sided dead code here
-    // since none of these handlers are virtual, and the only way to make
-    // it two-sided would be to actually declare one `virtual`, not to
-    // supply more test input. Direct calls compile to a plain
-    // unconditional call instruction with no such branch, closing the
-    // gap at the source instead of asking the coverage tool to ignore
-    // it. `entry.handler` remains in the Command table only because
-    // that's the header's existing public shape; it's simply unused
-    // here now.
     for (const auto& entry : kCommandTable) {
         if (entry.takes_args) {
             if (cmd.starts_with(entry.name)) {
-                // If the command matches exactly with no trailing space
+
                 if (cmd.size() == entry.name.size()) {
                     cmdSetRate(std::string_view{});
                     return;
                 }
-                // If it has a space, extract the arguments
+
                 if (cmd[entry.name.size()] == ' ') {
                     cmdSetRate(trim(cmd.substr(entry.name.size() + 1)));
                     return;
@@ -307,7 +282,7 @@ void UsbShell::dispatchCommand(std::string_view cmd) {
                 cmdStatus(std::string_view{});
             } else if (entry.name == kLogDumpCmd) {
                 cmdLogDump(std::string_view{});
-            } else { // Removed the if (entry.name == kRebootCmd)
+            } else {
                 cmdReboot(std::string_view{});
             }
             return;
@@ -359,12 +334,11 @@ std::size_t UsbShell::formatStatus(const StatusSnapshot& snap, StatusBuffer& out
             (i == 0) ? "" : ",", slot.device_id, slot.rate, slot.alarm_threshold);
         if (written <= 0 || static_cast<std::size_t>(written) >= out_buf.size() - offset) {
             LOG_WRN("Status JSON truncated after %u of %u device entries", i, snap.slot_count);
-            break; 
+            break;
         }
         offset += written;
     }
-    
-    // Footer closing logic simplified
+
     const int written = SNPRINTF(out_buf.data() + offset, out_buf.size() - offset, "]}\r\n");
     if (written > 0) {
         const std::size_t remaining = out_buf.size() - static_cast<std::size_t>(offset);
@@ -440,3 +414,4 @@ void shell_thread(void) {
     diag_shell.process();
 }
 K_THREAD_DEFINE(shell_tid, ShellStackSize, shell_thread, nullptr, nullptr, nullptr, ShellPriority, 0, 0);
+

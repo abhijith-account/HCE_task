@@ -3,7 +3,7 @@
 #include <zephyr/storage/flash_map.h>
 #include <zephyr/pm/policy.h>
 #include "Persistent_Configuration_System.h"
-#include "Device_State_Machine+Watchdog.h" // For sys_context Watchdog feeding
+#include "Device_State_Machine+Watchdog.h"
 #include "Power_Management_System.h"
 
 LOG_MODULE_REGISTER(CONFIG_SYS, LOG_LEVEL_INF);
@@ -82,8 +82,6 @@ bool ConfigStore::validateEndurance(ConfigKey key) {
 
     LOG_WRN("Starting 1,000 Write-Cycle Endurance Test on Key:%d...", static_cast<int>(key));
 
-    // Manually lock Deep Sleep for the entire duration of this extended test
-    // to prevent the OS from attempting to sleep between individual writes.
     pm_policy_state_lock_get(PM_STATE_SUSPEND_TO_RAM, PM_ALL_SUBSTATES);
 
     uint16_t test_val = 0;
@@ -91,19 +89,9 @@ bool ConfigStore::validateEndurance(ConfigKey key) {
     bool success = true;
 
     for (int i = 0; i < 1000; i++){
-        // Critical: Massive consecutive flash writes take enough time to trigger a hardware watchdog reset.
+
         sys_context.feedWatchdog();
 
-        // Also critical: without this, PowerManager's own inactivity timer
-        // (last_activity_time) goes stale during a long-running test, and its
-        // FSM can independently decide to enter STOP mid-loop -- suspending
-        // I2C and notifying every registered observer (halting the sensor
-        // pipeline, shell, sync layer, BMS polling) even though this test's
-        // own pm_policy_state_lock_get() above already prevents the hardware
-        // from actually sleeping. feedWatchdog() only protects against a
-        // *hardware* watchdog reset; this protects against a *software* STOP
-        // transition -- they are not the same thing and one does not imply
-        // the other.
         PowerManager::getInstance().reportActivity();
 
         test_val = i;
@@ -122,12 +110,13 @@ bool ConfigStore::validateEndurance(ConfigKey key) {
     }
 
     pm_policy_state_lock_put(PM_STATE_SUSPEND_TO_RAM, PM_ALL_SUBSTATES);
-    
+
     PowerManager::getInstance().reportActivity();
 
     if (success) {
         LOG_INF("1,000 Write-Cycle Endurance Test passed. Flash is stable");
     }
-    
+
     return success;
 }
+

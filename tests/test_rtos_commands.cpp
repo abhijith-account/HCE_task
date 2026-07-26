@@ -6,7 +6,6 @@
 #include <string>
 #include <string_view>
 
-// White-box testing bypass to easily test private methods like readMockData()
 #define private public
 #define protected public
 #include "RTOS_Command_based_thread_system.h"
@@ -18,7 +17,6 @@
 #include "Power_Management_System.h"
 #include "Fault_Tolerant_I2C_Communication_Layer.h"
 
-// Define global test state
 int test_iterations_remaining = 0;
 bool run_thread_once = false;
 extern int g_i2c_call_counter;
@@ -29,16 +27,13 @@ extern DeviceContext sys_context;
 extern I2CManager i2c_manager;
 extern PowerManager pwr_manager;
 extern void resetRtosCommandTestState() noexcept;
-extern void resetI2CCacheForTests() noexcept;   
+extern void resetI2CCacheForTests() noexcept;
 static const struct device dummy_dev;
 
 __attribute__((weak)) DeviceContext sys_context;
 I2CManager i2c_manager(&dummy_dev);
 __attribute__((weak)) PowerManager pwr_manager;
 
-// -----------------------------------------------------------------------
-// Mock Command for Testing the Dispatcher
-// -----------------------------------------------------------------------
 static std::array<int, 2> execution_order{};
 static std::atomic<size_t> exec_index{0};
 
@@ -47,7 +42,7 @@ private:
     int thread_priority;
 public:
     PreemptionTestCmd(int prio) : thread_priority(prio) {}
-    
+
     void execute() noexcept override final {
         size_t idx = exec_index.fetch_add(1);
         if (idx < execution_order.size()) {
@@ -56,11 +51,9 @@ public:
     }
 };
 
-// Mock dependencies defined here to replace the missing externs
 extern int g_i2c_force_errno;
 extern bool g_device_ready_override;
 
-// Expose access to reset BME280 state
 namespace {
     extern BME280Calibration g_bme280Calib;
 }
@@ -84,132 +77,122 @@ protected:
     execution_order.fill(0);
 
     resetRtosCommandTestState();
-    resetI2CCacheForTests();     // add this line
+    resetI2CCacheForTests();
     g_i2c_force_errno = 0;
-    g_i2c_call_counter = 0;      // add this line, for hygiene across all tests
-    g_i2c_fail_on_call_n = 0;    // add this line
+    g_i2c_call_counter = 0;
+    g_i2c_fail_on_call_n = 0;
     g_device_ready_override = true;
 }
 
 };
 
-// 1. Verify Command Life-cycle
 TEST_F(RTOSCommandsTestSuite, CommandDispatchAndPoolCycle) {
     bool enqueued = enqueueCommand<PreemptionTestCmd>(PROCESSOR_Q, 99);
     ASSERT_TRUE(enqueued);
-    
+
     ICommand* cmd = nullptr;
     ASSERT_EQ(k_msgq_get(PROCESSOR_Q, &cmd, K_NO_WAIT), 0);
-    
+
     EXPECT_EQ(exec_index.load(), 0);
     cmd->execute();
     EXPECT_EQ(exec_index.load(), 1);
     EXPECT_EQ(execution_order[0], 99);
-    
+
     cmd->destroy();
 }
 
-// 2. Verify Queue Limits and Safety
 TEST_F(RTOSCommandsTestSuite, MessageQueueOverflowSafety) {
     for (int i = 0; i < QueueConfig::Depth; i++) {
         EXPECT_TRUE(enqueueCommand<PreemptionTestCmd>(PROCESSOR_Q, i));
     }
-    
+
     EXPECT_FALSE(enqueueCommand<PreemptionTestCmd>(PROCESSOR_Q, 999));
     EXPECT_EQ(k_msgq_num_free_get(PROCESSOR_Q), 0);
 }
 
-// 3. Thread Logic Verification
 TEST_F(RTOSCommandsTestSuite, ThreadPreemptionPriorities) {
     EXPECT_EQ(k_thread_priority_get(producer_tid), ThreadConfig::PrioProducer);
     EXPECT_EQ(k_thread_priority_get(processor_tid), ThreadConfig::PrioProcessor);
     EXPECT_EQ(k_thread_priority_get(logger_tid), ThreadConfig::PrioLogger);
-    
+
     test_iterations_remaining = 1;
     processor_thread();
-    
-    EXPECT_EQ(exec_index.load(), 0); 
+
+    EXPECT_EQ(exec_index.load(), 0);
 }
 
-// 4. SensorReadCmd Validation
 TEST_F(RTOSCommandsTestSuite, SensorReadCmdLogsCorrectly) {
     SensorReadCmd cmd(SensorID::BME280, SensorReg::BME280_DATA_START, ReadLength::Block);
-    
+
     testing::internal::CaptureStdout();
     cmd.execute();
     const auto raw_output = testing::internal::GetCapturedStdout();
     std::string_view output(raw_output);
-    
+
     EXPECT_TRUE(output.find("[READ]") != std::string_view::npos);
 }
 
-// 5. ComputeCmd Calculation Test
 TEST_F(RTOSCommandsTestSuite, ComputeCmdBME280Logic) {
     ComputeCmd cmd(SensorID::BME280, SensorReg::BME280_DATA_START, 0x000100010001ULL);
-    
+
     testing::internal::CaptureStdout();
     cmd.execute();
-    
+
     const auto raw_output = testing::internal::GetCapturedStdout();
     std::string_view output(raw_output);
     EXPECT_TRUE(output.find("[COMPUTE]") != std::string_view::npos);
 }
 
-// 6. Producer Stability Tests
 TEST_F(RTOSCommandsTestSuite, ProducerHandlesSafeHalt) {
     SystemObjects::context().triggerFault("Coverage Test Halt");
     run_thread_once = true;
-    
+
     testing::internal::CaptureStdout();
     producer_thread();
     const auto raw_output = testing::internal::GetCapturedStdout();
     std::string_view output(raw_output);
-    (void)output; 
+    (void)output;
 
     EXPECT_EQ(g_queueStats.commandsCreated, 0);
-    
+
     SystemObjects::context().requestTransition(SystemState::INIT);
 }
 
 TEST_F(RTOSCommandsTestSuite, IntegrationLoopConditionTest) {
     test_iterations_remaining = 1;
-    
+
     EXPECT_TRUE(enqueueCommand<PrintCmd>(PROCESSOR_Q, SensorID::PAV3015, 1.0f));
     processor_thread();
-    
+
     EXPECT_TRUE(enqueueCommand<PrintCmd>(LOGGER_Q, SensorID::PAV3015, 2.0f));
     logger_thread();
-    
+
     EXPECT_GT(g_queueStats.commandsCreated, 0u);
 }
 
-// --- ICommand: operator delete + queueDelay ---
 TEST_F(RTOSCommandsTestSuite, ICommandOperatorDeleteAndQueueDelay) {
     ASSERT_TRUE(enqueueCommand<PreemptionTestCmd>(PROCESSOR_Q, 42));
 
     ICommand* cmd = nullptr;
     ASSERT_EQ(k_msgq_get(PROCESSOR_Q, &cmd, K_NO_WAIT), 0);
 
-    EXPECT_GE(cmd->queueDelay(), 0u);   
-    ICommand::operator delete(cmd);     
+    EXPECT_GE(cmd->queueDelay(), 0u);
+    ICommand::operator delete(cmd);
 }
 
-// --- SystemObjects::power() ---
 TEST_F(RTOSCommandsTestSuite, SystemObjectsPowerAccessor) {
     EXPECT_EQ(&SystemObjects::power(), &PowerManager::getInstance());
 }
 
-// --- readHardwareData: non-BME280 + Block => Err(NACK), pure software branch ---
 TEST_F(RTOSCommandsTestSuite, SensorReadCmdBlockNonBMEReturnsNack) {
     SensorReadCmd cmd(SensorID::LPS22HB, SensorReg::LPS_P_DESC.reg, ReadLength::Block);
     testing::internal::CaptureStdout();
-    cmd.execute();  
+    cmd.execute();
     const auto raw_out = testing::internal::GetCapturedStdout();
 std::string_view out(raw_out);
     EXPECT_NE(out.find("I2C Transaction Failed"), std::string_view::npos);
 }
 
-// --- readHardwareData: default branch via an out-of-range ReadLength ---
 TEST_F(RTOSCommandsTestSuite, SensorReadCmdInvalidLengthDefaultBranch) {
     SensorReadCmd cmd(SensorID::BME280, SensorReg::BME280_DATA_START, static_cast<ReadLength>(0xFF));
     testing::internal::CaptureStdout();
@@ -219,21 +202,19 @@ std::string_view out(raw_out);
     EXPECT_NE(out.find("I2C Transaction Failed"), std::string_view::npos);
 }
 
-// --- readHardwareData: Triple and Word success branches (LPS22HB) ---
 TEST_F(RTOSCommandsTestSuite, SensorReadCmdTripleAndWordSuccess) {
     SensorReadCmd triple(SensorID::LPS22HB, SensorReg::LPS_P_DESC.reg, ReadLength::Triple);
     triple.execute();
-    
+
     SensorReadCmd word(SensorID::LPS22HB, SensorReg::LPS_T_DESC.reg, ReadLength::Word);
     word.execute();
-    
+
     EXPECT_GT(g_queueStats.commandsCreated, 0u);
 }
 
-// --- readHardwareData: Triple and Word explicit failure branches ---
 TEST_F(RTOSCommandsTestSuite, HardwareDataTripleAndWordFailures) {
     g_i2c_force_errno = -EIO;
-    
+
     SensorReadCmd triple(SensorID::LPS22HB, SensorReg::LPS_P_DESC.reg, ReadLength::Triple);
     auto res_triple = triple.readHardwareData();
     EXPECT_FALSE(res_triple.isOk());
@@ -245,7 +226,6 @@ TEST_F(RTOSCommandsTestSuite, HardwareDataTripleAndWordFailures) {
     g_i2c_force_errno = 0;
 }
 
-// --- readMockData(): Direct branch coverage ---
 TEST_F(RTOSCommandsTestSuite, MockDataGenerationBranches) {
     SensorReadCmd bme(SensorID::BME280, 0, ReadLength::Block);
     EXPECT_GT(bme.readMockData(), 0u);
@@ -263,47 +243,39 @@ TEST_F(RTOSCommandsTestSuite, MockDataGenerationBranches) {
     EXPECT_EQ(unknown.readMockData(), 0u);
 }
 
-// --- SensorReadCmd::execute(): compute-queue-full branch ---
-// --- SensorReadCmd::execute(): compute-queue-full branch ---
 TEST_F(RTOSCommandsTestSuite, SensorReadCmdComputeQueueFullLogsError) {
     for (int i = 0; i < QueueConfig::Depth; i++) {
-        ASSERT_TRUE(enqueueCommand<PreemptionTestCmd>(PROCESSOR_Q, i));  
+        ASSERT_TRUE(enqueueCommand<PreemptionTestCmd>(PROCESSOR_Q, i));
     }
     SensorReadCmd cmd(SensorID::BME280, SensorReg::BME280_DATA_START, ReadLength::Block);
     testing::internal::CaptureStdout();
-    
-    cmd.execute(); 
-    
+
+    cmd.execute();
+
     const auto raw_out = testing::internal::GetCapturedStdout();
     std::string_view out(raw_out);
     EXPECT_NE(out.find("Compute queue full"), std::string_view::npos);
 }
 
-// --- printMeasurement: logger-queue-full branch ---
 TEST_F(RTOSCommandsTestSuite, PrintMeasurementLoggerQueueFull) {
     for (int i = 0; i < QueueConfig::Depth; i++) {
-        ASSERT_TRUE(enqueueCommand<PreemptionTestCmd>(LOGGER_Q, i));  
+        ASSERT_TRUE(enqueueCommand<PreemptionTestCmd>(LOGGER_Q, i));
     }
     EXPECT_FALSE(printMeasurement(SensorID::PAV3015, 1.0f));
     EXPECT_GT(g_queueStats.loggerQueueFull, 0u);
 }
 
-// --- ComputeCmd::execute(): LPS22HB and PAV3015 ---
-// --- ComputeCmd::execute(): LPS22HB and PAV3015 ---
 TEST_F(RTOSCommandsTestSuite, ComputeCmdLPS22HBBranches) {
-    // 1. Send Temperature first to hit the `if (has_pressure)` FALSE branch
+
     ComputeCmd temp_early(SensorID::LPS22HB, SensorReg::LPS_T_DESC.reg, 0x0032ULL);
     temp_early.execute();
 
-    // 2. Send Pressure to buffer the pressure value (has_pressure becomes true)
     ComputeCmd press(SensorID::LPS22HB, SensorReg::LPS_P_DESC.reg, 0x00640032ULL);
     press.execute();
 
-    // 3. Send Temperature again to hit the `if (has_pressure)` TRUE branch
     ComputeCmd temp_late(SensorID::LPS22HB, SensorReg::LPS_T_DESC.reg, 0x0032ULL);
     temp_late.execute();
 
-    // 4. Send an unknown register to hit the `else if (reg_addr == ...)` FALSE branch
     ComputeCmd unknown_reg(SensorID::LPS22HB, 0xFF, 0x00ULL);
     unknown_reg.execute();
 }
@@ -312,7 +284,6 @@ TEST_F(RTOSCommandsTestSuite, ComputeCmdPAV3015Branch) {
     cmd.execute();
 }
 
-// --- ComputeCmd::execute(): unknown-sensor default branch ---
 TEST_F(RTOSCommandsTestSuite, ComputeCmdUnknownSensorDefaultBranch) {
     ComputeCmd cmd(static_cast<SensorID>(0xFFFF), 0x00, 0ULL);
     testing::internal::CaptureStdout();
@@ -322,41 +293,39 @@ std::string_view out(raw_out);
     EXPECT_NE(out.find("Unknown Sensor ID"), std::string_view::npos);
 }
 
-// --- loadBME280Calibration: "already loaded" cached branch ---
 TEST_F(RTOSCommandsTestSuite, ComputeCmdBME280CalibrationCachedOnSecondCall) {
     ComputeCmd first(SensorID::BME280, SensorReg::BME280_DATA_START, 0x000100010001ULL);
-    first.execute();   
+    first.execute();
     ComputeCmd second(SensorID::BME280, SensorReg::BME280_DATA_START, 0x000200020002ULL);
-    second.execute();  
+    second.execute();
 }
 
 TEST(BME280MathTest, PressureBranchNonZeroDirect) {
-    BME280Calibration c{};  // value-initializes every field to 0
-    c.dig_P1 = 1;           // forces p_var1 != 0 while every other dig_P*/dig_T* term collapses to 0
+    BME280Calibration c{};
+    c.dig_P1 = 1;
     auto d = BME280Math::decode(0, c);
     EXPECT_NE(d.pressure, 0.0f);
 }
 
-// --- producer_thread: full state cycle ---
 TEST_F(RTOSCommandsTestSuite, ProducerThreadFullStateCycle) {
-    test_iterations_remaining = 3;  
+    test_iterations_remaining = 3;
     producer_thread();
     EXPECT_GT(g_queueStats.commandsCreated, 0u);
 }
 
 TEST_F(RTOSCommandsTestSuite, SensorReadCmdI2CFailureLogsError) {
-    g_i2c_force_errno = -110;  // ETIMEDOUT mapping
+    g_i2c_force_errno = -110;
     SensorReadCmd cmd(SensorID::BME280, SensorReg::BME280_DATA_START, ReadLength::Block);
     testing::internal::CaptureStdout();
     cmd.execute();
     const auto raw_out = testing::internal::GetCapturedStdout();
 std::string_view out(raw_out);
-    g_i2c_force_errno = 0;  
+    g_i2c_force_errno = 0;
     EXPECT_NE(out.find("I2C Transaction Failed"), std::string_view::npos);
 }
 
 TEST_F(RTOSCommandsTestSuite, ComputeCmdBME280CalibrationAbortsOnI2CFailure) {
-    g_i2c_force_errno = -19;  // ENODEV
+    g_i2c_force_errno = -19;
     ComputeCmd cmd(SensorID::BME280, SensorReg::BME280_DATA_START, 0x000100010001ULL);
     testing::internal::CaptureStdout();
     cmd.execute();
@@ -367,7 +336,7 @@ std::string_view out(raw_out);
 }
 
 TEST_F(RTOSCommandsTestSuite, ProducerThreadBME280InitFailureLogsWarning) {
-    g_i2c_force_errno = -110; 
+    g_i2c_force_errno = -110;
     test_iterations_remaining = 1;
     testing::internal::CaptureStdout();
     producer_thread();
@@ -378,12 +347,12 @@ std::string_view out(raw_out);
 }
 
 TEST_F(RTOSCommandsTestSuite, MemoryPoolExhaustion) {
-    std::array<ICommand*, 128> cmds{}; // Size exceeds QueueConfig::Depth
+    std::array<ICommand*, 128> cmds{};
     size_t count = 0;
     while (count < cmds.size()) {
         void *mem = allocateCommandMemory();
         if (!mem) break;
-        cmds[count++] = new(mem) PreemptionTestCmd(0); // Valid placement new uses static pool
+        cmds[count++] = new(mem) PreemptionTestCmd(0);
     }
 
     EXPECT_GT(g_queueStats.commandsDropped, 0u);
@@ -405,7 +374,7 @@ TEST_F(RTOSCommandsTestSuite, EnqueueRawFailure) {
 }
 
 TEST_F(RTOSCommandsTestSuite, CalibrationReadFailure) {
-    g_i2c_force_errno = -5; // EIO
+    g_i2c_force_errno = -5;
 
     ComputeCmd cmd(SensorID::BME280, SensorReg::BME280_DATA_START, 1);
     cmd.execute();
@@ -429,10 +398,9 @@ TEST(BME280MathTest, HumidityClampLow) {
 
 TEST(BME280MathTest, HumidityClampHigh) {
     BME280Calibration c{};
-    // Use a controlled multiplier to push v_x1_u32r over 419,430,400 
-    // without causing a 32-bit signed integer overflow (which drops it < 0)
-    c.dig_H2 = 300; 
-    auto d = BME280Math::decode(0x000000000000FFFFULL, c); // Max out adc_H
+
+    c.dig_H2 = 300;
+    auto d = BME280Math::decode(0x000000000000FFFFULL, c);
     EXPECT_FLOAT_EQ(d.humidity, 100.0f);
 }
 
@@ -514,11 +482,6 @@ TEST_F(RTOSCommandsTestSuite, PoolReuse) {
     EXPECT_NE(allocateCommandMemory(), nullptr);
 }
 
-// -----------------------------------------------------------------------
-// EXTREME EDGE CASE BRANCH COVERAGE
-// -----------------------------------------------------------------------
-
-// Cover ALL getSensorName switch cases fully
 TEST_F(RTOSCommandsTestSuite, PrintCmdAllSensorNames) {
     std::array<SensorID,7> ids = {
         SensorID::BME280, SensorID::BME280_PRESS, SensorID::BME280_HUM,
@@ -535,66 +498,56 @@ std::string_view out(raw_out);
     }
 }
 
-// Ensure the false branch of `if (enqueued) SystemObjects::power().reportActivity();` is hit
 TEST_F(RTOSCommandsTestSuite, ProducerThreadQueueFullSkipsActivity) {
-    // Fill PROCESSOR_Q to capacity
+
     for (int i = 0; i < QueueConfig::Depth; i++) {
     EXPECT_TRUE(enqueueCommand<PreemptionTestCmd>(PROCESSOR_Q, i));
     }
     test_iterations_remaining = 1;
-    producer_thread(); // The BME read enqueue will fail due to full queue
-    
-    // Validate we didn't add any new ones
+    producer_thread();
+
     EXPECT_EQ(g_queueStats.commandsCreated, QueueConfig::Depth);
 }
 
-// Ensure the `enq1 && enq2` short-circuit branch is fully evaluated
 TEST_F(RTOSCommandsTestSuite, ProducerThreadLPSPartialEnqueue) {
-    // Leave exactly 2 slots free. 
-    // BME takes 1 slot. Then LPS tries to take 2, but only 1 remains!
+
     for (int i = 0; i < QueueConfig::Depth - 2; i++) {
     EXPECT_TRUE(enqueueCommand<PreemptionTestCmd>(PROCESSOR_Q, i));
     }
-    
-    test_iterations_remaining = 2; // Cycle through BME -> LPS
+
+    test_iterations_remaining = 2;
     producer_thread();
-    
-    // The processor queue should be absolutely full now
+
     EXPECT_EQ(k_msgq_num_free_get(PROCESSOR_Q), 0);
-    // And we should have registered a dropped command for the failed enq2
+
     EXPECT_GT(g_queueStats.commandsDropped, 0u);
 }
 
-// Forces LOGGER_Q to be full exactly when ComputeCmd executes to catch the false returns of printMeasurement
-// Forces LOGGER_Q to be full exactly when ComputeCmd executes to catch the false returns of printMeasurement
 TEST_F(RTOSCommandsTestSuite, ComputeCmdBME280PrintsFailWhenQueueFull) {
-    // Fill LOGGER_Q
+
     for (int i = 0; i < QueueConfig::Depth; i++) {
         EXPECT_TRUE(enqueueCommand<PreemptionTestCmd>(LOGGER_Q, i));
     }
-    
+
     ComputeCmd cmd(SensorID::BME280, SensorReg::BME280_DATA_START, 0x000100010001ULL);
     testing::internal::CaptureStdout();
     cmd.execute();
     const auto raw_out = testing::internal::GetCapturedStdout();
     std::string_view out(raw_out);
-    
+
     EXPECT_NE(out.find("Logger queue full"), std::string_view::npos);
 }
 
-// Evaluates the false branch of peak depth tracking
 TEST_F(RTOSCommandsTestSuite, EnqueueRawPeakDepthNotUpdatedIfLower) {
     EXPECT_TRUE(enqueueCommand<PreemptionTestCmd>(PROCESSOR_Q, 1));
     EXPECT_EQ(g_queueStats.processorPeakDepth, 1u);
-    
-    // De-queue it
+
     ICommand* cmd;
     k_msgq_get(PROCESSOR_Q, &cmd, K_NO_WAIT);
     cmd->destroy();
-    
-    // Enqueue again; peak should NOT go up to 2 since max depth is still 1
+
     EXPECT_TRUE(enqueueCommand<PreemptionTestCmd>(PROCESSOR_Q, 2));
-    EXPECT_EQ(g_queueStats.processorPeakDepth, 1u); 
+    EXPECT_EQ(g_queueStats.processorPeakDepth, 1u);
 }
 
 TEST_F(RTOSCommandsTestSuite, EnqueueRawLoggerPeakDepthNotUpdatedIfLower) {
@@ -606,13 +559,13 @@ TEST_F(RTOSCommandsTestSuite, EnqueueRawLoggerPeakDepthNotUpdatedIfLower) {
     cmd->destroy();
 
     EXPECT_TRUE(enqueueCommand<PreemptionTestCmd>(LOGGER_Q, 2));
-    EXPECT_EQ(g_queueStats.loggerPeakDepth, 1u);  // still 1 — used(1) is not > previous peak(1)
+    EXPECT_EQ(g_queueStats.loggerPeakDepth, 1u);
 }
 
 TEST_F(RTOSCommandsTestSuite, CalibrationChainFailsAtEveryReadPosition) {
     for (int fail_at = 1; fail_at <= 20; ++fail_at) {
         resetRtosCommandTestState();
-        resetI2CCacheForTests();   // add this line
+        resetI2CCacheForTests();
         g_i2c_call_counter = 0;
         g_i2c_fail_on_call_n = fail_at;
         g_i2c_fail_on_call_errno = -EIO;
@@ -631,30 +584,28 @@ std::string_view out(raw_out);
 
 TEST_F(RTOSCommandsTestSuite, ProducerThreadBME280InitPartialFailure) {
     g_i2c_call_counter = 0;
-    g_i2c_fail_on_call_n = 2; // Pass the first I2C write, fail the second (res2)
-    g_i2c_fail_on_call_errno = -110; 
-    
+    g_i2c_fail_on_call_n = 2;
+    g_i2c_fail_on_call_errno = -110;
+
     test_iterations_remaining = 1;
     testing::internal::CaptureStdout();
     producer_thread();
     const auto raw_out = testing::internal::GetCapturedStdout();
 std::string_view out(raw_out);
-    
+
     EXPECT_NE(out.find("Failed to initialize BME280"), std::string_view::npos);
     g_i2c_fail_on_call_n = 0;
 }
 
 TEST_F(RTOSCommandsTestSuite, DiagnosticI2C) {
-    // 1. Is the manager’s device pointer valid?
+
     const device* dev = SystemObjects::i2c().i2c_dev;
     ASSERT_NE(dev, nullptr) << "i2c_dev is nullptr!";
 
-    // 2. Does device_is_ready() return true?
     ASSERT_TRUE(device_is_ready(dev))
         << "device_is_ready() returned false. g_device_ready_override = "
         << g_device_ready_override;
 
-    // 3. Direct I²C read call – does it succeed?
     const uint16_t addr = static_cast<uint16_t>(SensorID::LPS22HB);
     auto res = SystemObjects::i2c().read24Bit(addr, SensorReg::LPS_P_DESC.reg);
     ASSERT_TRUE(res.isOk())
@@ -670,46 +621,35 @@ TEST_F(RTOSCommandsTestSuite, PinpointI2cFailure) {
     SUCCEED();
 }
 
-// -----------------------------------------------------------------------
-// Power Observer & Deep Sleep Integration Coverage
-// -----------------------------------------------------------------------
 TEST_F(RTOSCommandsTestSuite, PowerObserverIntegration) {
-    // Run once to ensure the observer is registered by the producer thread
+
     test_iterations_remaining = 1;
     producer_thread();
 
-    // 1. Simulate entering Deep Sleep (hits ThreadSystemPowerObserver::beforeSleep)
     SystemObjects::power().notifyBeforeSleep();
-    
-    // Execute producer_thread - it should skip hardware I/O and queuing
+
     g_queueStats.commandsCreated = 0;
     test_iterations_remaining = 1;
     producer_thread();
     EXPECT_EQ(g_queueStats.commandsCreated, 0u) << "Producer should bypass logic while sleeping";
 
-    // 2. Simulate waking up (hits ThreadSystemPowerObserver::afterWakeup)
     SystemObjects::power().notifyAfterWakeup();
-    
+
     test_iterations_remaining = 1;
     producer_thread();
     EXPECT_GT(g_queueStats.commandsCreated, 0u) << "Producer should resume logic after wakeup";
 
-    // 3. Simulate aborted sleep sequence (hits ThreadSystemPowerObserver::sleepAborted)
     SystemObjects::power().notifyBeforeSleep();
     g_queueStats.commandsCreated = 0;
     test_iterations_remaining = 1;
     producer_thread();
     EXPECT_EQ(g_queueStats.commandsCreated, 0u);
-    
+
     SystemObjects::power().notifySleepAborted();
     test_iterations_remaining = 1;
     producer_thread();
     EXPECT_GT(g_queueStats.commandsCreated, 0u) << "Producer should resume logic after sleep aborted";
 }
-
-// -----------------------------------------------------------------------
-// COVERAGE ADDITIONS: Trace Hooks & Short-Circuit Evaluations
-// -----------------------------------------------------------------------
 
 extern "C" void sys_trace_thread_switched_in_user(struct k_thread *thread);
 extern "C" void sys_trace_thread_switched_out_user(struct k_thread *thread);
@@ -717,7 +657,6 @@ extern "C" void sys_trace_thread_switched_out_user(struct k_thread *thread);
 TEST_F(RTOSCommandsTestSuite, TraceHooksSwitchInAndOut) {
     testing::internal::CaptureStdout();
 
-    // 1. True Branches: Target threads your hooks explicitly check for
     sys_trace_thread_switched_in_user((struct k_thread*)producer_tid);
     sys_trace_thread_switched_in_user((struct k_thread*)processor_tid);
     sys_trace_thread_switched_in_user((struct k_thread*)logger_tid);
@@ -726,8 +665,6 @@ TEST_F(RTOSCommandsTestSuite, TraceHooksSwitchInAndOut) {
     sys_trace_thread_switched_out_user((struct k_thread*)processor_tid);
     sys_trace_thread_switched_out_user((struct k_thread*)logger_tid);
 
-    // 2. False Branches: An untracked thread (e.g., the Zephyr idle thread)
-    // We cast a dummy address to a pointer because struct k_thread is an incomplete type here.
     struct k_thread* dummy_thread_ptr = reinterpret_cast<struct k_thread*>(0xDEADBEEF);
     sys_trace_thread_switched_in_user(dummy_thread_ptr);
     sys_trace_thread_switched_out_user(dummy_thread_ptr);
@@ -735,30 +672,26 @@ TEST_F(RTOSCommandsTestSuite, TraceHooksSwitchInAndOut) {
     const auto raw_output = testing::internal::GetCapturedStdout();
     std::string_view output(raw_output);
 
-    // Verify logging triggers on correct branches
     EXPECT_NE(output.find("switched IN"), std::string_view::npos);
     EXPECT_NE(output.find("switched OUT"), std::string_view::npos);
 }
 
 TEST_F(RTOSCommandsTestSuite, ProducerThreadLPSFirstEnqueueFails) {
-    // Leave exactly 1 slot free in the queue.
+
     for (int i = 0; i < QueueConfig::Depth - 1; i++) {
         EXPECT_TRUE(enqueueCommand<PreemptionTestCmd>(PROCESSOR_Q, i));
     }
-    
-    // Cycle 1: ReadBME consumes the 1 remaining slot.
-    // Cycle 2: ReadLPS starts with 0 slots free. enq1 fails, short-circuiting enq2.
+
     test_iterations_remaining = 2;
     producer_thread();
-    
-    // Ensure the queue is entirely full and we successfully hit the command drop branch
+
     EXPECT_EQ(k_msgq_num_free_get(PROCESSOR_Q), 0);
     EXPECT_GT(g_queueStats.commandsDropped, 0u);
 }
 
 TEST_F(RTOSCommandsTestSuite, ProducerThreadBME280InitFirstWriteFailsSecondSucceeds) {
     g_i2c_call_counter = 0;
-    g_i2c_fail_on_call_n = 1;      // fail CTRL_HUM write (res1), let CTRL_MEAS (res2) succeed
+    g_i2c_fail_on_call_n = 1;
     g_i2c_fail_on_call_errno = -110;
 
     test_iterations_remaining = 1;
@@ -775,7 +708,7 @@ TEST_F(RTOSCommandsTestSuite, MockDataFullEnvironmentalCycle) {
     SensorReadCmd cmd(SensorID::BME280, SensorReg::BME280_DATA_START, ReadLength::Block);
     for (int i = 0; i < 1700; ++i) {
         (void)cmd.readMockData();
-    }    
+    }
     SUCCEED();
 }
 
@@ -784,11 +717,10 @@ TEST_F(RTOSCommandsTestSuite, PrintCmdUnknownSensorDirectCall) {
     EXPECT_STREQ(cmd.getSensorName(), "Unknown Sensor");
 }
 
-// --- Explicitly Execute Typed Print Commands ---
 TEST_F(RTOSCommandsTestSuite, PrintBME280AndLPS22HBExecuteDirectly) {
     BME280Data bme_data{25.0f, 1013.25f, 50.0f};
     PrintBME280Cmd bme_cmd(bme_data);
-    
+
     testing::internal::CaptureStdout();
     bme_cmd.execute();
     std::string_view out_bme(testing::internal::GetCapturedStdout());
@@ -796,28 +728,27 @@ TEST_F(RTOSCommandsTestSuite, PrintBME280AndLPS22HBExecuteDirectly) {
 
     LPS22HBData lps_data{25.0f, 1013.25f};
     PrintLPS22HBCmd lps_cmd(lps_data);
-    
+
     testing::internal::CaptureStdout();
     lps_cmd.execute();
     std::string_view out_lps(testing::internal::GetCapturedStdout());
     EXPECT_NE(out_lps.find("LPS22HB Temp ="), std::string_view::npos);
 }
 
-// --- LPS22HB Logger Queue Full Branch ---
 TEST_F(RTOSCommandsTestSuite, PrintLPS22HBMeasurementLoggerQueueFull) {
-    // Fill the logger queue to capacity
+
     for (int i = 0; i < QueueConfig::Depth; i++) {
         ASSERT_TRUE(enqueueCommand<PreemptionTestCmd>(LOGGER_Q, i));
     }
-    
+
     LPS22HBData mock_data{25.0f, 1013.0f};
     testing::internal::CaptureStdout();
-    
-    // Attempting to print should now fail and hit the error branch
+
     EXPECT_FALSE(printLPS22HBMeasurement(mock_data));
-    
+
     const auto raw_out = testing::internal::GetCapturedStdout();
     std::string_view out(raw_out);
     EXPECT_NE(out.find("Logger queue full"), std::string_view::npos);
     EXPECT_GT(g_queueStats.loggerQueueFull, 0u);
 }
+

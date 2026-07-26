@@ -1,12 +1,12 @@
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
-#include <zephyr/device.h> 
+#include <zephyr/device.h>
 #include "Fault_Tolerant_I2C_Communication_Layer.h"
 #include "Static_Memory+MISRA_Compliance_Layer.h"
-#include "Power_Management_System.h" // Power Management Integration
-#include <zephyr/sys/atomic.h>       // For atomic_t in PowerObserver
+#include "Power_Management_System.h"
+#include <zephyr/sys/atomic.h>
 #include <cerrno>
-#include <cstdlib> 
+#include <cstdlib>
 #include <new>
 #include <cstdint>
 
@@ -58,14 +58,14 @@ static void update_cache(uint32_t key, uint64_t value, bool calibrated = true) {
     ensure_mutex_initialized();
     k_mutex_lock(&cache_tracker_mutex, K_FOREVER);
     int64_t now = k_uptime_get();
-    
+
     for (size_t i = 0; i < MAX_CACHED_REGISTERS; i++) {
         if (active_entries[i] != nullptr && active_entries[i]->key == key) {
             active_entries[i]->raw_value = value;
             active_entries[i]->timestamp = now;
             active_entries[i]->reliability_score = CACHE_RELIABILITY_MAX;
             active_entries[i]->is_calibrated = calibrated;
-            
+
             if (active_entries[i]->sample_count < UINT32_MAX) {
                 ++active_entries[i]->sample_count;
             }
@@ -73,7 +73,7 @@ static void update_cache(uint32_t key, uint64_t value, bool calibrated = true) {
             return;
         }
     }
-    
+
     size_t free_index = MAX_CACHED_REGISTERS;
     for (size_t i = 0U; i < MAX_CACHED_REGISTERS; i++) {
         if (active_entries[i] == nullptr) {
@@ -81,13 +81,13 @@ static void update_cache(uint32_t key, uint64_t value, bool calibrated = true) {
             break;
         }
     }
-    
+
     if (free_index == MAX_CACHED_REGISTERS) {
         LOG_ERR("I2C cache table full. Key 0x%08X not cached.", key);
         k_mutex_unlock(&cache_tracker_mutex);
-        return;    
+        return;
     }
-    
+
     void* mem = cache_pool.allocate();
     if (mem != nullptr) {
         CacheEntry* new_entry = new(mem) CacheEntry;
@@ -99,7 +99,7 @@ static void update_cache(uint32_t key, uint64_t value, bool calibrated = true) {
         new_entry->sample_count = 1U;
         active_entries[free_index] = new_entry;
     }
-    
+
     k_mutex_unlock(&cache_tracker_mutex);
 }
 
@@ -109,39 +109,39 @@ static bool get_cached_value(uint32_t key, uint64_t* out_val, uint32_t max_age_m
     if (out_val == nullptr) {
         return false;
     }
-    
+
     ensure_mutex_initialized();
     k_mutex_lock(&cache_tracker_mutex, K_FOREVER);
     const int64_t now = k_uptime_get();
-    
+
     for (size_t i = 0; i < MAX_CACHED_REGISTERS; i++) {
        if ((active_entries[i] != nullptr) && (active_entries[i]->key == key)) {
           CacheEntry* const entry = active_entries[i];
-          
+
           if ((now - entry->timestamp) > max_age_ms) {
               LOG_ERR("Fallback Rejected: Data Stale (>%d ms)", max_age_ms);
               k_mutex_unlock(&cache_tracker_mutex);
               return false;
           }
-          
+
           if (entry->reliability_score < CACHE_RELIABILITY_MIN_FOR_FALLBACK) {
               LOG_ERR("Fallback Rejected: Reliability Score too low");
               k_mutex_unlock(&cache_tracker_mutex);
               return false;
           }
-          
+
           if (!entry->is_calibrated) {
               LOG_ERR("Fallback Rejected: Data is uncalibrated.");
               k_mutex_unlock(&cache_tracker_mutex);
               return false;
           }
-          
+
           entry->reliability_score -= CACHE_RELIABILITY_DECAY_PER_USE;
-          
+
           *out_val = entry->raw_value;
           k_mutex_unlock(&cache_tracker_mutex);
           return true;
-       } 
+       }
     }
     k_mutex_unlock(&cache_tracker_mutex);
     return false;
@@ -157,22 +157,22 @@ static I2CFault classify_i2c_error(int err) {
         case -EBUSY:     return I2CFault::BUS_BUSY;
         case -EAGAIN:    return I2CFault::ARBITRATION_LOST;
         case -ENODEV:    return I2CFault::DEVICE_NOT_READY;
-        default:         return I2CFault::NACK; 
+        default:         return I2CFault::NACK;
     }
 }
 
 #endif
- 
-void RetryStrategy::executeRecovery(const device* /* i2c_dev */) {
+
+void RetryStrategy::executeRecovery(const device* ) {
     LOG_WRN("I2C Fault Detected. Executing Exponential Backoff Retry...");
     k_msleep(10);
 }
 
-void BusResetStrategy::executeRecovery(const device* /* i2c_dev */) {
+void BusResetStrategy::executeRecovery(const device* ) {
     LOG_ERR("I2C Bus Hard-Locked. Toggling SCL to recover");
 }
 
-void FailSafeStrategy::executeRecovery(const device* /* i2c_dev */) {
+void FailSafeStrategy::executeRecovery(const device* ) {
       LOG_ERR("I2C Critical Failure. Falling back to Last-known-Good data: %llu",
             (unsigned long long)last_known_good_value);
 }
@@ -186,7 +186,6 @@ uint64_t FailSafeStrategy::getLastGood() const {
 }
 
 namespace {
-    // Observer to monitor Deep Sleep state and prevent hardware bus faults
     class I2CPowerObserver final : public IPowerObserver {
     private:
         atomic_t is_sleeping;
@@ -202,11 +201,6 @@ namespace {
     atomic_t g_i2cObserverRegistered = ATOMIC_INIT(0);
 
     void ensure_power_observer_registered() {
-        // atomic_cas guarantees at most one caller wins the registration race
-        // even when this is first hit from two different threads at once.
-        // registerObserver() itself is already idempotent/mutex-protected, so
-        // this was never a live bug -- just an unguarded flag with no reason
-        // to stay unguarded.
         if (atomic_cas(&g_i2cObserverRegistered, 0, 1)) {
             PowerManager::getInstance().registerObserver(&g_i2cPowerObserver);
         }
@@ -217,11 +211,10 @@ I2CManager::I2CManager(const device* i2c_dev) : i2c_dev(i2c_dev) {}
 
 Result<uint8_t> I2CManager::readRegister(uint16_t sensor_addr, uint8_t reg_addr) {
     const uint32_t cache_key = (static_cast<uint32_t>(sensor_addr) << 8U) | static_cast<uint32_t>(reg_addr);
-    
+
     ensure_power_observer_registered();
     if (g_i2cPowerObserver.isSleeping()) {
 #ifndef CONFIG_BOARD_MPS2_AN386
-        // If bus is sleeping, seamlessly attempt to serve from cache rather than failing
         uint64_t cached_val = 0U;
         if (get_cached_value(cache_key, &cached_val, 3000U)) {
             return Result<uint8_t>::Ok(static_cast<uint8_t>(cached_val & 0xFFU));
@@ -229,9 +222,9 @@ Result<uint8_t> I2CManager::readRegister(uint16_t sensor_addr, uint8_t reg_addr)
 #endif
         return Result<uint8_t>::Err(I2CFault::DEVICE_NOT_READY);
     }
-    
+
 #ifdef CONFIG_BOARD_MPS2_AN386
-    k_msleep(50); 
+    k_msleep(50);
     uint8_t mock_data = 60U;
     update_cache(cache_key, mock_data);
     failsafe_strategy.updateLastGood(mock_data);
@@ -246,23 +239,23 @@ Result<uint8_t> I2CManager::readRegister(uint16_t sensor_addr, uint8_t reg_addr)
     if ((i2c_dev == nullptr) || (!device_is_ready(i2c_dev))) {
         return Result<uint8_t>::Err(I2CFault::DEVICE_NOT_READY);
     }
-    
+
     uint8_t data = 0U;
     const int err = i2c_reg_read_byte(i2c_dev, sensor_addr, reg_addr, &data);
-    
+
     if (err == 0) {
         update_cache(cache_key, data);
         failsafe_strategy.updateLastGood(data);
         return Result<uint8_t>::Ok(data);
     }
-    
+
     const I2CFault fault = classify_i2c_error(err);
     if (is_recoverable_with_bus_reset(fault)) {
         reset_strategy.executeRecovery(i2c_dev);
     } else {
         retry_strategy.executeRecovery(i2c_dev);
     }
-    
+
     uint64_t cached_val = 0U;
     if (get_cached_value(cache_key, &cached_val, 3000U)) {
        failsafe_strategy.executeRecovery(i2c_dev);
@@ -291,27 +284,27 @@ Result<bool> I2CManager::writeRegister(uint16_t sensor_addr, uint8_t reg_addr, u
     if ((i2c_dev == nullptr) || (!device_is_ready(i2c_dev))) {
         return Result<bool>::Err(I2CFault::DEVICE_NOT_READY);
     }
-    
+
     const int err = i2c_reg_write_byte(i2c_dev, sensor_addr, reg_addr, val);
-    
+
     if (err == 0) {
         return Result<bool>::Ok(true);
     }
-    
+
     const I2CFault fault = classify_i2c_error(err);
     if (is_recoverable_with_bus_reset(fault)) {
         reset_strategy.executeRecovery(i2c_dev);
     } else {
         retry_strategy.executeRecovery(i2c_dev);
     }
-    
+
     return Result<bool>::Err(fault);
 #endif
 }
 
 Result<uint16_t> I2CManager::readWord(uint16_t sensor_addr, uint8_t reg_addr) {
     uint32_t cache_key = (static_cast<uint32_t>(sensor_addr) << 8) | reg_addr;
-    
+
     ensure_power_observer_registered();
     if (g_i2cPowerObserver.isSleeping()) {
 #ifndef CONFIG_BOARD_MPS2_AN386
@@ -339,25 +332,25 @@ Result<uint16_t> I2CManager::readWord(uint16_t sensor_addr, uint8_t reg_addr) {
     if ((i2c_dev == nullptr) || (!device_is_ready(i2c_dev))) {
         return Result<uint16_t>::Err(I2CFault::DEVICE_NOT_READY);
     }
-    
+
     uint8_t buf[2] = {0U, 0U};
     const int err = i2c_burst_read(i2c_dev, sensor_addr, reg_addr, buf, 2);
-    
+
     if (err == 0) {
         uint16_t val = static_cast<uint16_t>((static_cast<uint16_t>(buf[1]) << 8U) | static_cast<uint16_t>(buf[0]));
         update_cache(cache_key, val);
         failsafe_strategy.updateLastGood(val);
         return Result<uint16_t>::Ok(val);
     }
-    
+
     const I2CFault fault = classify_i2c_error(err);
     if (is_recoverable_with_bus_reset(fault)) {
         reset_strategy.executeRecovery(i2c_dev);
     } else {
         retry_strategy.executeRecovery(i2c_dev);
     }
-  
-    uint64_t cached_val = 0U; 
+
+    uint64_t cached_val = 0U;
     if (get_cached_value(cache_key, &cached_val, 3000U)) {
         failsafe_strategy.executeRecovery(i2c_dev);
         return Result<uint16_t>::Ok(static_cast<uint16_t>(cached_val & 0xFFFFU));
@@ -376,8 +369,8 @@ Result<bool> I2CManager::writeWord(uint16_t sensor_addr, uint8_t reg_addr, uint1
 }
 
 Result<uint32_t> I2CManager::read24Bit(uint16_t sensor_addr, uint8_t reg_addr) {
-    uint32_t cache_key = (static_cast<uint32_t>(sensor_addr) << 8) | static_cast<uint32_t>(reg_addr); 
-    
+    uint32_t cache_key = (static_cast<uint32_t>(sensor_addr) << 8) | static_cast<uint32_t>(reg_addr);
+
     ensure_power_observer_registered();
     if (g_i2cPowerObserver.isSleeping()) {
 #ifndef CONFIG_BOARD_MPS2_AN386
@@ -407,33 +400,33 @@ Result<uint32_t> I2CManager::read24Bit(uint16_t sensor_addr, uint8_t reg_addr) {
     }
     uint8_t buf[3] = {0U, 0U, 0U};
     int err = i2c_burst_read(i2c_dev, sensor_addr, reg_addr, buf, 3);
-    
+
     if (err == 0) {
         uint32_t val = (static_cast<uint32_t>(buf[0]) << 16U) | (static_cast<uint32_t>(buf[1]) << 8U) | static_cast<uint32_t>(buf[2]);
         update_cache(cache_key, val);
         failsafe_strategy.updateLastGood(val);
         return Result<uint32_t>::Ok(val);
     }
-    
+
     const I2CFault fault = classify_i2c_error(err);
     if (is_recoverable_with_bus_reset(fault)) {
         reset_strategy.executeRecovery(i2c_dev);
     } else {
         retry_strategy.executeRecovery(i2c_dev);
     }
-    
-    uint64_t cached_val = 0U; 
+
+    uint64_t cached_val = 0U;
     if (get_cached_value(cache_key, &cached_val, 3000U)) {
         failsafe_strategy.executeRecovery(i2c_dev);
         return Result<uint32_t>::Ok(static_cast<uint32_t>(cached_val & 0xFFFFFFU));
     }
     return Result<uint32_t>::Err(fault);
-#endif        
+#endif
 }
 
 Result<uint64_t> I2CManager::read64Bit(uint16_t sensor_addr, uint8_t reg_addr) {
   uint32_t cache_key = (static_cast<uint32_t>(sensor_addr) << 8) | reg_addr;
-  
+
     ensure_power_observer_registered();
     if (g_i2cPowerObserver.isSleeping()) {
 #ifndef CONFIG_BOARD_MPS2_AN386
@@ -447,10 +440,10 @@ Result<uint64_t> I2CManager::read64Bit(uint16_t sensor_addr, uint8_t reg_addr) {
 
 #ifdef CONFIG_BOARD_MPS2_AN386
     k_msleep(50);
-    uint64_t mock_val = 0U; 
+    uint64_t mock_val = 0U;
     update_cache(cache_key, mock_val);
     failsafe_strategy.updateLastGood(mock_val);
-    return Result<uint64_t>::Ok(mock_val); 
+    return Result<uint64_t>::Ok(mock_val);
 #else
 #ifdef IS_TEST_ENVIRONMENT
     extern int g_i2c_force_errno;
@@ -463,7 +456,7 @@ Result<uint64_t> I2CManager::read64Bit(uint16_t sensor_addr, uint8_t reg_addr) {
     }
     uint8_t buf[8] = {0U};
     int err = i2c_burst_read(i2c_dev, sensor_addr, reg_addr, buf, 8);
-    
+
     if (err == 0) {
         uint64_t val = (static_cast<uint64_t>(buf[0]) << 56U) | (static_cast<uint64_t>(buf[1]) << 48U) |
                        (static_cast<uint64_t>(buf[2]) << 40U) | (static_cast<uint64_t>(buf[3]) << 32U) |
@@ -473,21 +466,21 @@ Result<uint64_t> I2CManager::read64Bit(uint16_t sensor_addr, uint8_t reg_addr) {
         failsafe_strategy.updateLastGood(val);
         return Result<uint64_t>::Ok(val);
     }
-    
+
     const I2CFault fault = classify_i2c_error(err);
     if (is_recoverable_with_bus_reset(fault)) {
         reset_strategy.executeRecovery(i2c_dev);
     } else {
         retry_strategy.executeRecovery(i2c_dev);
     }
-    
+
     uint64_t cached_val = 0U;
     if (get_cached_value(cache_key, &cached_val, 3000U)) {
         failsafe_strategy.executeRecovery(i2c_dev);
         return Result<uint64_t>::Ok(cached_val);
     }
     return Result<uint64_t>::Err(fault);
-#endif        
+#endif
 }
 
 #ifdef IS_TEST_ENVIRONMENT
@@ -501,20 +494,17 @@ void resetI2CCacheForTests() noexcept {
     }
 }
 
-// Array to track intentionally exhausted blocks
 static void* exhausted_blocks[MAX_CACHED_REGISTERS] = {nullptr};
 
 void exhaustI2CCachePool() {
     for (size_t i = 0; i < MAX_CACHED_REGISTERS; i++) {
-        // Store the allocated blocks so they can be cleaned up
-        exhausted_blocks[i] = cache_pool.allocate();  
+        exhausted_blocks[i] = cache_pool.allocate();
     }
 }
 
 void resetI2CCachePool() {
     resetI2CCacheForTests();
-    
-    // Safely deallocate the intentionally leaked blocks instead of using placement new
+
     for (size_t i = 0; i < MAX_CACHED_REGISTERS; i++) {
         if (exhausted_blocks[i] != nullptr) {
             cache_pool.deallocate(exhausted_blocks[i]);
@@ -543,7 +533,6 @@ void test_set_reliability(uint32_t key, uint8_t score) {
     }
     k_mutex_unlock(&cache_tracker_mutex);
     if (!found) {
-        // This will print to console if the test is looking for a key that doesn't exist
         fprintf(stderr, "Shim: Key 0x%08X not found in active_entries!\n", key);
     }
 }
@@ -565,3 +554,4 @@ void test_set_sample_count(uint32_t key, uint32_t count)
     k_mutex_unlock(&cache_tracker_mutex);
 }
 #endif
+
