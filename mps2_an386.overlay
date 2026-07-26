@@ -3,15 +3,16 @@
         cdc-acm-uart0 = &uart0;
     };
 
-    /* The Golden Stub: We map all missing hardware to the I2C test driver */
+    /* The Emulator Controller */
     i2c1: fake_i2c@40001000 {
-        compatible = "vnd,i2c";
+        compatible = "zephyr,i2c-emul-controller";
         reg = <0x40001000 0x1000>;
+        clock-frequency = <100000>;
         status = "okay";
         #address-cells = <1>;
         #size-cells = <0>;
 
-        /* --- Simulated I2C Devices for PWR_SYS and other threads --- */
+        /* --- Real Sensors (Drivers Compiled) --- */
         lps22hb: lps22hb@5c {
             compatible = "st,lps22hb-press";
             reg = <0x5c>;
@@ -24,12 +25,6 @@
             status = "okay";
         };
         
-        pav3015: pav3015@28 {
-            compatible = "vnd,i2c-device";
-            reg = <0x28>;
-            status = "okay";
-        };
-        
         ina226: ina226@40 {
             compatible = "ti,ina226";
             reg = <0x40>;
@@ -37,22 +32,26 @@
             current-lsb-microamps = <25>;
             status = "okay";
         };
+
+        /* --- Dummy Devices (Disabled for QEMU) --- */
+        pav3015: pav3015@28 {
+            compatible = "vnd,i2c-device";
+            reg = <0x28>;
+            status = "disabled"; /* <--- DISABLE THIS */
+        };
     };
 
+    /* Disable the generic test buses to prevent emulator linking errors */
     iwdg: fake_watchdog@40002000 {
         compatible = "vnd,i2c";
         reg = <0x40002000 0x1000>;
-        status = "okay";
-        #address-cells = <1>;
-        #size-cells = <0>;
+        status = "disabled";     /* <--- DISABLE THIS */
     };
 
     rtc: fake_rtc@40003000 {
         compatible = "vnd,i2c";
         reg = <0x40003000 0x1000>;
-        status = "okay";
-        #address-cells = <1>;
-        #size-cells = <0>;
+        status = "disabled";     /* <--- DISABLE THIS */
     };
 
     /* Simulated Flash Drive for NVS */
@@ -84,7 +83,6 @@
     };
 };
 
-/* Explicitly bind uart0 for mps2_an386 */
 &uart0 {
     status = "okay";
 };

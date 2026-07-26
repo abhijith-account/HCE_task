@@ -586,15 +586,14 @@ void resetRtosCommandTestState() noexcept {
 void processor_thread(void) {
     ICommand* incoming_cmd;
     do {
-        if (k_msgq_get(PROCESSOR_Q, &incoming_cmd, K_SECONDS(2)) == 0) {
+        // Use K_FOREVER to block indefinitely until a command arrives
+        if (k_msgq_get(PROCESSOR_Q, &incoming_cmd, K_FOREVER) == 0) {
             #ifdef CONFIG_LOG_PREEMPTION_DELAY
             LOG_INF("[%s] #%u: waited %u cycles before dispatch (pre-emption delay)",
                     LogTags::COMPUTE, incoming_cmd->command_id, incoming_cmd->queueDelay());
             #endif
             incoming_cmd->execute();
             incoming_cmd->destroy();
-        } else {
-            LOG_WRN("PROCESSOR: Queue timeout (no commands received)");
         }
     } while(THREAD_LOOP_CONDITION);
 }
@@ -602,7 +601,8 @@ void processor_thread(void) {
 void logger_thread(void) {
     ICommand* incoming_cmd;
     do {
-        if (k_msgq_get(LOGGER_Q, &incoming_cmd, K_SECONDS(2)) == 0) {
+        // Use K_FOREVER to block indefinitely until a command arrives
+        if (k_msgq_get(LOGGER_Q, &incoming_cmd, K_FOREVER) == 0) {
             #ifdef CONFIG_LOG_PREEMPTION_DELAY
             LOG_INF("[%s] #%u: waited %u cycles before dispatch (pre-emption delay)",
                     LogTags::PRINT, incoming_cmd->command_id, incoming_cmd->queueDelay());

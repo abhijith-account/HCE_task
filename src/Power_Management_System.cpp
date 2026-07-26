@@ -15,6 +15,12 @@ LOG_MODULE_REGISTER(PWR_SYS, LOG_LEVEL_INF);
     #define THREAD_LOOP_CONDITION true
 #endif
 
+static struct k_timer sim_rtc_timer;
+static void sim_rtc_timer_handler(struct k_timer *timer_id) {
+    // Manually trigger the FSM's wake callback
+    PowerManager::rtc_alarm_handler(nullptr, 0, 0, &PowerManager::getInstance());
+}
+
 constexpr uint32_t ACTIVE_TIMEOUT_MS = 30000;
 constexpr uint32_t IDLE_TIMEOUT_MS   = 5000;
 constexpr uint32_t STOP_WAKEUP_US    = 60000000;
@@ -31,7 +37,7 @@ extern DeviceContext sys_context;
     __attribute__((weak)) const struct device* uart_hardware = nullptr;
     __attribute__((weak)) const struct device* usb_hardware = nullptr;
 #else
-    const struct device* rtc_hardware = DEVICE_DT_GET(DT_NODELABEL(rtc));
+    const struct device* rtc_hardware = DEVICE_DT_GET_OR_NULL(DT_NODELABEL(rtc));
     const struct device* uart_hardware = DEVICE_DT_GET(DT_CHOSEN(zephyr_console));
     #ifndef CONFIG_BOARD_MPS2_AN386
     const struct device* usb_hardware = DEVICE_DT_GET(DT_NODELABEL(cdc_acm_uart0));
@@ -72,27 +78,30 @@ bool PowerManager::init(const struct device* rtc, const struct device* i2c,
     fault_context = fault_ctx;
     last_activity_time.store(k_uptime_get_32());
 
-    if (!rtc_dev || !device_is_ready(rtc_dev)) {
-        LOG_ERR("RTC device not ready");
-        return false;
+    if (rtc_dev == nullptr || !device_is_ready(rtc_dev)) {
+        LOG_WRN("RTC device not ready. Bypassing for simulation.");
+        rtc_dev = nullptr;
+        k_timer_init(&sim_rtc_timer, sim_rtc_timer_handler, NULL);
     }
-    if (!i2c_dev || !device_is_ready(i2c_dev)) {
-        LOG_ERR("I2C device not ready");
-        return false;
+    if (i2c_dev == nullptr || !device_is_ready(i2c_dev)) {
+        LOG_WRN("I2C device not ready. Bypassing for simulation.");
+        i2c_dev = nullptr;
     }
-    if (!uart_dev || !device_is_ready(uart_dev)) {
-        LOG_ERR("UART device not ready");
-        return false;
+    if (uart_dev == nullptr || !device_is_ready(uart_dev)) {
+        LOG_WRN("UART device not ready. Bypassing for simulation.");
+        uart_dev = nullptr;
     }
-    if (!usb_dev || !device_is_ready(usb_dev)) {
-        LOG_ERR("USB device not ready");
-        return false;
+    if (usb_dev == nullptr || !device_is_ready(usb_dev)) {
+        LOG_WRN("USB device not ready. Bypassing for simulation.");
+        usb_dev = nullptr;
     }
 
-    int err = counter_start(rtc_dev);
-    if (err) {
-        LOG_ERR("Failed to start RTC counter (err: %d)", err);
-        return false;
+    if (rtc_dev) {
+        int err = counter_start(rtc_dev);
+        if (err) {
+            LOG_ERR("Failed to start RTC counter (err: %d)", err);
+            return false;
+        }
     }
 
     pm_policy_state_lock_get(PM_STATE_SUSPEND_TO_RAM, PM_ALL_SUBSTATES);
@@ -311,31 +320,36 @@ StopState& StopState::getInstance() {
 bool StopState::enter(PowerManager& pm) {
     LOG_WRN("Preparing for Deep Sleep (STOP Mode)");
     sleep_prepared = false;
+    int err = 0;
+    if (pm.getRtcDev() != nullptr) {
+        err = counter_cancel_channel_alarm(pm.getRtcDev(), 0);
+        if (err && err != -ETIME && err != -ENOTSUP) {
+            LOG_WRN("Failed to cancel RTC alarm (err: %d)", err);
+        }
 
-    int err = counter_cancel_channel_alarm(pm.getRtcDev(), 0);
-    if (err && err != -ETIME && err != -ENOTSUP) {
-        LOG_WRN("Failed to cancel RTC alarm (err: %d)", err);
-    }
+        struct counter_alarm_cfg alarm_cfg = {};
+        alarm_cfg.flags = 0;
 
-    struct counter_alarm_cfg alarm_cfg = {};
-    alarm_cfg.flags = 0;
+        uint32_t ticks = counter_us_to_ticks(pm.getRtcDev(), STOP_WAKEUP_US);
+        if (ticks == 0) {
+            LOG_ERR("Alarm tick conversion failed or overflowed. Aborting STOP entry.");
+            pm.reportPmFailure();
+            return false;
+        }
 
-    uint32_t ticks = counter_us_to_ticks(pm.getRtcDev(), STOP_WAKEUP_US);
-    if (ticks == 0) {
-        LOG_ERR("Alarm tick conversion failed or overflowed. Aborting STOP entry.");
-        pm.reportPmFailure();
-        return false;
-    }
+        alarm_cfg.ticks = ticks;
+        alarm_cfg.callback = PowerManager::rtc_alarm_handler;
+        alarm_cfg.user_data = &pm;
 
-    alarm_cfg.ticks = ticks;
-    alarm_cfg.callback = PowerManager::rtc_alarm_handler;
-    alarm_cfg.user_data = &pm;
-
-    err = counter_set_channel_alarm(pm.getRtcDev(), 0, &alarm_cfg);
-    if (err) {
-        LOG_ERR("Failed to set RTC alarm (err: %d). Aborting STOP entry.", err);
-        pm.reportPmFailure();
-        return false;
+        err = counter_set_channel_alarm(pm.getRtcDev(), 0, &alarm_cfg);
+        if (err) {
+            LOG_ERR("Failed to set RTC alarm (err: %d). Aborting STOP entry.", err);
+            pm.reportPmFailure();
+            return false;
+        }
+    } else {
+        LOG_WRN("RTC disabled in simulation. Bypassing hardware wake alarm setup.");
+        k_timer_start(&sim_rtc_timer, K_USEC(STOP_WAKEUP_US), K_NO_WAIT);
     }
 
     pm.recordSleepTime();
@@ -344,7 +358,7 @@ bool StopState::enter(PowerManager& pm) {
     pm.notifyBeforeSleep();
 
     err = pm_device_action_run(pm.getI2cDev(), PM_DEVICE_ACTION_SUSPEND);
-    if (err && err != -EALREADY) {
+    if (err && err != -EALREADY && err != -ENOSYS && err != -ENOTSUP) {
         LOG_ERR("Failed to suspend I2C peripheral (err: %d). Rolling back.", err);
         (void)counter_cancel_channel_alarm(pm.getRtcDev(), 0);
         pm.notifySleepAborted();
@@ -353,7 +367,7 @@ bool StopState::enter(PowerManager& pm) {
     }
 
     err = pm_device_action_run(pm.getUartDev(), PM_DEVICE_ACTION_SUSPEND);
-    if (err && err != -EALREADY) {
+    if (err && err != -EALREADY && err != -ENOSYS && err != -ENOTSUP) {
         LOG_ERR("Failed to suspend UART peripheral (err: %d). Rolling back.", err);
         (void)pm_device_action_run(pm.getI2cDev(), PM_DEVICE_ACTION_RESUME);
         (void)counter_cancel_channel_alarm(pm.getRtcDev(), 0);
@@ -363,7 +377,7 @@ bool StopState::enter(PowerManager& pm) {
     }
 
     err = pm_device_action_run(pm.getUsbDev(), PM_DEVICE_ACTION_SUSPEND);
-    if (err && err != -EALREADY) {
+    if (err && err != -EALREADY && err != -ENOSYS && err != -ENOTSUP) {
         LOG_ERR("Failed to suspend USB peripheral (err: %d). Rolling back.", err);
         (void)pm_device_action_run(pm.getUartDev(), PM_DEVICE_ACTION_RESUME);
         (void)pm_device_action_run(pm.getI2cDev(), PM_DEVICE_ACTION_RESUME);
@@ -386,10 +400,14 @@ void StopState::exit(PowerManager& pm) {
     if (!sleep_prepared) {
         return;
     }
-
-    int err = counter_cancel_channel_alarm(pm.getRtcDev(), 0);
-    if (err && err != -ETIME && err != -ENOTSUP) {
-        LOG_WRN("Failed to cancel RTC alarm on STOP exit (err: %d)", err);
+    int err = 0;
+    if (pm.getRtcDev() != nullptr) {
+        int err = counter_cancel_channel_alarm(pm.getRtcDev(), 0);
+        if (err && err != -ETIME && err != -ENOTSUP) {
+            LOG_WRN("Failed to cancel RTC alarm on STOP exit (err: %d)", err);
+        }
+    } else {
+        k_timer_stop(&sim_rtc_timer);
     }
 
     pm_policy_state_lock_get(PM_STATE_SUSPEND_TO_RAM, PM_ALL_SUBSTATES);
@@ -407,19 +425,19 @@ void StopState::exit(PowerManager& pm) {
     bool resume_ok = true;
 
     err = pm_device_action_run(pm.getUsbDev(), PM_DEVICE_ACTION_RESUME);
-    if (err && err != -EALREADY) {
+    if (err && err != -EALREADY && err != -ENOSYS && err != -ENOTSUP) {
         LOG_ERR("Failed to resume USB (err: %d)", err);
         resume_ok = false;
     }
 
     err = pm_device_action_run(pm.getUartDev(), PM_DEVICE_ACTION_RESUME);
-    if (err && err != -EALREADY) {
+    if (err && err != -EALREADY && err != -ENOSYS && err != -ENOTSUP) {
         LOG_ERR("Failed to resume UART (err: %d)", err);
         resume_ok = false;
     }
 
     err = pm_device_action_run(pm.getI2cDev(), PM_DEVICE_ACTION_RESUME);
-    if (err && err != -EALREADY) {
+    if (err && err != -EALREADY && err != -ENOSYS && err != -ENOTSUP) {
         LOG_ERR("Failed to resume I2C (err: %d)", err);
         resume_ok = false;
     }

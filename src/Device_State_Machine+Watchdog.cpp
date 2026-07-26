@@ -5,7 +5,7 @@
 
 LOG_MODULE_REGISTER(DEVICE_STATE, LOG_LEVEL_INF);
 
-WatchdogTimer::WatchdogTimer() : wdt_dev(DEVICE_DT_GET(DT_NODELABEL(iwdg))), channel_id(-1) {}
+WatchdogTimer::WatchdogTimer() : wdt_dev(DEVICE_DT_GET_OR_NULL(DT_NODELABEL(iwdg))), channel_id(-1) {}
 
 bool WatchdogTimer::init(uint32_t timeout_ms) {
     if (!device_is_ready(wdt_dev)) {

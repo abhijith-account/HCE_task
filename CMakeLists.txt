@@ -18,6 +18,7 @@ target_sources(app PRIVATE
         src/Smart_Battery_System.cpp
         src/Static_Memory+MISRA_Compliance_Layer.cpp
         src/USB_CDC_Virtual_COM_Shell_Interface.cpp
+        src/qemu_sensor_mocks.c
 )
 
 target_compile_options(app PRIVATE
