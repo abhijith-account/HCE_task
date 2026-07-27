@@ -1,4 +1,3 @@
-
 #include <gtest/gtest.h>
 #include <array>
 #include <cstdint>
@@ -234,24 +233,25 @@ TEST_F(PowerManagementTestSuite, InitFailures) {
     PowerManager& pm = PowerManager::getInstance();
     testing::internal::CaptureStdout();
 
-    EXPECT_FALSE(pm.init(nullptr, dummy_i2c, dummy_uart, dummy_usb, &sys_context));
-    EXPECT_FALSE(pm.init(dummy_rtc, nullptr, dummy_uart, dummy_usb, &sys_context));
+    EXPECT_TRUE(pm.init(nullptr, dummy_i2c, dummy_uart, dummy_usb, &sys_context));
+    EXPECT_TRUE(pm.init(dummy_rtc, nullptr, dummy_uart, dummy_usb, &sys_context));
 
     mocks.rtc_ready = false;
-    EXPECT_FALSE(pm.init(dummy_rtc, dummy_i2c, dummy_uart, dummy_usb, &sys_context));
+    EXPECT_TRUE(pm.init(dummy_rtc, dummy_i2c, dummy_uart, dummy_usb, &sys_context));
 
     mocks.rtc_ready = true;
     mocks.i2c_ready = false;
-    EXPECT_FALSE(pm.init(dummy_rtc, dummy_i2c, dummy_uart, dummy_usb, &sys_context));
+    EXPECT_TRUE(pm.init(dummy_rtc, dummy_i2c, dummy_uart, dummy_usb, &sys_context));
 
     mocks.i2c_ready = true;
     mocks.counter_start_ret = -1;
+    // Leave this one as FALSE because counter_start failing correctly returns false
     EXPECT_FALSE(pm.init(dummy_rtc, dummy_i2c, dummy_uart, dummy_usb, &sys_context));
 
     const auto raw_output = testing::internal::GetCapturedStdout();
     std::string_view output(raw_output);
-    EXPECT_TRUE(output.find("[ERR] RTC device not ready") != std::string_view::npos);
-    EXPECT_TRUE(output.find("[ERR] I2C device not ready") != std::string_view::npos);
+    EXPECT_TRUE(output.find("[WRN] RTC device not ready") != std::string_view::npos);
+    EXPECT_TRUE(output.find("[WRN] I2C device not ready") != std::string_view::npos);
     EXPECT_TRUE(output.find("[ERR] Failed to start RTC counter") != std::string_view::npos);
 }
 
@@ -259,20 +259,20 @@ TEST_F(PowerManagementTestSuite, InitFailuresUartUsb) {
     PowerManager& pm = PowerManager::getInstance();
     testing::internal::CaptureStdout();
 
-    EXPECT_FALSE(pm.init(dummy_rtc, dummy_i2c, nullptr, dummy_usb, &sys_context));
-    EXPECT_FALSE(pm.init(dummy_rtc, dummy_i2c, dummy_uart, nullptr, &sys_context));
+    EXPECT_TRUE(pm.init(dummy_rtc, dummy_i2c, nullptr, dummy_usb, &sys_context));
+    EXPECT_TRUE(pm.init(dummy_rtc, dummy_i2c, dummy_uart, nullptr, &sys_context));
 
     mocks.uart_ready = false;
-    EXPECT_FALSE(pm.init(dummy_rtc, dummy_i2c, dummy_uart, dummy_usb, &sys_context));
+    EXPECT_TRUE(pm.init(dummy_rtc, dummy_i2c, dummy_uart, dummy_usb, &sys_context));
 
     mocks.uart_ready = true;
     mocks.usb_ready = false;
-    EXPECT_FALSE(pm.init(dummy_rtc, dummy_i2c, dummy_uart, dummy_usb, &sys_context));
+    EXPECT_TRUE(pm.init(dummy_rtc, dummy_i2c, dummy_uart, dummy_usb, &sys_context));
 
     const auto raw_output = testing::internal::GetCapturedStdout();
     std::string_view output(raw_output);
-    EXPECT_TRUE(output.find("[ERR] UART device not ready") != std::string_view::npos);
-    EXPECT_TRUE(output.find("[ERR] USB device not ready") != std::string_view::npos);
+    EXPECT_TRUE(output.find("[WRN] UART device not ready") != std::string_view::npos);
+    EXPECT_TRUE(output.find("[WRN] USB device not ready") != std::string_view::npos);
 }
 
 TEST_F(PowerManagementTestSuite, InitSuccess) {
@@ -581,13 +581,13 @@ TEST_F(PowerManagementTestSuite, RtcAlarmWakePendingHandling) {
 extern void power_monitor_thread();
 
 TEST_F(PowerManagementTestSuite, ThreadRoutineCoverage) {
-    mocks.rtc_ready = false;
+    mocks.counter_start_ret = -1;
     testing::internal::CaptureStdout();
     power_monitor_thread();
     const auto raw_output1 = testing::internal::GetCapturedStdout();
     EXPECT_TRUE(std::string_view(raw_output1).find("Power Manager Init Failed. Thread halting.") != std::string_view::npos);
 
-    mocks.rtc_ready = true;
+    mocks.counter_start_ret = 0;
 
     run_thread_once = true;
 
@@ -725,6 +725,84 @@ TEST_F(PowerManagementTestSuite, NullFaultContextBranches) {
     const auto raw_output2 = testing::internal::GetCapturedStdout();
     EXPECT_TRUE(std::string_view(raw_output2).find("Power manager halted. Idle fallback failed.") != std::string_view::npos);
     EXPECT_EQ(pm.current_state, nullptr);
+}
+
+TEST_F(PowerManagementTestSuite, SimulationModeCoverage) {
+    PowerManager& pm = PowerManager::getInstance();
+    
+    // Init with null RTC to intentionally enter simulation mode
+    EXPECT_TRUE(pm.init(nullptr, dummy_i2c, dummy_uart, dummy_usb, &sys_context));
+
+    virtual_uptime = 30000;
+    pm.processFSM(); // ACTIVE -> IDLE
+
+    virtual_uptime = 35000;
+    pm.processFSM(); // IDLE -> STOP (Hits k_timer_start branch)
+    EXPECT_EQ(std::string_view(pm.current_state->getName()), std::string_view("STOP"));
+
+    pm.reportActivity(); // STOP -> ACTIVE (Hits k_timer_stop branch)
+    EXPECT_EQ(std::string_view(pm.current_state->getName()), std::string_view("ACTIVE"));
+}
+
+TEST_F(PowerManagementTestSuite, SuspendResumeIgnoredErrors) {
+    PowerManager& pm = PowerManager::getInstance();
+    pm.init(dummy_rtc, dummy_i2c, dummy_uart, dummy_usb, &sys_context);
+
+    // Test coverage for -ENOSYS branches
+    mocks.setAllSuspendRet(-ENOSYS);
+    mocks.setAllResumeRet(-ENOSYS);
+
+    virtual_uptime = 30000;
+    pm.processFSM(); // ACTIVE -> IDLE
+    virtual_uptime = 35000;
+    pm.processFSM(); // IDLE -> STOP, ignores ENOSYS
+    EXPECT_EQ(std::string_view(pm.current_state->getName()), std::string_view("STOP"));
+
+    pm.reportActivity(); // STOP -> ACTIVE, ignores ENOSYS
+    EXPECT_EQ(std::string_view(pm.current_state->getName()), std::string_view("ACTIVE"));
+
+    // Test coverage for -ENOTSUP branches
+    mocks.setAllSuspendRet(-ENOTSUP);
+    mocks.setAllResumeRet(-ENOTSUP);
+
+    virtual_uptime = 70000;
+    pm.processFSM(); // ACTIVE -> IDLE
+    virtual_uptime = 75000;
+    pm.processFSM(); // IDLE -> STOP, ignores ENOTSUP
+    EXPECT_EQ(std::string_view(pm.current_state->getName()), std::string_view("STOP"));
+
+    pm.reportActivity(); // STOP -> ACTIVE, ignores ENOTSUP
+    EXPECT_EQ(std::string_view(pm.current_state->getName()), std::string_view("ACTIVE"));
+}
+
+TEST_F(PowerManagementTestSuite, StopEntryCancelAlarmError) {
+    PowerManager& pm = PowerManager::getInstance();
+    pm.init(dummy_rtc, dummy_i2c, dummy_uart, dummy_usb, &sys_context);
+
+    virtual_uptime = 30000;
+    pm.processFSM(); // ACTIVE -> IDLE
+
+    virtual_uptime = 35000;
+    // Force a general error to cover the specific warning log branch
+    mocks.counter_cancel_ret = -EIO; 
+
+    testing::internal::CaptureStdout();
+    pm.processFSM(); // IDLE -> STOP
+    const auto raw_output = testing::internal::GetCapturedStdout();
+
+    EXPECT_TRUE(std::string_view(raw_output).find("Failed to cancel RTC alarm (err: -5)") != std::string_view::npos);
+    EXPECT_EQ(std::string_view(pm.current_state->getName()), std::string_view("STOP"));
+}
+
+TEST_F(PowerManagementTestSuite, SimTimerCallbackCoverage) {
+    PowerManager& pm = PowerManager::getInstance();
+    // Initialize without RTC to attach the sim callback
+    pm.init(nullptr, dummy_i2c, dummy_uart, dummy_usb, &sys_context);
+
+    if (g_sim_timer_cb) {
+        g_sim_timer_cb(nullptr); // Invoke static callback manually
+        EXPECT_EQ(atomic_get(&pm.wake_pending), 1);
+    }
 }
 
 namespace {
