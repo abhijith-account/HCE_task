@@ -1,6 +1,6 @@
 #pragma once
 
-#include <zephyr/kvss/nvs.h>
+#include <zephyr/fs/fcb.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/pm/policy.h>
 #include "Power_Management_System.h"
@@ -40,9 +40,15 @@ public:
     }
 };
 
+struct FcbRecordHeader {
+    ConfigKey key;
+    uint16_t length;
+};
+
 class ConfigStore {
     private:
-        struct nvs_fs fs;
+        struct fcb fcb_instance;
+        struct flash_sector fcb_sectors[2]; // Sectors 6 and 7
         bool initialized;
 
         static ConfigStore instance;
@@ -69,20 +75,32 @@ class ConfigStore {
                 return false;
             }
 
-#if defined(CONFIG_NVS) || defined(IS_TEST_ENVIRONMENT)
             FlashPowerGuard pm_guard;
 
-            uint16_t nvs_id = static_cast<uint16_t>(key);
-            ssize_t written = nvs_write(&fs, nvs_id, &value, sizeof(T));
-
-            if (written >= 0) {
-                PowerManager::getInstance().reportActivity();
-                return true;
+            struct fcb_entry loc;
+            int rc = fcb_append(&fcb_instance, sizeof(FcbRecordHeader) + sizeof(T), &loc);
+            if (rc == -ENOSPC) {
+                // Flash area full: rotate (erase oldest sector) and retry once.
+                rc = fcb_rotate(&fcb_instance);
+                if (rc != 0) {
+                    return false;
+                }
+                rc = fcb_append(&fcb_instance, sizeof(FcbRecordHeader) + sizeof(T), &loc);
             }
-            return false;
-#else
+            if (rc != 0) {
+                return false;
+            }
+
+            FcbRecordHeader header = { key, sizeof(T) };
+            rc = flash_area_write(fcb_instance.fap, FCB_ENTRY_FA_DATA_OFF(loc), &header, sizeof(header));
+            if (rc != 0) return false;
+
+            rc = flash_area_write(fcb_instance.fap, FCB_ENTRY_FA_DATA_OFF(loc) + sizeof(header), &value, sizeof(T));
+            if (rc != 0) return false;
+
+            fcb_append_finish(&fcb_instance, &loc);
+            PowerManager::getInstance().reportActivity();
             return true;
-#endif
         }
 
         template <typename T>
@@ -93,14 +111,28 @@ class ConfigStore {
                 return false;
             }
 
-#if defined(CONFIG_NVS) || defined(IS_TEST_ENVIRONMENT)
-            uint16_t nvs_id = static_cast<uint16_t>(key);
-            ssize_t bytes_read = nvs_read(&fs, nvs_id, &out_value, sizeof(T));
+            struct fcb_entry loc;
+            loc.fe_sector = nullptr;
+            loc.fe_elem_off = 0;
 
-            return (bytes_read == sizeof(T));
-#else
-            return true;
-#endif
+            bool found = false;
+            FcbRecordHeader header;
+            T temp_val;
+
+            // Walk through all records to find the most recent one for this key
+            while (fcb_getnext(&fcb_instance, &loc) == 0) {
+                flash_area_read(fcb_instance.fap, FCB_ENTRY_FA_DATA_OFF(loc), &header, sizeof(header));
+                
+                if (header.key == key && header.length == sizeof(T)) {
+                    flash_area_read(fcb_instance.fap, FCB_ENTRY_FA_DATA_OFF(loc) + sizeof(header), &temp_val, sizeof(T));
+                    found = true;
+                }
+            }
+
+            if (found) {
+                out_value = temp_val;
+            }
+            return found;
         }
 
         bool validateEndurance(ConfigKey key);
@@ -157,5 +189,15 @@ class ConfigStore {
             }
             return get(static_cast<ConfigKey>(static_cast<uint16_t>(ConfigKey::ALARM_THRESHOLD_BASE) + slot), out);
         }
+        
+        struct LogEntry {
+        uint32_t timestamp_ms;
+        uint8_t event_id; // e.g., 0x01 = Battery Full, 0x02 = Fault, 0x03 = State Change
+        int32_t event_data;
+    };
+
+    // New methods required for the USB Shell
+    [[nodiscard]] uint32_t getStoredLogCount() const noexcept;
+    [[nodiscard]] bool getLogEntry(uint32_t index, LogEntry& out_entry) const noexcept;
 };
 

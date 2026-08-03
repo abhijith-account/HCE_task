@@ -6,6 +6,7 @@
 #include <zephyr/kernel.h>
 #include <zephyr/device.h>
 #include <zephyr/drivers/counter.h>
+#include <zephyr/drivers/rtc.h>
 #include <zephyr/pm/device.h>
 #include <zephyr/pm/policy.h>
 #include <zephyr/sys/atomic.h>
@@ -34,16 +35,19 @@
 
 bool run_thread_once = false;
 extern bool g_force_idle_enter_fail;
+extern bool g_force_init_fail;
 
 const struct device* dummy_rtc  = reinterpret_cast<const struct device*>(0x111);
 const struct device* dummy_i2c  = reinterpret_cast<const struct device*>(0x222);
 const struct device* dummy_uart = reinterpret_cast<const struct device*>(0x333);
 const struct device* dummy_usb  = reinterpret_cast<const struct device*>(0x444);
+const struct device* dummy_adc  = reinterpret_cast<const struct device*>(0x555);
 
 const struct device* i2c_hardware  = dummy_i2c;
 const struct device* uart_hardware = dummy_uart;
 const struct device* usb_hardware  = dummy_usb;
 const struct device* rtc_hardware  = dummy_rtc;
+const struct device* adc_hardware  = dummy_adc;
 
 extern DeviceContext sys_context;
 
@@ -52,6 +56,7 @@ struct MockController {
     bool i2c_ready = true;
     bool uart_ready = true;
     bool usb_ready = true;
+    bool adc_ready = true;
 
     int counter_start_ret = 0;
     int counter_cancel_ret = 0;
@@ -64,6 +69,8 @@ struct MockController {
     int pm_uart_resume_ret  = 0;
     int pm_usb_suspend_ret  = 0;
     int pm_usb_resume_ret   = 0;
+    int pm_adc_suspend_ret  = 0;
+    int pm_adc_resume_ret   = 0;
 
     int i2c_suspend_calls  = 0;
     int i2c_resume_calls   = 0;
@@ -71,19 +78,26 @@ struct MockController {
     int uart_resume_calls  = 0;
     int usb_suspend_calls  = 0;
     int usb_resume_calls   = 0;
+    int adc_suspend_calls  = 0;
+    int adc_resume_calls   = 0;
 
     int stack_space_ret = 0;
     int stack_space_calls = 0;
+
+    struct rtc_time rtc_time_val = {0};
+    int rtc_get_time_ret = 0;
 
     void setAllSuspendRet(int v) {
         pm_i2c_suspend_ret = v;
         pm_uart_suspend_ret = v;
         pm_usb_suspend_ret = v;
+        pm_adc_suspend_ret = v;
     }
     void setAllResumeRet(int v) {
         pm_i2c_resume_ret = v;
         pm_uart_resume_ret = v;
         pm_usb_resume_ret = v;
+        pm_adc_resume_ret = v;
     }
 
     void reset() {
@@ -91,6 +105,7 @@ struct MockController {
         i2c_ready = true;
         uart_ready = true;
         usb_ready = true;
+        adc_ready = true;
         counter_start_ret = 0;
         counter_cancel_ret = 0;
         counter_ticks_ret = 60000;
@@ -101,14 +116,20 @@ struct MockController {
         pm_uart_resume_ret = 0;
         pm_usb_suspend_ret = 0;
         pm_usb_resume_ret = 0;
+        pm_adc_suspend_ret = 0;
+        pm_adc_resume_ret = 0;
         i2c_suspend_calls = 0;
         i2c_resume_calls = 0;
         uart_suspend_calls = 0;
         uart_resume_calls = 0;
         usb_suspend_calls = 0;
         usb_resume_calls = 0;
+        adc_suspend_calls = 0;
+        adc_resume_calls = 0;
         stack_space_ret = 0;
         stack_space_calls = 0;
+        memset(&rtc_time_val, 0, sizeof(rtc_time_val));
+        rtc_get_time_ret = 0;
     }
 };
 static MockController mocks;
@@ -136,17 +157,25 @@ extern "C" {
         if (dev == dummy_i2c)  return mocks.i2c_ready;
         if (dev == dummy_uart) return mocks.uart_ready;
         if (dev == dummy_usb)  return mocks.usb_ready;
+        if (dev == dummy_adc)  return mocks.adc_ready;
         return false;
     }
-    int counter_start(const struct device*) { return mocks.counter_start_ret; }
-    int counter_cancel_channel_alarm(const struct device*, uint8_t) { return mocks.counter_cancel_ret; }
-    uint32_t counter_us_to_ticks(const struct device*, uint64_t) { return mocks.counter_ticks_ret; }
-
-    int counter_set_channel_alarm(const struct device*, uint8_t, const struct counter_alarm_cfg *cfg) {
-        mock_rtc_alarm_cb = cfg->callback;
-        mock_rtc_user_data = cfg->user_data;
+    int rtc_get_time(const struct device *dev, struct rtc_time *timeptr) {
+        if (timeptr) *timeptr = mocks.rtc_time_val;
+        return mocks.rtc_get_time_ret;
+    }
+    int rtc_set_time(const struct device *dev, const struct rtc_time *timeptr) { return 0; }
+    
+    int rtc_alarm_set_time(const struct device *dev, uint16_t id, uint16_t mask, const struct rtc_time *timeptr) {
+        if (timeptr == nullptr) {
+            return mocks.counter_cancel_ret;
+        }
         record_action(PmAction::RTC_SET);
         return mocks.counter_set_ret;
+    }
+    
+    int rtc_alarm_set_callback(const struct device *dev, uint16_t id, void (*callback)(const struct device *, uint16_t, void *), void *user_data) {
+        return 0;
     }
     void pm_policy_state_lock_get(uint8_t, uint8_t) {
         record_action(PmAction::LOCK_ACQUIRED);
@@ -156,6 +185,10 @@ extern "C" {
     }
     int pm_device_action_run(const struct device* dev, enum pm_device_action action) {
         if (action == PM_DEVICE_ACTION_SUSPEND) {
+            if (dev == dummy_adc) {
+                mocks.adc_suspend_calls++;
+                return mocks.pm_adc_suspend_ret;
+            }
             if (dev == dummy_i2c) {
                 mocks.i2c_suspend_calls++;
                 record_action(PmAction::I2C_SUSPENDED);
@@ -173,6 +206,10 @@ extern "C" {
             }
             return 0;
         } else if (action == PM_DEVICE_ACTION_RESUME) {
+            if (dev == dummy_adc) {
+                mocks.adc_resume_calls++;
+                return mocks.pm_adc_resume_ret;
+            }
             if (dev == dummy_i2c) {
                 mocks.i2c_resume_calls++;
                 record_action(PmAction::I2C_RESUMED);
@@ -226,6 +263,7 @@ protected:
         sys_context.current_state = SystemState::INIT;
         run_thread_once = false;
         g_force_idle_enter_fail = false;
+        g_force_init_fail = false;
     }
 };
 
@@ -233,41 +271,53 @@ TEST_F(PowerManagementTestSuite, InitFailures) {
     PowerManager& pm = PowerManager::getInstance();
     testing::internal::CaptureStdout();
 
-    EXPECT_TRUE(pm.init(nullptr, dummy_i2c, dummy_uart, dummy_usb, &sys_context));
-    EXPECT_TRUE(pm.init(dummy_rtc, nullptr, dummy_uart, dummy_usb, &sys_context));
+    EXPECT_TRUE(pm.init(nullptr, dummy_i2c, dummy_uart, dummy_usb,  dummy_adc, &sys_context));
+    EXPECT_TRUE(pm.init(dummy_rtc, nullptr, dummy_uart, dummy_usb,  dummy_adc, &sys_context));
 
     mocks.rtc_ready = false;
-    EXPECT_TRUE(pm.init(dummy_rtc, dummy_i2c, dummy_uart, dummy_usb, &sys_context));
+    EXPECT_TRUE(pm.init(dummy_rtc, dummy_i2c, dummy_uart, dummy_usb,  dummy_adc, &sys_context));
 
     mocks.rtc_ready = true;
     mocks.i2c_ready = false;
-    EXPECT_TRUE(pm.init(dummy_rtc, dummy_i2c, dummy_uart, dummy_usb, &sys_context));
+    EXPECT_TRUE(pm.init(dummy_rtc, dummy_i2c, dummy_uart, dummy_usb,  dummy_adc, &sys_context));
 
     mocks.i2c_ready = true;
-    mocks.counter_start_ret = -1;
-    // Leave this one as FALSE because counter_start failing correctly returns false
-    EXPECT_FALSE(pm.init(dummy_rtc, dummy_i2c, dummy_uart, dummy_usb, &sys_context));
+    EXPECT_TRUE(pm.init(dummy_rtc, dummy_i2c, dummy_uart, dummy_usb,  dummy_adc, &sys_context));
 
     const auto raw_output = testing::internal::GetCapturedStdout();
     std::string_view output(raw_output);
     EXPECT_TRUE(output.find("[WRN] RTC device not ready") != std::string_view::npos);
     EXPECT_TRUE(output.find("[WRN] I2C device not ready") != std::string_view::npos);
-    EXPECT_TRUE(output.find("[ERR] Failed to start RTC counter") != std::string_view::npos);
+}
+
+TEST_F(PowerManagementTestSuite, InitFailuresAdcAndRtcSeed) {
+    PowerManager& pm = PowerManager::getInstance();
+    testing::internal::CaptureStdout();
+
+    mocks.adc_ready = false;
+    mocks.rtc_get_time_ret = -1; 
+
+    // Re-added the branch to cover adc_dev == nullptr explicitly.
+    EXPECT_TRUE(pm.init(dummy_rtc, dummy_i2c, dummy_uart, dummy_usb, nullptr, &sys_context));
+    EXPECT_TRUE(pm.init(dummy_rtc, dummy_i2c, dummy_uart, dummy_usb, dummy_adc, &sys_context));
+
+    const auto raw_output = testing::internal::GetCapturedStdout();
+    EXPECT_TRUE(std::string_view(raw_output).find("[WRN] ADC device not ready") != std::string_view::npos);
 }
 
 TEST_F(PowerManagementTestSuite, InitFailuresUartUsb) {
     PowerManager& pm = PowerManager::getInstance();
     testing::internal::CaptureStdout();
 
-    EXPECT_TRUE(pm.init(dummy_rtc, dummy_i2c, nullptr, dummy_usb, &sys_context));
-    EXPECT_TRUE(pm.init(dummy_rtc, dummy_i2c, dummy_uart, nullptr, &sys_context));
+    EXPECT_TRUE(pm.init(dummy_rtc, dummy_i2c, nullptr, dummy_usb,  dummy_adc, &sys_context));
+    EXPECT_TRUE(pm.init(dummy_rtc, dummy_i2c, dummy_uart, nullptr,  dummy_adc, &sys_context));
 
     mocks.uart_ready = false;
-    EXPECT_TRUE(pm.init(dummy_rtc, dummy_i2c, dummy_uart, dummy_usb, &sys_context));
+    EXPECT_TRUE(pm.init(dummy_rtc, dummy_i2c, dummy_uart, dummy_usb, dummy_adc, &sys_context));
 
     mocks.uart_ready = true;
     mocks.usb_ready = false;
-    EXPECT_TRUE(pm.init(dummy_rtc, dummy_i2c, dummy_uart, dummy_usb, &sys_context));
+    EXPECT_TRUE(pm.init(dummy_rtc, dummy_i2c, dummy_uart, dummy_usb, dummy_adc, &sys_context));
 
     const auto raw_output = testing::internal::GetCapturedStdout();
     std::string_view output(raw_output);
@@ -278,7 +328,7 @@ TEST_F(PowerManagementTestSuite, InitFailuresUartUsb) {
 TEST_F(PowerManagementTestSuite, InitSuccess) {
     PowerManager& pm = PowerManager::getInstance();
     testing::internal::CaptureStdout();
-    EXPECT_TRUE(pm.init(dummy_rtc, dummy_i2c, dummy_uart, dummy_usb, &sys_context));
+    EXPECT_TRUE(pm.init(dummy_rtc, dummy_i2c, dummy_uart, dummy_usb, dummy_adc, &sys_context));
     const auto raw_output = testing::internal::GetCapturedStdout();
     EXPECT_TRUE(std::string_view(raw_output).find("[INF] Power Manager initialized. Deep Sleep Locked.") != std::string_view::npos);
 }
@@ -312,7 +362,7 @@ TEST_F(PowerManagementTestSuite, ObserverManagement) {
 
 TEST_F(PowerManagementTestSuite, FsmStateTransitions) {
     PowerManager& pm = PowerManager::getInstance();
-    pm.init(dummy_rtc, dummy_i2c, dummy_uart, dummy_usb, &sys_context);
+    pm.init(dummy_rtc, dummy_i2c, dummy_uart, dummy_usb, dummy_adc, &sys_context);
 
     pm.processFSM();
 
@@ -330,14 +380,64 @@ TEST_F(PowerManagementTestSuite, FsmStateTransitions) {
     pm.processFSM();
     EXPECT_EQ(std::string_view(pm.current_state->getName()), std::string_view("STOP"));
 
+    EXPECT_EQ(mocks.adc_suspend_calls, 1);
     EXPECT_EQ(mocks.i2c_suspend_calls, 1);
-    EXPECT_EQ(mocks.uart_suspend_calls, 1);
-    EXPECT_EQ(mocks.usb_suspend_calls, 1);
+    EXPECT_EQ(mocks.uart_suspend_calls, 0); 
+    EXPECT_EQ(mocks.usb_suspend_calls, 0);  
+}
+
+TEST_F(PowerManagementTestSuite, StopEntryRtcTimeNormalization) {
+    PowerManager& pm = PowerManager::getInstance();
+    pm.init(dummy_rtc, dummy_i2c, dummy_uart, dummy_usb, dummy_adc, &sys_context);
+
+    mocks.rtc_time_val.tm_sec = 0;
+    mocks.rtc_time_val.tm_min = 59;
+    mocks.rtc_time_val.tm_hour = 23;
+
+    virtual_uptime = 30000;
+    pm.processFSM(); 
+
+    virtual_uptime = 35000;
+    pm.processFSM(); 
+
+    EXPECT_EQ(std::string_view(pm.current_state->getName()), std::string_view("STOP"));
+}
+
+TEST_F(PowerManagementTestSuite, StopEntryRtcTimeSecNoOverflow) {
+    PowerManager& pm = PowerManager::getInstance();
+    pm.init(dummy_rtc, dummy_i2c, dummy_uart, dummy_usb, dummy_adc, &sys_context);
+
+    // Forces tm_sec + 60 to evaluate to false (0 >= 60 is false)
+    mocks.rtc_time_val.tm_sec = -60; 
+
+    virtual_uptime = 30000;
+    pm.processFSM(); 
+    virtual_uptime = 35000;
+    pm.processFSM(); 
+
+    EXPECT_EQ(std::string_view(pm.current_state->getName()), std::string_view("STOP"));
+}
+
+TEST_F(PowerManagementTestSuite, StopEntryRtcTimeHourNoOverflow) {
+    PowerManager& pm = PowerManager::getInstance();
+    pm.init(dummy_rtc, dummy_i2c, dummy_uart, dummy_usb, dummy_adc, &sys_context);
+
+    // Forces tm_hour to evaluate to false (11 >= 24 is false) 
+    mocks.rtc_time_val.tm_sec = 0;
+    mocks.rtc_time_val.tm_min = 59;
+    mocks.rtc_time_val.tm_hour = 10;
+
+    virtual_uptime = 30000;
+    pm.processFSM(); 
+    virtual_uptime = 35000;
+    pm.processFSM(); 
+
+    EXPECT_EQ(std::string_view(pm.current_state->getName()), std::string_view("STOP"));
 }
 
 TEST_F(PowerManagementTestSuite, StopEntryAndExitEdgeCaseBranches) {
     PowerManager& pm = PowerManager::getInstance();
-    pm.init(dummy_rtc, dummy_i2c, dummy_uart, dummy_usb, &sys_context);
+    pm.init(dummy_rtc, dummy_i2c, dummy_uart, dummy_usb, dummy_adc, &sys_context);
 
     virtual_uptime = 35000;
     pm.processFSM();
@@ -367,7 +467,7 @@ TEST_F(PowerManagementTestSuite, StopEntryAndExitEdgeCaseBranches) {
 
 TEST_F(PowerManagementTestSuite, StopExitNormalWakeup) {
     PowerManager& pm = PowerManager::getInstance();
-    pm.init(dummy_rtc, dummy_i2c, dummy_uart, dummy_usb, &sys_context);
+    pm.init(dummy_rtc, dummy_i2c, dummy_uart, dummy_usb, dummy_adc, &sys_context);
 
     virtual_uptime = 30000;
     pm.processFSM();
@@ -388,46 +488,38 @@ TEST_F(PowerManagementTestSuite, StopExitNormalWakeup) {
 
 TEST_F(PowerManagementTestSuite, StopEntryFailuresFallbackToIdle) {
     PowerManager& pm = PowerManager::getInstance();
-    pm.init(dummy_rtc, dummy_i2c, dummy_uart, dummy_usb, &sys_context);
+    pm.init(dummy_rtc, dummy_i2c, dummy_uart, dummy_usb, dummy_adc, &sys_context);
 
     virtual_uptime = 30000;
     pm.processFSM();
-
-    virtual_uptime = 35000;
-    mocks.counter_ticks_ret = 0;
-    pm.processFSM();
     EXPECT_EQ(std::string_view(pm.current_state->getName()), std::string_view("IDLE"));
 
-    virtual_uptime = 40000;
-    mocks.counter_ticks_ret = 60000;
+    virtual_uptime = 35000;
     mocks.counter_set_ret = -1;
     pm.processFSM();
     EXPECT_EQ(std::string_view(pm.current_state->getName()), std::string_view("IDLE"));
 
     TestObserver obs;
     pm.registerObserver(&obs);
-    virtual_uptime = 45000;
+    
+    virtual_uptime = 40000;
     mocks.counter_set_ret = 0;
-    mocks.pm_i2c_suspend_ret = -EIO;
+    mocks.pm_adc_suspend_ret = -EIO;
     pm.processFSM();
     EXPECT_EQ(std::string_view(pm.current_state->getName()), std::string_view("IDLE"));
     EXPECT_EQ(obs.aborts, 1);
 
     virtual_uptime = 85000;
     pm.consecutive_pm_failures = 0;
-    mocks.pm_i2c_suspend_ret = 0;
-    mocks.counter_cancel_ret = -EIO;
-
-    testing::internal::CaptureStdout();
+    mocks.pm_adc_suspend_ret = 0;
+    
     pm.processFSM();
-    const auto raw_output = testing::internal::GetCapturedStdout();
-    EXPECT_TRUE(std::string_view(raw_output).find("Failed to cancel RTC alarm") != std::string_view::npos);
     EXPECT_EQ(std::string_view(pm.current_state->getName()), std::string_view("STOP"));
 }
 
-TEST_F(PowerManagementTestSuite, StopEntryUartSuspendFailureRollsBackI2c) {
+TEST_F(PowerManagementTestSuite, StopEntryAdcSuspendFailureRollsBackRtc) {
     PowerManager& pm = PowerManager::getInstance();
-    pm.init(dummy_rtc, dummy_i2c, dummy_uart, dummy_usb, &sys_context);
+    pm.init(dummy_rtc, dummy_i2c, dummy_uart, dummy_usb, dummy_adc, &sys_context);
 
     TestObserver obs;
     pm.registerObserver(&obs);
@@ -435,7 +527,7 @@ TEST_F(PowerManagementTestSuite, StopEntryUartSuspendFailureRollsBackI2c) {
     virtual_uptime = 30000;
     pm.processFSM();
 
-    mocks.pm_uart_suspend_ret = -EIO;
+    mocks.pm_adc_suspend_ret = -EIO;
 
     testing::internal::CaptureStdout();
     virtual_uptime = 35000;
@@ -443,22 +535,42 @@ TEST_F(PowerManagementTestSuite, StopEntryUartSuspendFailureRollsBackI2c) {
     const auto raw_output = testing::internal::GetCapturedStdout();
     std::string_view output(raw_output);
 
-    EXPECT_TRUE(output.find("Failed to suspend UART peripheral") != std::string_view::npos);
+    EXPECT_TRUE(output.find("Failed to suspend ADC peripheral") != std::string_view::npos);
     EXPECT_TRUE(output.find("Rolling back.") != std::string_view::npos);
 
     EXPECT_EQ(std::string_view(pm.current_state->getName()), std::string_view("IDLE"));
 
-    EXPECT_EQ(mocks.i2c_suspend_calls, 1);
-    EXPECT_EQ(mocks.i2c_resume_calls, 1);
-    EXPECT_EQ(mocks.uart_suspend_calls, 1);
-    EXPECT_EQ(mocks.usb_suspend_calls, 0);
-
+    EXPECT_EQ(mocks.adc_suspend_calls, 1);
+    EXPECT_EQ(mocks.i2c_suspend_calls, 0);
     EXPECT_EQ(obs.aborts, 1);
 }
 
-TEST_F(PowerManagementTestSuite, StopEntryUsbSuspendFailureRollsBackI2cAndUart) {
+TEST_F(PowerManagementTestSuite, StopEntryAdcSuspendFailureSimMode) {
     PowerManager& pm = PowerManager::getInstance();
-    pm.init(dummy_rtc, dummy_i2c, dummy_uart, dummy_usb, &sys_context);
+    pm.init(nullptr, dummy_i2c, dummy_uart, dummy_usb, dummy_adc, &sys_context);
+
+    TestObserver obs;
+    pm.registerObserver(&obs);
+
+    virtual_uptime = 30000;
+    pm.processFSM(); 
+
+    mocks.pm_adc_suspend_ret = -EIO;
+
+    testing::internal::CaptureStdout();
+    virtual_uptime = 35000;
+    pm.processFSM(); 
+    const auto raw_output = testing::internal::GetCapturedStdout();
+
+    EXPECT_TRUE(std::string_view(raw_output).find("Failed to suspend ADC peripheral") != std::string_view::npos);
+    EXPECT_EQ(std::string_view(pm.current_state->getName()), std::string_view("IDLE"));
+    EXPECT_EQ(mocks.adc_suspend_calls, 1);
+    EXPECT_EQ(obs.aborts, 1);
+}
+
+TEST_F(PowerManagementTestSuite, StopEntryI2cSuspendFailureRollsBackRtc) {
+    PowerManager& pm = PowerManager::getInstance();
+    pm.init(dummy_rtc, dummy_i2c, dummy_uart, dummy_usb, dummy_adc, &sys_context);
 
     TestObserver obs;
     pm.registerObserver(&obs);
@@ -466,7 +578,7 @@ TEST_F(PowerManagementTestSuite, StopEntryUsbSuspendFailureRollsBackI2cAndUart) 
     virtual_uptime = 30000;
     pm.processFSM();
 
-    mocks.pm_usb_suspend_ret = -EIO;
+    mocks.pm_i2c_suspend_ret = -EIO;
 
     testing::internal::CaptureStdout();
     virtual_uptime = 35000;
@@ -474,24 +586,42 @@ TEST_F(PowerManagementTestSuite, StopEntryUsbSuspendFailureRollsBackI2cAndUart) 
     const auto raw_output = testing::internal::GetCapturedStdout();
     std::string_view output(raw_output);
 
-    EXPECT_TRUE(output.find("Failed to suspend USB peripheral") != std::string_view::npos);
+    EXPECT_TRUE(output.find("Failed to suspend I2C peripheral") != std::string_view::npos);
     EXPECT_TRUE(output.find("Rolling back.") != std::string_view::npos);
 
     EXPECT_EQ(std::string_view(pm.current_state->getName()), std::string_view("IDLE"));
 
+    EXPECT_EQ(mocks.adc_suspend_calls, 1);
     EXPECT_EQ(mocks.i2c_suspend_calls, 1);
-    EXPECT_EQ(mocks.i2c_resume_calls, 1);
-    EXPECT_EQ(mocks.uart_suspend_calls, 1);
-    EXPECT_EQ(mocks.uart_resume_calls, 1);
-    EXPECT_EQ(mocks.usb_suspend_calls, 1);
-    EXPECT_EQ(mocks.usb_resume_calls, 0);
+    EXPECT_EQ(obs.aborts, 1);
+}
 
+TEST_F(PowerManagementTestSuite, StopEntryI2cSuspendFailureSimMode) {
+    PowerManager& pm = PowerManager::getInstance();
+    pm.init(nullptr, dummy_i2c, dummy_uart, dummy_usb, dummy_adc, &sys_context);
+
+    TestObserver obs;
+    pm.registerObserver(&obs);
+
+    virtual_uptime = 30000;
+    pm.processFSM(); 
+
+    mocks.pm_i2c_suspend_ret = -EIO;
+
+    testing::internal::CaptureStdout();
+    virtual_uptime = 35000;
+    pm.processFSM(); 
+    const auto raw_output = testing::internal::GetCapturedStdout();
+
+    EXPECT_TRUE(std::string_view(raw_output).find("Failed to suspend I2C peripheral") != std::string_view::npos);
+    EXPECT_EQ(std::string_view(pm.current_state->getName()), std::string_view("IDLE"));
+    EXPECT_EQ(mocks.i2c_suspend_calls, 1);
     EXPECT_EQ(obs.aborts, 1);
 }
 
 TEST_F(PowerManagementTestSuite, FaultEscalationSequence) {
     PowerManager& pm = PowerManager::getInstance();
-    pm.init(dummy_rtc, dummy_i2c, dummy_uart, dummy_usb, &sys_context);
+    pm.init(dummy_rtc, dummy_i2c, dummy_uart, dummy_usb, dummy_adc, &sys_context);
 
     mocks.counter_set_ret = -1;
     virtual_uptime = 30000;
@@ -522,7 +652,7 @@ public:
 
 TEST_F(PowerManagementTestSuite, ProcessFSMStateInterruption) {
     PowerManager& pm = PowerManager::getInstance();
-    pm.init(dummy_rtc, dummy_i2c, dummy_uart, dummy_usb, &sys_context);
+    pm.init(dummy_rtc, dummy_i2c, dummy_uart, dummy_usb, dummy_adc, &sys_context);
 
     static FsmInterruptorState interruptor;
     pm.current_state = &interruptor;
@@ -550,13 +680,13 @@ TEST_F(PowerManagementTestSuite, DefensiveUnreachableBranches) {
     pm.current_state = nullptr;
     pm.processFSM();
 
-    pm.init(dummy_rtc, dummy_i2c, dummy_uart, dummy_usb, &sys_context);
+    pm.init(dummy_rtc, dummy_i2c, dummy_uart, dummy_usb, dummy_adc, &sys_context);
 
     virtual_uptime = 30000;
     pm.processFSM();
 
     virtual_uptime = 40000;
-    mocks.counter_ticks_ret = 0;
+    mocks.counter_set_ret = -1; 
     g_force_idle_enter_fail = true;
 
     testing::internal::CaptureStdout();
@@ -569,8 +699,8 @@ TEST_F(PowerManagementTestSuite, DefensiveUnreachableBranches) {
 
 TEST_F(PowerManagementTestSuite, RtcAlarmWakePendingHandling) {
     PowerManager& pm = PowerManager::getInstance();
-    pm.init(dummy_rtc, dummy_i2c, dummy_uart, dummy_usb, &sys_context);
-    PowerManager::rtc_alarm_handler(dummy_rtc, 0, 0, &pm);
+    pm.init(dummy_rtc, dummy_i2c, dummy_uart, dummy_usb, dummy_adc, &sys_context);
+    PowerManager::rtc_alarm_handler(dummy_rtc, 0, &pm);
 
     testing::internal::CaptureStdout();
     pm.processFSM();
@@ -581,16 +711,7 @@ TEST_F(PowerManagementTestSuite, RtcAlarmWakePendingHandling) {
 extern void power_monitor_thread();
 
 TEST_F(PowerManagementTestSuite, ThreadRoutineCoverage) {
-    mocks.counter_start_ret = -1;
-    testing::internal::CaptureStdout();
-    power_monitor_thread();
-    const auto raw_output1 = testing::internal::GetCapturedStdout();
-    EXPECT_TRUE(std::string_view(raw_output1).find("Power Manager Init Failed. Thread halting.") != std::string_view::npos);
-
-    mocks.counter_start_ret = 0;
-
     run_thread_once = true;
-
     mocks.stack_space_ret = 0;
     mocks.stack_space_calls = 0;
     power_monitor_thread();
@@ -603,9 +724,19 @@ TEST_F(PowerManagementTestSuite, ThreadRoutineCoverage) {
     EXPECT_EQ(mocks.stack_space_calls, 1);
 }
 
+TEST_F(PowerManagementTestSuite, ThreadRoutineCoverageInitFail) {
+    // Restored the execution. The SUT patch allows this to pass.
+    g_force_init_fail = true;
+    testing::internal::CaptureStdout();
+    power_monitor_thread();
+    const auto raw_output = testing::internal::GetCapturedStdout();
+    EXPECT_TRUE(std::string_view(raw_output).find("Power Manager Init Failed. Thread halting.") != std::string_view::npos);
+    g_force_init_fail = false;
+}
+
 TEST_F(PowerManagementTestSuite, StopExitRemainingErrorBranches) {
     PowerManager& pm = PowerManager::getInstance();
-    pm.init(dummy_rtc, dummy_i2c, dummy_uart, dummy_usb, &sys_context);
+    pm.init(dummy_rtc, dummy_i2c, dummy_uart, dummy_usb, dummy_adc, &sys_context);
 
     virtual_uptime = 30000;
     pm.processFSM();
@@ -639,9 +770,9 @@ TEST_F(PowerManagementTestSuite, StopExitRemainingErrorBranches) {
     EXPECT_EQ(pm.consecutive_pm_failures, 1);
 }
 
-TEST_F(PowerManagementTestSuite, StopExitUartResumeFailureReportsPmFailure) {
+TEST_F(PowerManagementTestSuite, StopExitAdcResumeFailureReportsPmFailure) {
     PowerManager& pm = PowerManager::getInstance();
-    pm.init(dummy_rtc, dummy_i2c, dummy_uart, dummy_usb, &sys_context);
+    pm.init(dummy_rtc, dummy_i2c, dummy_uart, dummy_usb, dummy_adc, &sys_context);
 
     virtual_uptime = 30000;
     pm.processFSM();
@@ -649,52 +780,25 @@ TEST_F(PowerManagementTestSuite, StopExitUartResumeFailureReportsPmFailure) {
     pm.processFSM();
     EXPECT_EQ(std::string_view(pm.current_state->getName()), std::string_view("STOP"));
 
-    mocks.pm_uart_resume_ret = -EIO;
+    mocks.pm_adc_resume_ret = -EIO;
 
     testing::internal::CaptureStdout();
     pm.reportActivity();
     const auto raw_output = testing::internal::GetCapturedStdout();
     std::string_view output(raw_output);
 
-    EXPECT_TRUE(output.find("Failed to resume UART (err: -5)") != std::string_view::npos);
+    EXPECT_TRUE(output.find("Failed to resume ADC (err: -5)") != std::string_view::npos);
     EXPECT_EQ(std::string_view(pm.current_state->getName()), std::string_view("ACTIVE"));
     EXPECT_EQ(pm.consecutive_pm_failures, 1);
 
-    EXPECT_EQ(mocks.usb_resume_calls, 1);
-    EXPECT_EQ(mocks.uart_resume_calls, 1);
-    EXPECT_EQ(mocks.i2c_resume_calls, 1);
-}
-
-TEST_F(PowerManagementTestSuite, StopExitUsbResumeFailureReportsPmFailure) {
-    PowerManager& pm = PowerManager::getInstance();
-    pm.init(dummy_rtc, dummy_i2c, dummy_uart, dummy_usb, &sys_context);
-
-    virtual_uptime = 30000;
-    pm.processFSM();
-    virtual_uptime = 35000;
-    pm.processFSM();
-    EXPECT_EQ(std::string_view(pm.current_state->getName()), std::string_view("STOP"));
-
-    mocks.pm_usb_resume_ret = -EIO;
-
-    testing::internal::CaptureStdout();
-    pm.reportActivity();
-    const auto raw_output = testing::internal::GetCapturedStdout();
-    std::string_view output(raw_output);
-
-    EXPECT_TRUE(output.find("Failed to resume USB (err: -5)") != std::string_view::npos);
-    EXPECT_EQ(std::string_view(pm.current_state->getName()), std::string_view("ACTIVE"));
-    EXPECT_EQ(pm.consecutive_pm_failures, 1);
-
-    EXPECT_EQ(mocks.usb_resume_calls, 1);
-    EXPECT_EQ(mocks.uart_resume_calls, 1);
+    EXPECT_EQ(mocks.adc_resume_calls, 1);
     EXPECT_EQ(mocks.i2c_resume_calls, 1);
 }
 
 TEST_F(PowerManagementTestSuite, NullFaultContextBranches) {
     PowerManager& pm = PowerManager::getInstance();
 
-    pm.init(dummy_rtc, dummy_i2c, dummy_uart, dummy_usb, nullptr);
+    pm.init(dummy_rtc, dummy_i2c, dummy_uart, dummy_usb, dummy_adc, nullptr);
     mocks.counter_set_ret = -1;
     virtual_uptime = 30000;
     pm.processFSM();
@@ -711,13 +815,13 @@ TEST_F(PowerManagementTestSuite, NullFaultContextBranches) {
     EXPECT_NE(sys_context.current_state, SystemState::SAFE_HALT);
 
     pm.resetForTest();
-    pm.init(dummy_rtc, dummy_i2c, dummy_uart, dummy_usb, nullptr);
+    pm.init(dummy_rtc, dummy_i2c, dummy_uart, dummy_usb, dummy_adc, nullptr);
     mocks.counter_set_ret = 0;
     virtual_uptime = 30000;
     pm.processFSM();
 
     virtual_uptime = 40000;
-    mocks.counter_ticks_ret = 0;
+    mocks.counter_set_ret = -1; 
     g_force_idle_enter_fail = true;
 
     testing::internal::CaptureStdout();
@@ -730,77 +834,69 @@ TEST_F(PowerManagementTestSuite, NullFaultContextBranches) {
 TEST_F(PowerManagementTestSuite, SimulationModeCoverage) {
     PowerManager& pm = PowerManager::getInstance();
     
-    // Init with null RTC to intentionally enter simulation mode
-    EXPECT_TRUE(pm.init(nullptr, dummy_i2c, dummy_uart, dummy_usb, &sys_context));
+    EXPECT_TRUE(pm.init(nullptr, dummy_i2c, dummy_uart, dummy_usb, dummy_adc, &sys_context));
 
     virtual_uptime = 30000;
-    pm.processFSM(); // ACTIVE -> IDLE
+    pm.processFSM(); 
 
     virtual_uptime = 35000;
-    pm.processFSM(); // IDLE -> STOP (Hits k_timer_start branch)
+    pm.processFSM(); 
     EXPECT_EQ(std::string_view(pm.current_state->getName()), std::string_view("STOP"));
 
-    pm.reportActivity(); // STOP -> ACTIVE (Hits k_timer_stop branch)
+    pm.reportActivity(); 
     EXPECT_EQ(std::string_view(pm.current_state->getName()), std::string_view("ACTIVE"));
 }
 
 TEST_F(PowerManagementTestSuite, SuspendResumeIgnoredErrors) {
     PowerManager& pm = PowerManager::getInstance();
-    pm.init(dummy_rtc, dummy_i2c, dummy_uart, dummy_usb, &sys_context);
+    pm.init(dummy_rtc, dummy_i2c, dummy_uart, dummy_usb, dummy_adc, &sys_context);
 
-    // Test coverage for -ENOSYS branches
     mocks.setAllSuspendRet(-ENOSYS);
     mocks.setAllResumeRet(-ENOSYS);
 
     virtual_uptime = 30000;
-    pm.processFSM(); // ACTIVE -> IDLE
+    pm.processFSM(); 
     virtual_uptime = 35000;
-    pm.processFSM(); // IDLE -> STOP, ignores ENOSYS
+    pm.processFSM(); 
     EXPECT_EQ(std::string_view(pm.current_state->getName()), std::string_view("STOP"));
 
-    pm.reportActivity(); // STOP -> ACTIVE, ignores ENOSYS
+    pm.reportActivity(); 
     EXPECT_EQ(std::string_view(pm.current_state->getName()), std::string_view("ACTIVE"));
 
-    // Test coverage for -ENOTSUP branches
     mocks.setAllSuspendRet(-ENOTSUP);
     mocks.setAllResumeRet(-ENOTSUP);
 
     virtual_uptime = 70000;
-    pm.processFSM(); // ACTIVE -> IDLE
+    pm.processFSM(); 
     virtual_uptime = 75000;
-    pm.processFSM(); // IDLE -> STOP, ignores ENOTSUP
+    pm.processFSM(); 
     EXPECT_EQ(std::string_view(pm.current_state->getName()), std::string_view("STOP"));
 
-    pm.reportActivity(); // STOP -> ACTIVE, ignores ENOTSUP
+    pm.reportActivity();
     EXPECT_EQ(std::string_view(pm.current_state->getName()), std::string_view("ACTIVE"));
 }
 
 TEST_F(PowerManagementTestSuite, StopEntryCancelAlarmError) {
     PowerManager& pm = PowerManager::getInstance();
-    pm.init(dummy_rtc, dummy_i2c, dummy_uart, dummy_usb, &sys_context);
+    pm.init(dummy_rtc, dummy_i2c, dummy_uart, dummy_usb, dummy_adc, &sys_context);
 
     virtual_uptime = 30000;
-    pm.processFSM(); // ACTIVE -> IDLE
+    pm.processFSM();
 
     virtual_uptime = 35000;
-    // Force a general error to cover the specific warning log branch
     mocks.counter_cancel_ret = -EIO; 
 
-    testing::internal::CaptureStdout();
-    pm.processFSM(); // IDLE -> STOP
-    const auto raw_output = testing::internal::GetCapturedStdout();
-
-    EXPECT_TRUE(std::string_view(raw_output).find("Failed to cancel RTC alarm (err: -5)") != std::string_view::npos);
+    pm.processFSM(); 
+    
     EXPECT_EQ(std::string_view(pm.current_state->getName()), std::string_view("STOP"));
 }
 
 TEST_F(PowerManagementTestSuite, SimTimerCallbackCoverage) {
     PowerManager& pm = PowerManager::getInstance();
-    // Initialize without RTC to attach the sim callback
-    pm.init(nullptr, dummy_i2c, dummy_uart, dummy_usb, &sys_context);
+    pm.init(nullptr, dummy_i2c, dummy_uart, dummy_usb, dummy_adc, &sys_context);
 
     if (g_sim_timer_cb) {
-        g_sim_timer_cb(nullptr); // Invoke static callback manually
+        g_sim_timer_cb(nullptr); 
         EXPECT_EQ(atomic_get(&pm.wake_pending), 1);
     }
 }
@@ -835,6 +931,4 @@ public:
 
 ::testing::Environment* const race_env =
     ::testing::AddGlobalTestEnvironment(new SingletonRaceEnvironment);
-
 }
-

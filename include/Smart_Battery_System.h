@@ -133,7 +133,7 @@ struct BatteryLimits {
     static constexpr int MONITOR_THREAD_PRIO = 11;
 
     static constexpr uint16_t MAX_VALID_VOLTAGE_MV = 20000U;
-    static constexpr int32_t MAX_VALID_CURRENT_MA = 750;
+    static constexpr int32_t MAX_VALID_CURRENT_MA = 1500;
 
     static constexpr uint16_t MAX_VOLTAGE_DELTA_MV = 2000U;
     static constexpr int32_t MAX_CURRENT_DELTA_MA = 8000;
@@ -144,6 +144,11 @@ struct BatteryLimits {
     static constexpr uint32_t MAX_INIT_RETRIES = 10U;
 
     static constexpr uint32_t REST_RESYNC_DURATION_MS = 30U * 60U * 1000U;
+    static constexpr uint16_t MIN_VALID_VOLTAGE_MV = 4000U; 
+    static constexpr int32_t ESTIMATED_PACK_IR_MILLIOHMS = 150; 
+    static constexpr float KF_PROCESS_NOISE = 0.0001f;          
+    static constexpr float KF_MEAS_NOISE_REST = 2.0f;           
+    static constexpr float KF_MEAS_NOISE_ACTIVE = 50.0f;
 };
 
 #ifdef INA226_TEST_BYPASS_STATIC_ASSERT
@@ -225,6 +230,9 @@ private:
     void feedWatchdog() const;
     void publishError(CommFault fault);
     BmsCache getCacheSnapshot() const;
+    
+    float kf_soc_pct;
+    float kf_p_covariance;
 };
 
 SbsBattery* getSmartBatteryInstance();

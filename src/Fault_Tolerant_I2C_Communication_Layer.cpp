@@ -12,7 +12,7 @@
 
 LOG_MODULE_REGISTER(I2C_HW, LOG_LEVEL_INF);
 
-constexpr size_t MAX_CACHED_REGISTERS = 15U;
+constexpr size_t MAX_CACHED_REGISTERS = 64U;
 constexpr uint8_t CACHE_RELIABILITY_MAX = 100U;
 constexpr uint8_t CACHE_RELIABILITY_MIN_FOR_FALLBACK = 50U;
 constexpr uint8_t CACHE_RELIABILITY_DECAY_PER_USE = 10U;
@@ -32,15 +32,8 @@ static CacheEntry* active_entries[MAX_CACHED_REGISTERS] = {nullptr};
 static struct k_mutex cache_tracker_mutex;
 static bool cache_mutex_init = false;
 
-#ifdef CONFIG_BOARD_MPS2_AN386
-
-const struct device *i2c_hardware = nullptr;
-
-#elif !defined(IS_TEST_ENVIRONMENT)
-
-const struct device *i2c_hardware =
-    DEVICE_DT_GET(DT_NODELABEL(i2c1));
-
+#ifndef IS_TEST_ENVIRONMENT
+const struct device *i2c_hardware = DEVICE_DT_GET(DT_NODELABEL(i2c1));
 #endif
 
 #ifndef IS_TEST_ENVIRONMENT
@@ -90,7 +83,7 @@ static void update_cache(uint32_t key, uint64_t value, bool calibrated = true) {
 
     void* mem = cache_pool.allocate();
     if (mem != nullptr) {
-        CacheEntry* new_entry = new(mem) CacheEntry;
+        auto* new_entry = new(mem) CacheEntry;
         new_entry->key = key;
         new_entry->raw_value = value;
         new_entry->timestamp = now;
@@ -102,8 +95,6 @@ static void update_cache(uint32_t key, uint64_t value, bool calibrated = true) {
 
     k_mutex_unlock(&cache_tracker_mutex);
 }
-
-#ifndef CONFIG_BOARD_MPS2_AN386
 
 static bool get_cached_value(uint32_t key, uint64_t* out_val, uint32_t max_age_ms) {
     if (out_val == nullptr) {
@@ -161,8 +152,6 @@ static I2CFault classify_i2c_error(int err) {
     }
 }
 
-#endif
-
 void RetryStrategy::executeRecovery(const device* ) {
     LOG_WRN("I2C Fault Detected. Executing Exponential Backoff Retry...");
     k_msleep(10);
@@ -188,7 +177,7 @@ uint64_t FailSafeStrategy::getLastGood() const {
 namespace {
     class I2CPowerObserver final : public IPowerObserver {
     private:
-        atomic_t is_sleeping;
+        atomic_t is_sleeping{};
     public:
         I2CPowerObserver() { atomic_set(&is_sleeping, 0); }
         void beforeSleep() override { atomic_set(&is_sleeping, 1); }
@@ -214,22 +203,14 @@ Result<uint8_t> I2CManager::readRegister(uint16_t sensor_addr, uint8_t reg_addr)
 
     ensure_power_observer_registered();
     if (g_i2cPowerObserver.isSleeping()) {
-#ifndef CONFIG_BOARD_MPS2_AN386
         uint64_t cached_val = 0U;
         if (get_cached_value(cache_key, &cached_val, 3000U)) {
             return Result<uint8_t>::Ok(static_cast<uint8_t>(cached_val & 0xFFU));
         }
-#endif
         return Result<uint8_t>::Err(I2CFault::DEVICE_NOT_READY);
     }
 
-#ifdef CONFIG_BOARD_MPS2_AN386
-    k_msleep(50);
-    uint8_t mock_data = 60U;
-    update_cache(cache_key, mock_data);
-    failsafe_strategy.updateLastGood(mock_data);
-    return Result<uint8_t>::Ok(mock_data);
-#else
+
 #ifdef IS_TEST_ENVIRONMENT
     extern int g_i2c_force_errno;
     if (g_i2c_force_errno != 0) {
@@ -262,7 +243,6 @@ Result<uint8_t> I2CManager::readRegister(uint16_t sensor_addr, uint8_t reg_addr)
        return Result<uint8_t>::Ok(static_cast<uint8_t>(cached_val & 0xFFU));
     }
     return Result<uint8_t>::Err(fault);
-#endif
 }
 
 Result<bool> I2CManager::writeRegister(uint16_t sensor_addr, uint8_t reg_addr, uint8_t val) {
@@ -271,10 +251,6 @@ Result<bool> I2CManager::writeRegister(uint16_t sensor_addr, uint8_t reg_addr, u
         return Result<bool>::Err(I2CFault::DEVICE_NOT_READY);
     }
 
-#ifdef CONFIG_BOARD_MPS2_AN386
-    k_msleep(10);
-    return Result<bool>::Ok(true);
-#else
 #ifdef IS_TEST_ENVIRONMENT
     extern int g_i2c_force_errno;
     if (g_i2c_force_errno != 0) {
@@ -299,7 +275,6 @@ Result<bool> I2CManager::writeRegister(uint16_t sensor_addr, uint8_t reg_addr, u
     }
 
     return Result<bool>::Err(fault);
-#endif
 }
 
 Result<uint16_t> I2CManager::readWord(uint16_t sensor_addr, uint8_t reg_addr) {
@@ -307,22 +282,14 @@ Result<uint16_t> I2CManager::readWord(uint16_t sensor_addr, uint8_t reg_addr) {
 
     ensure_power_observer_registered();
     if (g_i2cPowerObserver.isSleeping()) {
-#ifndef CONFIG_BOARD_MPS2_AN386
+
         uint64_t cached_val = 0U;
         if (get_cached_value(cache_key, &cached_val, 3000U)) {
             return Result<uint16_t>::Ok(static_cast<uint16_t>(cached_val & 0xFFFFU));
         }
-#endif
         return Result<uint16_t>::Err(I2CFault::DEVICE_NOT_READY);
     }
 
-#ifdef CONFIG_BOARD_MPS2_AN386
-    k_msleep(50);
-    uint16_t mock_val = 900U;
-    update_cache(cache_key, mock_val);
-    failsafe_strategy.updateLastGood(mock_val);
-    return Result<uint16_t>::Ok(mock_val);
-#else
 #ifdef IS_TEST_ENVIRONMENT
     extern int g_i2c_force_errno;
     if (g_i2c_force_errno != 0) {
@@ -356,7 +323,6 @@ Result<uint16_t> I2CManager::readWord(uint16_t sensor_addr, uint8_t reg_addr) {
         return Result<uint16_t>::Ok(static_cast<uint16_t>(cached_val & 0xFFFFU));
     }
     return Result<uint16_t>::Err(fault);
-#endif
 }
 
 Result<bool> I2CManager::writeWord(uint16_t sensor_addr, uint8_t reg_addr, uint16_t val) {
@@ -373,22 +339,13 @@ Result<uint32_t> I2CManager::read24Bit(uint16_t sensor_addr, uint8_t reg_addr) {
 
     ensure_power_observer_registered();
     if (g_i2cPowerObserver.isSleeping()) {
-#ifndef CONFIG_BOARD_MPS2_AN386
         uint64_t cached_val = 0U;
         if (get_cached_value(cache_key, &cached_val, 3000U)) {
             return Result<uint32_t>::Ok(static_cast<uint32_t>(cached_val & 0xFFFFFFU));
         }
-#endif
         return Result<uint32_t>::Err(I2CFault::DEVICE_NOT_READY);
     }
 
-#ifdef CONFIG_BOARD_MPS2_AN386
-    k_msleep(50);
-    uint32_t mock_val = 101300U;
-    update_cache(cache_key, mock_val);
-    failsafe_strategy.updateLastGood(mock_val);
-    return Result<uint32_t>::Ok(mock_val);
-#else
 #ifdef IS_TEST_ENVIRONMENT
     extern int g_i2c_force_errno;
     if (g_i2c_force_errno != 0) {
@@ -421,7 +378,6 @@ Result<uint32_t> I2CManager::read24Bit(uint16_t sensor_addr, uint8_t reg_addr) {
         return Result<uint32_t>::Ok(static_cast<uint32_t>(cached_val & 0xFFFFFFU));
     }
     return Result<uint32_t>::Err(fault);
-#endif
 }
 
 Result<uint64_t> I2CManager::read64Bit(uint16_t sensor_addr, uint8_t reg_addr) {
@@ -429,22 +385,12 @@ Result<uint64_t> I2CManager::read64Bit(uint16_t sensor_addr, uint8_t reg_addr) {
 
     ensure_power_observer_registered();
     if (g_i2cPowerObserver.isSleeping()) {
-#ifndef CONFIG_BOARD_MPS2_AN386
         uint64_t cached_val = 0U;
         if (get_cached_value(cache_key, &cached_val, 3000U)) {
             return Result<uint64_t>::Ok(cached_val);
         }
-#endif
         return Result<uint64_t>::Err(I2CFault::DEVICE_NOT_READY);
     }
-
-#ifdef CONFIG_BOARD_MPS2_AN386
-    k_msleep(50);
-    uint64_t mock_val = 0U;
-    update_cache(cache_key, mock_val);
-    failsafe_strategy.updateLastGood(mock_val);
-    return Result<uint64_t>::Ok(mock_val);
-#else
 #ifdef IS_TEST_ENVIRONMENT
     extern int g_i2c_force_errno;
     if (g_i2c_force_errno != 0) {
@@ -480,7 +426,6 @@ Result<uint64_t> I2CManager::read64Bit(uint16_t sensor_addr, uint8_t reg_addr) {
         return Result<uint64_t>::Ok(cached_val);
     }
     return Result<uint64_t>::Err(fault);
-#endif
 }
 
 #ifdef IS_TEST_ENVIRONMENT

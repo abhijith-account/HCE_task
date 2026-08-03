@@ -1,8 +1,42 @@
+#include <zephyr/dt-bindings/adc/adc.h>
+/delete-node/ &storage_partition;
+
 / {
-    aliases {
-        cdc-acm-uart0 = &uart0;
+    zephyr_user: zephyr,user {
+        io-channels = <&adc1 0>;
     };
 
+    adc1: adc_emul {
+        compatible = "zephyr,adc-emul";
+        nchannels = <1>;
+        #io-channel-cells = <1>;
+        #address-cells = <1>;
+        #size-cells = <0>;
+        status = "okay";
+        ref-internal-mv = <3300>;    
+        
+        channel@0 {
+            reg = <0>;
+            zephyr,gain = "ADC_GAIN_1";
+            zephyr,reference = "ADC_REF_INTERNAL";
+            zephyr,acquisition-time = <ADC_ACQ_TIME_DEFAULT>;
+            zephyr,resolution = <12>;
+        };
+    };
+    
+    aliases {
+        cdc-acm-uart0 = &uart1; 
+        watchdog0 = &wdog0;
+        rtc0 = &rtc_emul0;
+        uart-hardware = &uart0;
+    };
+    
+    rtc_emul0: rtc {
+        compatible = "zephyr,rtc-emul";
+        status = "okay";
+        alarms-count = <2>;
+    };
+    
     /* The Emulator Controller */
     i2c1: fake_i2c@40001000 {
         compatible = "zephyr,i2c-emul-controller";
@@ -41,23 +75,11 @@
         };
     };
 
-    /* Disable the generic test buses to prevent emulator linking errors */
-    iwdg: fake_watchdog@40002000 {
-        compatible = "vnd,i2c";
-        reg = <0x40002000 0x1000>;
-        status = "disabled";     /* <--- DISABLE THIS */
-    };
-
-    rtc: fake_rtc@40003000 {
-        compatible = "vnd,i2c";
-        reg = <0x40003000 0x1000>;
-        status = "disabled";     /* <--- DISABLE THIS */
-    };
-
     /* Simulated Flash Drive for NVS */
     sim_flash: sim_flash@50000000 {
         compatible = "zephyr,sim-flash";
-        reg = <0x50000000 0x8000>;
+        /* Expand total simulated flash to 512 KB to fit the Nucleo layout */
+        reg = <0x50000000 0x80000>; 
         #address-cells = <1>;
         #size-cells = <1>;
         erase-value = <0xff>;
@@ -65,24 +87,35 @@
         my_sim_flash0: flash_sim@0 {
             status = "okay";
             compatible = "soc-nv-flash";
-            erase-block-size = <1024>;
-            write-block-size = <4>;
-            reg = <0x00000000 0x8000>;
+            erase-block-size = <131072>; 
+            
+            /* CHANGE THIS TO 1: Allows 1-byte and 2-byte FCB writes to succeed */
+            write-block-size = <1>; 
+            
+            reg = <0x00000000 0x80000>;
 
             partitions {
                 compatible = "fixed-partitions";
                 #address-cells = <1>;
                 #size-cells = <1>;
 
-                my_storage_partition: partition@6000 {
+                code_partition: partition@0 {
+                    label = "image-0";
+                    reg = <0x00000000 0x00040000>;
+                };
+
+                storage_partition: partition@40000 {
                     label = "storage";
-                    reg = <0x00006000 0x00002000>;
+                    reg = <0x00040000 0x00040000>;
                 };
             };
         };
     };
 };
-
 &uart0 {
     status = "okay";
+};
+
+&uart1 {
+        status = "okay";
 };

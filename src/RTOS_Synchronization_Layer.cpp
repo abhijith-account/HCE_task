@@ -75,7 +75,7 @@ extern ZephyrWorkQueue status_work;
 namespace {
     class SyncPowerObserver final : public IPowerObserver {
     private:
-        atomic_t is_sleeping;
+        atomic_t is_sleeping{};
     public:
         SyncPowerObserver() { atomic_set(&is_sleeping, 0); }
         void beforeSleep() override {
@@ -171,5 +171,5 @@ void display_consumer_thread(void){
 }
 
 K_THREAD_DEFINE(hr_prod_tid,256,heart_rate_producer_thread,NULL,NULL,NULL,8,0,0);
-K_THREAD_DEFINE(disp_cons_tid,256,display_consumer_thread,NULL,NULL,NULL,9,0,0);
+K_THREAD_DEFINE(disp_cons_tid,1024,display_consumer_thread,NULL,NULL,NULL,9,0,0);
 

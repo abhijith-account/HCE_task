@@ -20,7 +20,7 @@ inline void logCommandError(const char* tag, uint32_t id, const char* msg) noexc
     LOG_ERR("[%s] #%u: %s", tag, id, msg);
 }
 
-struct alignas(8) MaxCommandSize { uint8_t buffer[PoolConfig::Size]; };
+struct alignas(8) MaxCommandSize { uint8_t buffer[PoolConfig::Size]{}; };
 StaticPool<MaxCommandSize, PoolConfig::Elements> g_commandPool;
 QueueStats g_queueStats;
 static bool g_bme280_initialized = false;
@@ -43,8 +43,8 @@ K_MSGQ_DEFINE(logger_queue, sizeof(ICommand*), QueueConfig::Depth, QueueConfig::
 class CycleProfiler {
 private:
     const char* tag;
-    uint32_t id;
-    uint32_t start;
+    uint32_t id{};
+    uint32_t start{};
 public:
     CycleProfiler(const char* t, uint32_t cmd_id) noexcept : tag(t), id(cmd_id), start(k_cycle_get_32()) {}
     ~CycleProfiler() {
@@ -118,7 +118,7 @@ namespace SystemObjects {
 
 class ThreadSystemPowerObserver final : public IPowerObserver {
 private:
-    atomic_t is_sleeping;
+    atomic_t is_sleeping{};
 public:
     ThreadSystemPowerObserver() { atomic_set(&is_sleeping, 0); }
     void beforeSleep() override { atomic_set(&is_sleeping, 1); }
@@ -141,21 +141,21 @@ namespace BMEConstants {
     constexpr int32_t H_8192        = 8192;
     constexpr int32_t H_MAX         = 419430400;
 
-    constexpr float TEMP_DIV   = 100.0f;
-    constexpr float PRESS_DIV1 = 256.0f;
-    constexpr float PRESS_DIV2 = 100.0f;
-    constexpr float HUM_DIV    = 1024.0f;
+    constexpr float TEMP_DIV   = 100.0F;
+    constexpr float PRESS_DIV1 = 256.0F;
+    constexpr float PRESS_DIV2 = 100.0F;
+    constexpr float HUM_DIV    = 1024.0F;
 }
 
 namespace LPS22HBConst {
-    constexpr float TEMP_DIV  = 100.0f;
-    constexpr float PRESS_DIV = 4096.0f;
+    constexpr float TEMP_DIV  = 100.0F;
+    constexpr float PRESS_DIV = 4096.0F;
 }
 
 namespace PAV3015Const {
-    constexpr float OFFSET = 0.1f;
-    constexpr float LINEAR = 0.0000506f;
-    constexpr float QUADRATIC = 0.000001f;
+    constexpr float OFFSET = 0.1F;
+    constexpr float LINEAR = 0.0000506F;
+    constexpr float QUADRATIC = 0.000001F;
 }
 
 namespace {
@@ -170,11 +170,14 @@ namespace {
             calib_mutex_initialized = true;
         }
     }
-    #ifndef CONFIG_BOARD_MPS2_AN386
+    
     [[nodiscard]] bool readTempCalibration(uint16_t addr) noexcept {
-        auto t1 = SystemObjects::i2c().readWord(addr, BME280CalibReg::DIG_T1); if (!t1.isOk()) return false;
-        auto t2 = SystemObjects::i2c().readWord(addr, BME280CalibReg::DIG_T2); if (!t2.isOk()) return false;
-        auto t3 = SystemObjects::i2c().readWord(addr, BME280CalibReg::DIG_T3); if (!t3.isOk()) return false;
+        auto t1 = SystemObjects::i2c().readWord(addr, BME280CalibReg::DIG_T1); if (!t1.isOk()) { return false;
+}
+        auto t2 = SystemObjects::i2c().readWord(addr, BME280CalibReg::DIG_T2); if (!t2.isOk()) { return false;
+}
+        auto t3 = SystemObjects::i2c().readWord(addr, BME280CalibReg::DIG_T3); if (!t3.isOk()) { return false;
+}
 
         g_bme280Calib.dig_T1 = t1.unwrap();
         g_bme280Calib.dig_T2 = static_cast<int16_t>(t2.unwrap());
@@ -183,15 +186,24 @@ namespace {
     }
 
     [[nodiscard]] bool readPressureCalibration(uint16_t addr) noexcept {
-        auto p1 = SystemObjects::i2c().readWord(addr, BME280CalibReg::DIG_P1); if (!p1.isOk()) return false;
-        auto p2 = SystemObjects::i2c().readWord(addr, BME280CalibReg::DIG_P2); if (!p2.isOk()) return false;
-        auto p3 = SystemObjects::i2c().readWord(addr, BME280CalibReg::DIG_P3); if (!p3.isOk()) return false;
-        auto p4 = SystemObjects::i2c().readWord(addr, BME280CalibReg::DIG_P4); if (!p4.isOk()) return false;
-        auto p5 = SystemObjects::i2c().readWord(addr, BME280CalibReg::DIG_P5); if (!p5.isOk()) return false;
-        auto p6 = SystemObjects::i2c().readWord(addr, BME280CalibReg::DIG_P6); if (!p6.isOk()) return false;
-        auto p7 = SystemObjects::i2c().readWord(addr, BME280CalibReg::DIG_P7); if (!p7.isOk()) return false;
-        auto p8 = SystemObjects::i2c().readWord(addr, BME280CalibReg::DIG_P8); if (!p8.isOk()) return false;
-        auto p9 = SystemObjects::i2c().readWord(addr, BME280CalibReg::DIG_P9); if (!p9.isOk()) return false;
+        auto p1 = SystemObjects::i2c().readWord(addr, BME280CalibReg::DIG_P1); if (!p1.isOk()) { return false;
+}
+        auto p2 = SystemObjects::i2c().readWord(addr, BME280CalibReg::DIG_P2); if (!p2.isOk()) { return false;
+}
+        auto p3 = SystemObjects::i2c().readWord(addr, BME280CalibReg::DIG_P3); if (!p3.isOk()) { return false;
+}
+        auto p4 = SystemObjects::i2c().readWord(addr, BME280CalibReg::DIG_P4); if (!p4.isOk()) { return false;
+}
+        auto p5 = SystemObjects::i2c().readWord(addr, BME280CalibReg::DIG_P5); if (!p5.isOk()) { return false;
+}
+        auto p6 = SystemObjects::i2c().readWord(addr, BME280CalibReg::DIG_P6); if (!p6.isOk()) { return false;
+}
+        auto p7 = SystemObjects::i2c().readWord(addr, BME280CalibReg::DIG_P7); if (!p7.isOk()) { return false;
+}
+        auto p8 = SystemObjects::i2c().readWord(addr, BME280CalibReg::DIG_P8); if (!p8.isOk()) { return false;
+}
+        auto p9 = SystemObjects::i2c().readWord(addr, BME280CalibReg::DIG_P9); if (!p9.isOk()) { return false;
+}
 
         g_bme280Calib.dig_P1 = p1.unwrap();
         g_bme280Calib.dig_P2 = static_cast<int16_t>(p2.unwrap());
@@ -206,14 +218,14 @@ namespace {
     }
 
     [[nodiscard]] bool readHumidityCalibration(uint16_t addr) noexcept {
-        auto h1 = SystemObjects::i2c().readRegister(addr, BME280CalibReg::DIG_H1); if (!h1.isOk()) return false;
-        auto h2_l = SystemObjects::i2c().readRegister(addr, BME280CalibReg::DIG_H2_L); if (!h2_l.isOk()) return false;
-        auto h2_m = SystemObjects::i2c().readRegister(addr, BME280CalibReg::DIG_H2_M); if (!h2_m.isOk()) return false;
-        auto h3 = SystemObjects::i2c().readRegister(addr, BME280CalibReg::DIG_H3); if (!h3.isOk()) return false;
-        auto h4_m = SystemObjects::i2c().readRegister(addr, BME280CalibReg::DIG_H4_M); if (!h4_m.isOk()) return false;
-        auto h_shared = SystemObjects::i2c().readRegister(addr, BME280CalibReg::DIG_H_SHARED); if (!h_shared.isOk()) return false;
-        auto h5_m = SystemObjects::i2c().readRegister(addr, BME280CalibReg::DIG_H5_M); if (!h5_m.isOk()) return false;
-        auto h6 = SystemObjects::i2c().readRegister(addr, BME280CalibReg::DIG_H6); if (!h6.isOk()) return false;
+        auto h1 = SystemObjects::i2c().readRegister(addr, BME280CalibReg::DIG_H1); if (!h1.isOk()) { return false;}
+        auto h2_l = SystemObjects::i2c().readRegister(addr, BME280CalibReg::DIG_H2_L); if (!h2_l.isOk()) { return false;}
+        auto h2_m = SystemObjects::i2c().readRegister(addr, BME280CalibReg::DIG_H2_M); if (!h2_m.isOk()) { return false;}
+        auto h3 = SystemObjects::i2c().readRegister(addr, BME280CalibReg::DIG_H3); if (!h3.isOk()) { return false;}
+        auto h4_m = SystemObjects::i2c().readRegister(addr, BME280CalibReg::DIG_H4_M); if (!h4_m.isOk()) { return false;}
+        auto h_shared = SystemObjects::i2c().readRegister(addr, BME280CalibReg::DIG_H_SHARED); if (!h_shared.isOk()) { return false;}
+        auto h5_m = SystemObjects::i2c().readRegister(addr, BME280CalibReg::DIG_H5_M); if (!h5_m.isOk()) { return false;}
+        auto h6 = SystemObjects::i2c().readRegister(addr, BME280CalibReg::DIG_H6); if (!h6.isOk()) { return false;}
 
         const auto shared_val = h_shared.unwrap();
         g_bme280Calib.dig_H1 = h1.unwrap();
@@ -224,7 +236,7 @@ namespace {
         g_bme280Calib.dig_H6 = static_cast<int8_t>(h6.unwrap());
         return true;
     }
-    #endif
+
     [[nodiscard]] bool loadBME280Calibration(uint16_t addr) noexcept {
         ensureCalibMutex();
         k_mutex_lock(&calib_mutex, K_FOREVER);
@@ -233,19 +245,7 @@ namespace {
             return true;
         }
 
-#ifdef CONFIG_BOARD_MPS2_AN386
 
-        g_bme280Calib.dig_T1 = 27504; g_bme280Calib.dig_T2 = 26435; g_bme280Calib.dig_T3 = -1000;
-        g_bme280Calib.dig_P1 = 36477; g_bme280Calib.dig_P2 = -10685; g_bme280Calib.dig_P3 = 3024;
-        g_bme280Calib.dig_P4 = 2855;  g_bme280Calib.dig_P5 = 140;    g_bme280Calib.dig_P6 = -7;
-        g_bme280Calib.dig_P7 = 15500; g_bme280Calib.dig_P8 = -14600; g_bme280Calib.dig_P9 = 6000;
-        g_bme280Calib.dig_H1 = 75;    g_bme280Calib.dig_H2 = 360;    g_bme280Calib.dig_H3 = 0;
-        g_bme280Calib.dig_H4 = 315;   g_bme280Calib.dig_H5 = 50;     g_bme280Calib.dig_H6 = 30;
-        g_bme280Calib.is_loaded = true;
-        k_mutex_unlock(&calib_mutex);
-        LOG_INF("[%s] BME280 MOCK Calibration Loaded Successfully.", LogTags::PRODUCER);
-        return true;
-#else
         if (!readTempCalibration(addr) || !readPressureCalibration(addr) || !readHumidityCalibration(addr)) {
             k_mutex_unlock(&calib_mutex);
             return false;
@@ -254,7 +254,7 @@ namespace {
         k_mutex_unlock(&calib_mutex);
         LOG_INF("[%s] BME280 ROM Calibration Loaded Successfully.", LogTags::PRODUCER);
         return true;
-#endif
+
     }
 }
 
@@ -418,7 +418,16 @@ void SensorReadCmd::execute() noexcept {
     uint64_t raw = 0;
 
 #ifdef CONFIG_BOARD_MPS2_AN386
-    raw = readMockData();
+    if (sensor_id == SensorID::PAV3015) {
+        raw = readMockData();
+    } else {
+        auto res = readHardwareData();
+        if (!res.isOk()) {
+            logCommandError(LogTags::READ, command_id, "I2C Transaction Failed.");
+            return;
+        }
+        raw = res.unwrap();
+    } 
 #else
     auto res = readHardwareData();
     if (!res.isOk()) {
@@ -427,6 +436,36 @@ void SensorReadCmd::execute() noexcept {
     }
     raw = res.unwrap();
 #endif
+    static uint64_t last_raw_bme = 0;
+    static uint64_t last_raw_lps_p = 0;
+    static uint64_t last_raw_lps_t = 0;
+    static uint64_t last_raw_pav = 0;
+
+    uint64_t* last_val_ptr = nullptr;
+    uint64_t threshold = 0;
+
+    if (sensor_id == SensorID::BME280) {
+        last_val_ptr = &last_raw_bme;
+        threshold = 0x1000; 
+    } else if (sensor_id == SensorID::LPS22HB && reg_addr == SensorReg::LPS_P_DESC.reg) {
+        last_val_ptr = &last_raw_lps_p;
+        threshold = 0x50;   
+    } else if (sensor_id == SensorID::LPS22HB && reg_addr == SensorReg::LPS_T_DESC.reg) {
+        last_val_ptr = &last_raw_lps_t;
+        threshold = 0x10;  
+    } else if (sensor_id == SensorID::PAV3015) {
+        last_val_ptr = &last_raw_pav;
+        threshold = 0x05;   
+    }
+
+    if (last_val_ptr != nullptr) {
+        uint64_t diff = (raw > *last_val_ptr) ? (raw - *last_val_ptr) : (*last_val_ptr - raw);
+        
+        if (diff > threshold || *last_val_ptr == 0) {
+            *last_val_ptr = raw;
+            SystemObjects::power().reportActivity();
+        }
+    }
 
     if (!enqueueCommand<ComputeCmd>(PROCESSOR_Q, sensor_id, reg_addr, raw)) {
         logCommandError(LogTags::READ, command_id, "Compute queue full. Discarding raw data.");
@@ -480,8 +519,8 @@ void ComputeCmd::execute() noexcept {
 PrintCmd::PrintCmd(SensorID s_id, float val) noexcept : sensor_id(s_id), final_value(val) {}
 
 struct SensorInfo {
-    SensorID id;
-    const char* name;
+    SensorID id{};
+    const char* name{};
 };
 constexpr SensorInfo sensorTable[] = {
     {SensorID::BME280,       "BME280(Temp C)"},
@@ -544,6 +583,7 @@ void producer_thread(void) {
 
     do {
        if (SystemObjects::context().getState() != SystemState::SAFE_HALT && !g_powerObserver.isSleeping()) {
+           SystemObjects::power().reportActivity();
            if (!g_bme280_initialized) {
                const uint16_t bme_addr = static_cast<uint16_t>(SensorID::BME280);
                auto res1 = SystemObjects::i2c().writeRegister(bme_addr, SensorReg::BME280_CTRL_HUM, BME280Config::CTRL_HUM);
@@ -560,8 +600,10 @@ void producer_thread(void) {
                 enqueued = enqueueCommand<SensorReadCmd>(PROCESSOR_Q, SensorReg::BME_DESC.id, SensorReg::BME_DESC.reg, SensorReg::BME_DESC.len);
                 state = ProducerState::ReadLPS;
             } else if (state == ProducerState::ReadLPS) {
-                bool enq1 = enqueueCommand<SensorReadCmd>(PROCESSOR_Q, SensorReg::LPS_P_DESC.id, SensorReg::LPS_P_DESC.reg, SensorReg::LPS_P_DESC.len);
-                bool enq2 = enqueueCommand<SensorReadCmd>(PROCESSOR_Q, SensorReg::LPS_T_DESC.id, SensorReg::LPS_T_DESC.reg, SensorReg::LPS_T_DESC.len);
+                bool enq1 = false ;
+                enq1= enqueueCommand<SensorReadCmd>(PROCESSOR_Q, SensorReg::LPS_P_DESC.id, SensorReg::LPS_P_DESC.reg, SensorReg::LPS_P_DESC.len);
+                bool enq2 = false ;
+                enq2= enqueueCommand<SensorReadCmd>(PROCESSOR_Q, SensorReg::LPS_T_DESC.id, SensorReg::LPS_T_DESC.reg, SensorReg::LPS_T_DESC.len);
                 enqueued = enq1 && enq2;
                 state = ProducerState::ReadPAV;
             } else {
@@ -615,7 +657,7 @@ void logger_thread(void) {
 
 K_THREAD_DEFINE(producer_tid,  ThreadConfig::StackSmall, producer_thread,  NULL, NULL, NULL, ThreadConfig::PrioProducer,  0, 0);
 K_THREAD_DEFINE(processor_tid, ThreadConfig::StackLarge, processor_thread, NULL, NULL, NULL, ThreadConfig::PrioProcessor, 0, 0);
-K_THREAD_DEFINE(logger_tid,    ThreadConfig::StackSmall, logger_thread,    NULL, NULL, NULL, ThreadConfig::PrioLogger,    0, 0);
+K_THREAD_DEFINE(logger_tid,    ThreadConfig::StackLarge, logger_thread,    NULL, NULL, NULL, ThreadConfig::PrioLogger,    0, 0);
 
 extern "C" void sys_trace_thread_switched_in_user(struct k_thread *thread) {
     if (thread == producer_tid || thread == processor_tid || thread == logger_tid) {

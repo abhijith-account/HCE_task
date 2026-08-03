@@ -1,4 +1,3 @@
-
 #include <gtest/gtest.h>
 #include <array>
 #include <cstring>
@@ -7,6 +6,7 @@
 #include <string>
 #include <cstdarg>
 #include <algorithm>
+#include <vector>
 
 #define private public
 #define protected public
@@ -19,6 +19,9 @@
 #include "Power_Management_System.h"
 
 #define MOCK_UART_DTR_CTRL 1
+#ifndef ENOSYS
+#define ENOSYS 38
+#endif
 
 static std::array<char,512> mock_tx_buffer;
 static size_t mock_tx_index=0;
@@ -30,6 +33,7 @@ static uint32_t mock_dtr_state=0;
 static void (*mock_uart_irq_cb)(const device*, void*)=nullptr;
 static void* mock_uart_cb_data=nullptr;
 bool mock_uart_line_ctrl_fail = false;
+int mock_uart_line_ctrl_ret = 0;
 const device* dummy_uart_dev=reinterpret_cast<const device*>(0xCDC);
 bool mock_uart_callback_fail = false;
 extern DeviceContext sys_context;
@@ -42,15 +46,19 @@ int mock_snprintf_fail_on_call = -1;
 int mock_snprintf_truncate_on_call = -1;
 int mock_snprintf_exact_return_on_call = -1;
 int mock_snprintf_exact_return_value = 0;
+
+int mock_flash_read_call_count = 0;
+int mock_flash_read_fail_on_call = -1;
 extern uint32_t virtual_uptime;
 
-struct MockNvsEntry {
-    uint16_t id;
-    std::array<uint8_t, 64> data;
-    size_t len;
-    bool active;
+struct MockFcbEntry {
+    uint32_t offset;
+    uint16_t len;
 };
-static std::array<MockNvsEntry, 32> mock_nvs_map;
+static std::array<uint8_t, 4096> mock_flash_area;
+static uint32_t mock_flash_offset = 0;
+static std::vector<MockFcbEntry> mock_fcb_entries;
+static size_t mock_fcb_iterator = 0;
 
 extern bool test_parseIntToken(std::string_view token, int& out_value) noexcept;
 extern std::string_view test_trim(std::string_view s) noexcept;
@@ -73,43 +81,45 @@ extern "C" {
     int wdt_install_timeout(const struct device *dev,const struct wdt_timeout_cfg *cfg){ return 0; }
     int wdt_setup(const struct device *dev,uint8_t options){ return 0; }
     int wdt_feed(const struct device *dev,int channel_id){ return 0; }
-    int nvs_mount(struct nvs_fs *fs){ return 0; }
-    ssize_t nvs_read(struct nvs_fs *fs,uint16_t id,void *data,size_t len){
-        for (const auto& entry : mock_nvs_map) {
-            if (entry.active && entry.id == id) {
-                size_t copy_len = std::min(len, entry.len);
-                std::memcpy(data, entry.data.data(), copy_len);
-                return static_cast<ssize_t>(copy_len);
-            }
-        }
-        return -2;
-    }
-    ssize_t nvs_write(struct nvs_fs *fs,uint16_t id,const void *data,size_t len){
+    
+    int fcb_init(int f_area_id, struct fcb *fcb) { return 0; }
+    int fcb_rotate(struct fcb *fcb) { return 0; }
+    int fcb_append(struct fcb *fcb, uint16_t len, struct fcb_entry *loc) {
         if (mock_nvs_write_fail) return -1;
-        const uint8_t* bytes = static_cast<const uint8_t*>(data);
-        MockNvsEntry* empty_slot = nullptr;
-        for (auto& entry : mock_nvs_map) {
-            if (entry.active && entry.id == id) {
-                size_t copy_len = std::min(len, entry.data.size());
-                std::memcpy(entry.data.data(), bytes, copy_len);
-                entry.len = copy_len;
-                return static_cast<ssize_t>(copy_len);
-            }
-            if (!entry.active && empty_slot == nullptr) empty_slot = &entry;
+        loc->fe_elem_off = mock_flash_offset;
+        mock_fcb_entries.push_back({mock_flash_offset, len});
+        mock_flash_offset += len;
+        return 0;
+    }
+    int fcb_append_finish(struct fcb *fcb, struct fcb_entry *append_loc) { return 0; }
+    int fcb_getnext(struct fcb *fcb, struct fcb_entry *loc) {
+        if (loc->fe_sector == nullptr) {
+            mock_fcb_iterator = 0;
+            loc->fe_sector = (void*)1; 
         }
-        if (empty_slot) {
-            empty_slot->active = true;
-            empty_slot->id = id;
-            size_t copy_len = std::min(len, empty_slot->data.size());
-            std::memcpy(empty_slot->data.data(), bytes, copy_len);
-            empty_slot->len = copy_len;
-            return static_cast<ssize_t>(copy_len);
+        if (mock_fcb_iterator < mock_fcb_entries.size()) {
+            loc->fe_elem_off = mock_fcb_entries[mock_fcb_iterator].offset;
+            mock_fcb_iterator++;
+            return 0;
         }
         return -1;
     }
+    int flash_area_write(const struct flash_area *fa, off_t off, const void *src, size_t len) {
+        if (mock_nvs_write_fail) return -1;
+        memcpy(&mock_flash_area[off], src, len);
+        return 0;
+    }
+    int flash_area_read(const struct flash_area *fa, off_t off, void *dst, size_t len) {
+        mock_flash_read_call_count++;
+        if (mock_flash_read_call_count == mock_flash_read_fail_on_call) return -1;
+        memcpy(dst, &mock_flash_area[off], len);
+        return 0;
+    }
+    
     bool device_is_ready(const struct device *dev) { return !force_device_not_ready; }
     int uart_line_ctrl_get(const struct device *dev,uint32_t ctrl,uint32_t *val){
         if (mock_uart_line_ctrl_fail) return -1;
+        if (mock_uart_line_ctrl_ret != 0) return mock_uart_line_ctrl_ret;
         if (ctrl == MOCK_UART_DTR_CTRL) *val = mock_dtr_state;
         return 0;
     }
@@ -154,7 +164,22 @@ class UsbShellTestSuite : public ::testing::Test {
           mock_rx_head = 0;
           mock_rx_tail = 0;
           mock_nvs_write_fail = false;
-          for (auto& entry : mock_nvs_map) entry.active = false;
+          
+          static bool first_run = true;
+          static std::vector<MockFcbEntry> backup_fcb_entries;
+          static std::array<uint8_t, 4096> backup_flash_area;
+          static uint32_t backup_flash_offset = 0;
+
+          if (first_run) {
+              mock_fcb_entries.clear();
+              mock_flash_offset = 0;
+              mock_flash_area.fill(0);
+          } else {
+              mock_fcb_entries = backup_fcb_entries;
+              mock_flash_offset = backup_flash_offset;
+              mock_flash_area = backup_flash_area;
+          }
+          
           enable_snprintf_mock = false;
           mock_snprintf_fail_on_call = -1;
           mock_snprintf_truncate_on_call = -1;
@@ -162,7 +187,11 @@ class UsbShellTestSuite : public ::testing::Test {
           mock_snprintf_call_count = 0;
           virtual_uptime = 0;
 
+          mock_flash_read_call_count = 0;
+          mock_flash_read_fail_on_call = -1;
+
           mock_uart_line_ctrl_fail = false;
+          mock_uart_line_ctrl_ret = 0;
           mock_uart_callback_fail = false;
           force_device_not_ready = false;
           mock_uart_irq_update_fail = false;
@@ -176,9 +205,15 @@ class UsbShellTestSuite : public ::testing::Test {
 
           EXPECT_TRUE(facade.init());
           ConfigStore::getInstance().init();
+          
+          if (first_run) {
+              backup_fcb_entries = mock_fcb_entries;
+              backup_flash_offset = mock_flash_offset;
+              backup_flash_area = mock_flash_area;
+              first_run = false;
+          }
       }
       void TearDown() override {
-
           PowerManager::getInstance().notifyAfterWakeup();
       }
 };
@@ -269,6 +304,27 @@ TEST_F(UsbShellTestSuite,RingBufferAndOverflow){
     testing::internal::CaptureStdout();
     inject_mock_uart_data("Z");
     EXPECT_EQ(testing::internal::GetCapturedStdout().find("USB RX overflow"),std::string_view::npos);
+}
+
+TEST_F(UsbShellTestSuite, BackspaceHandling) {
+    UsbCdcFacade local;
+    ASSERT_TRUE(local.init());
+    mock_rx_head = mock_rx_tail = 0;
+    
+    inject_mock_uart_data("a\b");
+    inject_mock_uart_data("b\n");
+    
+    std::array<char, MAX_CMD_LEN> cmd;
+    ASSERT_TRUE(local.readLine(cmd));
+    EXPECT_STREQ(cmd.data(), "b");
+
+    inject_mock_uart_data("\b\n");
+    ASSERT_TRUE(local.readLine(cmd));
+    EXPECT_STREQ(cmd.data(), "");
+
+    inject_mock_uart_data("x\x7Fy\n");
+    ASSERT_TRUE(local.readLine(cmd));
+    EXPECT_STREQ(cmd.data(), "y");
 }
 
 TEST_F(UsbShellTestSuite, ReadLineVariants) {
@@ -496,9 +552,16 @@ TEST_F(UsbShellTestSuite,SetRateVariants){
     mock_nvs_write_fail=false;
 
     mock_tx_index=0;
-    for(auto& entry : mock_nvs_map) {
-        if(entry.id == static_cast<uint16_t>(ConfigKey::ALARM_THRESHOLD_BASE)) entry.active = false;
+    for (auto it = mock_fcb_entries.begin(); it != mock_fcb_entries.end(); ) {
+        FcbRecordHeader header;
+        memcpy(&header, &mock_flash_area[it->offset], sizeof(header));
+        if (static_cast<uint16_t>(header.key) == static_cast<uint16_t>(ConfigKey::ALARM_THRESHOLD_BASE)) {
+            it = mock_fcb_entries.erase(it);
+        } else {
+            ++it;
+        }
     }
+    
     ConfigStore::getInstance().init(); shell.dispatchCommand("set_rate 1001 75");
     EXPECT_NE(std::string_view(mock_tx_buffer.data(),mock_tx_index).find("Success"),std::string_view::npos);
 
@@ -512,6 +575,8 @@ TEST_F(UsbShellTestSuite,SetRateVariants){
     EXPECT_NE(std::string(mock_tx_buffer.data(),mock_tx_index).find("Usage"),std::string_view::npos);
     mock_tx_index=0; shell.dispatchCommand("set_rate 1001 2147483648");
     EXPECT_NE(std::string(mock_tx_buffer.data(),mock_tx_index).find("Usage"),std::string_view::npos);
+
+    ASSERT_TRUE(ConfigStore::getInstance().init());    
 
     auto &cfg = ConfigStore::getInstance();
     uint8_t slot=0;
@@ -545,7 +610,7 @@ TEST_F(UsbShellTestSuite,StatusFormatting){
     SbsBattery battery(&i2c,&ctx);
     UsbShell shell(&ctx,&battery);
 
-    mock_dtr_state=1; for(auto& entry : mock_nvs_map) entry.active = false; mock_tx_index=0;
+    mock_dtr_state=1; mock_fcb_entries.clear(); mock_tx_index=0;
     shell.dispatchCommand("status");
     EXPECT_NE(std::string_view(mock_tx_buffer.data(),mock_tx_index).find("\"device_id\":0"),std::string_view::npos);
 
@@ -582,7 +647,7 @@ TEST_F(UsbShellTestSuite,StatusFormatting){
     mock_tx_index=0; mock_tx_buffer.fill(0); shell.dispatchCommand("status");
     EXPECT_NE(std::string(mock_tx_buffer.data(),mock_tx_index).find("\"battery_soc\":85"),std::string_view::npos);
 
-    for(auto& entry : mock_nvs_map) entry.active = false;
+    mock_fcb_entries.clear();
     ConfigStore::getInstance().init();
     auto snap2 = shell.collectStatus();
     EXPECT_EQ(snap2.slots[0].rate,0);
@@ -814,10 +879,13 @@ TEST_F(UsbShellTestSuite, SetRateWithoutAlarmThreshold)
          slot <= InfusionDeviceConfig::MaxSlot;
          ++slot)
     {
-        for (auto& entry : mock_nvs_map) {
-            if (entry.id == static_cast<uint16_t>(
-                    static_cast<uint16_t>(ConfigKey::ALARM_THRESHOLD_BASE) + slot)) {
-                entry.active = false;
+        for (auto it = mock_fcb_entries.begin(); it != mock_fcb_entries.end(); ) {
+            FcbRecordHeader header;
+            memcpy(&header, &mock_flash_area[it->offset], sizeof(header));
+            if (static_cast<uint16_t>(header.key) == static_cast<uint16_t>(ConfigKey::ALARM_THRESHOLD_BASE) + slot) {
+                it = mock_fcb_entries.erase(it);
+            } else {
+                ++it;
             }
         }
     }
@@ -839,9 +907,13 @@ TEST_F(UsbShellTestSuite, SetRateThresholdExhaustiveBranches) {
     uint8_t slot = 0;
     ASSERT_TRUE(cfg.findSlotByDeviceId(1001, slot));
 
-    for(auto& entry : mock_nvs_map) {
-        if(entry.id == static_cast<uint16_t>(static_cast<uint16_t>(ConfigKey::ALARM_THRESHOLD_BASE) + slot)) {
-            entry.active = false;
+    for (auto it = mock_fcb_entries.begin(); it != mock_fcb_entries.end(); ) {
+        FcbRecordHeader header;
+        memcpy(&header, &mock_flash_area[it->offset], sizeof(header));
+        if (static_cast<uint16_t>(header.key) == static_cast<uint16_t>(ConfigKey::ALARM_THRESHOLD_BASE) + slot) {
+            it = mock_fcb_entries.erase(it);
+        } else {
+            ++it;
         }
     }
 
@@ -874,6 +946,7 @@ TEST_F(UsbShellTestSuite, PowerObserverAndSafeHaltGating) {
 
     PowerManager::getInstance().notifyBeforeSleep();
     inject_mock_uart_data("status\n");
+    mock_tx_index = 0;
     run_thread_once = false;
     shell.process();
     EXPECT_EQ(mock_tx_index, 0u) << "Shell should ignore input while sleeping";
@@ -887,6 +960,7 @@ TEST_F(UsbShellTestSuite, PowerObserverAndSafeHaltGating) {
     PowerManager::getInstance().notifySleepAborted();
     mock_tx_index = 0;
     inject_mock_uart_data("log dump\n");
+    mock_tx_index = 0;
     run_thread_once = false;
     shell.process();
     EXPECT_GT(mock_tx_index, 0u) << "Shell should resume if sleep is aborted";
@@ -894,6 +968,7 @@ TEST_F(UsbShellTestSuite, PowerObserverAndSafeHaltGating) {
     ctx.current_state = SystemState::SAFE_HALT;
     mock_tx_index = 0;
     inject_mock_uart_data("status\n");
+    mock_tx_index = 0;
     run_thread_once = false;
     shell.process();
     EXPECT_EQ(mock_tx_index, 0u) << "Shell should halt processing in SAFE_HALT state";
@@ -945,3 +1020,145 @@ TEST_F(UsbShellTestSuite, BatteryCacheAndStateOfCharge) {
     EXPECT_EQ(soc.error, CommFault::CACHE_INVALID);
 }
 
+TEST_F(UsbShellTestSuite, LogDumpWithEntries) {
+    DeviceContext ctx;
+    I2CManager i2c(dummy_uart_dev);
+    SbsBattery battery(&i2c, &ctx);
+    UsbShell shell(&ctx, &battery);
+    
+    mock_fcb_entries.clear();
+    
+    auto& cfg = ConfigStore::getInstance();
+    
+    // Add multiple entries to fully cover the (i % 10) == 0 alternating condition
+    ConfigStore::LogEntry log_entry1{12345, 0x01, 100};
+    ConfigStore::LogEntry log_entry2{12346, 0x02, 200};
+    ASSERT_TRUE(cfg.set(ConfigKey::FULL_CHARGE_LOG, log_entry1));
+    ASSERT_TRUE(cfg.set(ConfigKey::FULL_CHARGE_LOG, log_entry2));
+    
+    mock_dtr_state = 1;
+    mock_tx_index = 0;
+    mock_tx_buffer.fill(0);
+    shell.dispatchCommand("log dump");
+    std::string_view out(mock_tx_buffer.data(), mock_tx_index);
+    EXPECT_NE(out.find("Event: 1"), std::string_view::npos);
+    EXPECT_NE(out.find("Event: 2"), std::string_view::npos);
+}
+
+TEST_F(UsbShellTestSuite, LogDumpReadFailure) {
+    DeviceContext ctx;
+    I2CManager i2c(dummy_uart_dev);
+    SbsBattery battery(&i2c, &ctx);
+    UsbShell shell(&ctx, &battery);
+    
+    mock_fcb_entries.clear();
+    
+    auto& cfg = ConfigStore::getInstance();
+    ConfigStore::LogEntry log_entry{12345, 0x01, 100};
+    ASSERT_TRUE(cfg.set(ConfigKey::FULL_CHARGE_LOG, log_entry));
+    
+    mock_dtr_state = 1;
+    mock_tx_index = 0;
+    mock_tx_buffer.fill(0);
+    
+    mock_flash_read_call_count = 0;
+    // Call 1: getStoredLogCount reads header (returns 0)
+    // Call 2: getLogEntry reads header (returns 0)
+    // Call 3: getLogEntry reads payload (returns -1 due to mock instruction)
+    mock_flash_read_fail_on_call = 3; 
+    
+    shell.dispatchCommand("log dump");
+    std::string_view out(mock_tx_buffer.data(), mock_tx_index);
+    EXPECT_NE(out.find("Failed to read log entry"), std::string_view::npos);
+}
+
+TEST_F(UsbShellTestSuite, LogDumpSnprintfFailure) {
+    DeviceContext ctx;
+    I2CManager i2c(dummy_uart_dev);
+    SbsBattery battery(&i2c, &ctx);
+    UsbShell shell(&ctx, &battery);
+    
+    mock_fcb_entries.clear();
+    
+    auto& cfg = ConfigStore::getInstance();
+    ConfigStore::LogEntry log_entry{12345, 0x01, 100};
+    ASSERT_TRUE(cfg.set(ConfigKey::FULL_CHARGE_LOG, log_entry));
+    
+    mock_dtr_state = 1;
+    mock_tx_index = 0;
+    mock_tx_buffer.fill(0);
+    
+    enable_snprintf_mock = true;
+    mock_snprintf_call_count = 0;
+    mock_snprintf_fail_on_call = 1; 
+    
+    testing::internal::CaptureStdout();
+    shell.dispatchCommand("log dump");
+    std::string stdout_out = testing::internal::GetCapturedStdout();
+    
+    enable_snprintf_mock = false;
+    mock_snprintf_fail_on_call = -1;
+    
+    EXPECT_NE(stdout_out.find("formatting truncated or failed"), std::string_view::npos);
+}
+
+TEST_F(UsbShellTestSuite, LogDumpSnprintfTruncation) {
+    DeviceContext ctx;
+    I2CManager i2c(dummy_uart_dev);
+    SbsBattery battery(&i2c, &ctx);
+    UsbShell shell(&ctx, &battery);
+    
+    mock_fcb_entries.clear();
+    
+    auto& cfg = ConfigStore::getInstance();
+    ConfigStore::LogEntry log_entry{12345, 0x01, 100};
+    ASSERT_TRUE(cfg.set(ConfigKey::FULL_CHARGE_LOG, log_entry));
+    
+    mock_dtr_state = 1;
+    mock_tx_index = 0;
+    mock_tx_buffer.fill(0);
+    
+    enable_snprintf_mock = true;
+    mock_snprintf_call_count = 0;
+    mock_snprintf_truncate_on_call = 1; 
+    
+    testing::internal::CaptureStdout();
+    shell.dispatchCommand("log dump");
+    std::string stdout_out = testing::internal::GetCapturedStdout();
+    
+    enable_snprintf_mock = false;
+    mock_snprintf_truncate_on_call = -1;
+    
+    EXPECT_NE(stdout_out.find("formatting truncated or failed"), std::string_view::npos);
+}
+
+TEST_F(UsbShellTestSuite, SetRateEmptyArgs) {
+    DeviceContext ctx;
+    I2CManager i2c(dummy_uart_dev);
+    SbsBattery battery(&i2c, &ctx);
+    UsbShell shell(&ctx, &battery);
+    
+    mock_dtr_state = 1;
+    mock_tx_index = 0;
+    mock_tx_buffer.fill(0);
+    shell.dispatchCommand("set_rate  \t  ");
+    std::string_view out(mock_tx_buffer.data(), mock_tx_index);
+    EXPECT_NE(out.find("Usage"), std::string_view::npos);
+}
+
+TEST_F(UsbShellTestSuite, IsConnectedMockUartFallback) {
+    // 1. Cover ret == -ENOTSUP (short-circuits ||) and !dtr_ready == true
+    mock_uart_line_ctrl_ret = -ENOTSUP;
+    facade.dtr_ready = false; 
+    testing::internal::CaptureStdout();
+    EXPECT_TRUE(facade.isConnected());
+    EXPECT_NE(testing::internal::GetCapturedStdout().find("Virtual USB Terminal Connected (Mock UART mode)"), std::string_view::npos);
+
+    // 2. Cover ret == -ENOTSUP and !dtr_ready == false
+    EXPECT_TRUE(facade.isConnected());
+
+    // 3. Cover ret == -ENOSYS (evaluates both sides of ||)
+    mock_uart_line_ctrl_ret = -ENOSYS;
+    facade.dtr_ready = false;
+    EXPECT_TRUE(facade.isConnected());
+}

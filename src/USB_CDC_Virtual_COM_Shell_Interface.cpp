@@ -3,14 +3,16 @@
 #include <zephyr/drivers/uart.h>
 #include <zephyr/sys/__assert.h>
 #include "Persistent_Configuration_System.h"
+#include <zephyr/usb/usb_device.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/sys/reboot.h>
+#include <zephyr/kernel.h>
 #include <charconv>
 #include <cstring>
 #include <cstdarg>
-#include <stdio.h>
 #include <cstdio>
 #include <utility>
+
 #ifdef IS_TEST_ENVIRONMENT
     extern bool run_thread_once;
     static inline bool evaluate_and_clear_loop() noexcept {
@@ -22,7 +24,6 @@
     extern int mock_snprintf_call_count;
     extern int mock_snprintf_fail_on_call;
     extern int mock_snprintf_truncate_on_call;
-
     extern int mock_snprintf_exact_return_on_call;
     extern int mock_snprintf_exact_return_value;
     static inline int testable_snprintf(char* str, size_t size, const char* format, ...) {
@@ -41,12 +42,14 @@
     #define THREAD_LOOP_CONDITION true
     #define SNPRINTF snprintf
 #endif
+
 LOG_MODULE_REGISTER(USB_CLI, LOG_LEVEL_INF);
+
 namespace {
 
     class ShellPowerObserver final : public IPowerObserver {
     private:
-        atomic_t is_sleeping;
+        atomic_t is_sleeping{};
     public:
         ShellPowerObserver() { atomic_set(&is_sleeping, 0); }
         void beforeSleep() override { atomic_set(&is_sleeping, 1); }
@@ -65,6 +68,7 @@ namespace {
         auto [ptr, ec] = std::from_chars(first, last, out_value);
         return ec == std::errc{} && ptr == last;
     }
+
     [[nodiscard]] std::string_view trim(std::string_view s) noexcept {
         while (!s.empty() && (s.front() == ' ' || s.front() == '\t')) {
             s.remove_prefix(1);
@@ -74,6 +78,7 @@ namespace {
         }
         return s;
     }
+
     constexpr std::string_view kSetRatePrefix = "set_rate";
     constexpr std::string_view kStatusCmd     = "status";
     constexpr std::string_view kLogDumpCmd    = "log dump";
@@ -93,7 +98,6 @@ namespace {
 }
 
 #ifdef IS_TEST_ENVIRONMENT
-
 bool test_parseIntToken(std::string_view token, int& out_value) noexcept {
     return parseIntToken(token, out_value);
 }
@@ -106,14 +110,16 @@ UsbCdcFacade::UsbCdcFacade() noexcept {
     dev = DEVICE_DT_GET(DT_ALIAS(cdc_acm_uart0));
     __ASSERT(dev != nullptr, "CDC ACM device missing from devicetree");
 }
+
 extern DeviceContext sys_context;
 UsbShell diag_shell(&sys_context, getSmartBatteryInstance());
+
 bool UsbCdcFacade::init() {
     if (initialized) {
         return true;
     }
     if (!device_is_ready(dev)) {
-        LOG_ERR("Failed to enable USB");
+        LOG_ERR("Failed to enable USB device");
         return false;
     }
     const int ret = uart_irq_callback_user_data_set(dev, uartInterruptHandler, this);
@@ -121,14 +127,28 @@ bool UsbCdcFacade::init() {
         LOG_ERR("Failed to set UART IRQ callback (err %d)", ret);
         return false;
     }
-    uart_irq_rx_enable(dev);
+    
     initialized = true;
     LOG_INF("USB CDC Facade Initialized");
     return true;
 }
+
 bool UsbCdcFacade::isConnected() {
     uint32_t dtr = 0;
     const int ret = uart_line_ctrl_get(dev, UART_LINE_CTRL_DTR, &dtr);
+    
+    if (ret == -ENOTSUP || ret == -ENOSYS) {
+        // The hardware UART being used as a mock doesn't support DTR.
+        // We treat it as permanently connected.
+        line_ctrl_get_failed_logged = false;
+        if (!dtr_ready) {
+            LOG_INF("Virtual USB Terminal Connected (Mock UART mode)");
+            uart_irq_rx_enable(dev);
+            dtr_ready = true;
+        }
+        return true;
+    }
+    
     if (ret != 0) {
         if (!line_ctrl_get_failed_logged) {
             LOG_ERR("uart_line_ctrl_get failed (err %d)", ret);
@@ -140,12 +160,15 @@ bool UsbCdcFacade::isConnected() {
     const bool currently_connected = (dtr != 0);
     if (currently_connected && !dtr_ready) {
         LOG_INF("USB Terminal Connected (DTR High)");
+        uart_irq_rx_enable(dev);
     } else if (!currently_connected && dtr_ready) {
         LOG_WRN("USB Terminal Disconnected (DTR Low)");
+        uart_irq_rx_disable(dev);
     }
     dtr_ready = currently_connected;
     return dtr_ready;
 }
+
 void UsbCdcFacade::transmit(std::string_view data) noexcept {
     if (!isConnected()) {
         return;
@@ -154,6 +177,7 @@ void UsbCdcFacade::transmit(std::string_view data) noexcept {
         uart_poll_out(dev, c);
     }
 }
+
 void UsbCdcFacade::uartInterruptHandler(const device* dev, void* user_data) {
     auto* self = static_cast<UsbCdcFacade*>(user_data);
     uart_irq_update(dev);
@@ -161,6 +185,22 @@ void UsbCdcFacade::uartInterruptHandler(const device* dev, void* user_data) {
         bool discard_rest_of_burst = false;
         uint8_t c;
         while (uart_fifo_read(dev, &c, 1) == 1) {
+            if (c == '\b' || c == 0x7F) {
+                const std::size_t head = self->rx_head.load(std::memory_order_relaxed);
+                const std::size_t tail = self->rx_tail.load(std::memory_order_acquire);
+                
+                if (head != tail) {
+                    // Visually erase the character on the terminal
+                    uart_poll_out(dev, '\b');
+                    uart_poll_out(dev, ' ');
+                    uart_poll_out(dev, '\b');
+                    
+                    // Step the ring buffer head pointer back by one
+                    self->rx_head.store((head + RX_RING_BUF_SIZE - 1) % RX_RING_BUF_SIZE, std::memory_order_release);
+                }
+                continue;
+            }
+            uart_poll_out(dev, c);
             if (discard_rest_of_burst) {
                 self->dropped_bytes.fetch_add(1, std::memory_order_relaxed);
                 continue;
@@ -188,6 +228,7 @@ void UsbCdcFacade::uartInterruptHandler(const device* dev, void* user_data) {
         }
     }
 }
+
 bool UsbCdcFacade::readLine(CommandBuffer& out_line) noexcept {
     const std::size_t head = rx_head.load(std::memory_order_acquire);
     std::size_t tail = rx_tail.load(std::memory_order_relaxed);
@@ -225,7 +266,9 @@ bool UsbCdcFacade::readLine(CommandBuffer& out_line) noexcept {
     overflow_logged.store(false, std::memory_order_release);
     return true;
 }
+
 UsbShell::UsbShell(DeviceContext* ctx, SbsBattery* bat) noexcept : sys_ctx(ctx), battery(bat) {}
+
 const std::array<UsbShell::Command, UsbShell::CommandCount> UsbShell::kCommandTable{{
     {kStatusCmd,     false, &UsbShell::cmdStatus},
     {kSetRatePrefix, true,  &UsbShell::cmdSetRate},
@@ -243,10 +286,8 @@ void UsbShell::process() {
 
     CommandBuffer cmd_buf;
     do {
-
         if (!g_shellPowerObserver.isSleeping() && sys_ctx->getState() != SystemState::SAFE_HALT) {
             if (usb.isConnected() && usb.readLine(cmd_buf)) {
-
                 PowerManager::getInstance().reportActivity();
 
                 if (cmd_buf[0] != '\0') {
@@ -266,13 +307,13 @@ void UsbShell::dispatchCommand(std::string_view cmd) {
     for (const auto& entry : kCommandTable) {
         if (entry.takes_args) {
             if (cmd.starts_with(entry.name)) {
-
                 if (cmd.size() == entry.name.size()) {
                     cmdSetRate(std::string_view{});
                     return;
                 }
-
-                if (cmd[entry.name.size()] == ' ') {
+                const char separator = cmd[entry.name.size()];
+                // EDITED: Enforce strict space separator for the initial command separation
+                if (separator == ' ') {
                     cmdSetRate(trim(cmd.substr(entry.name.size() + 1)));
                     return;
                 }
@@ -290,6 +331,7 @@ void UsbShell::dispatchCommand(std::string_view cmd) {
     }
     usb.transmit(kUnknownCmdMsg);
 }
+
 UsbShell::StatusSnapshot UsbShell::collectStatus() const {
     static_assert(InfusionDeviceConfig::MaxSlot - InfusionDeviceConfig::MinSlot + 1
                       <= StatusSnapshot::MaxTrackedSlots,
@@ -313,6 +355,7 @@ UsbShell::StatusSnapshot UsbShell::collectStatus() const {
     snap.slot_count = idx;
     return snap;
 }
+
 std::size_t UsbShell::formatStatus(const StatusSnapshot& snap, StatusBuffer& out_buf) {
     int offset = SNPRINTF(out_buf.data(), out_buf.size(),
         "{\"sys_state\":%d,\"battery_soc\":%u,\"devices\":[", snap.state_val, snap.battery_soc);
@@ -329,9 +372,11 @@ std::size_t UsbShell::formatStatus(const StatusSnapshot& snap, StatusBuffer& out
             break;
         }
         const auto& slot = snap.slots[i];
+        
         const int written = SNPRINTF(out_buf.data() + offset, out_buf.size() - offset,
             "%s{\"device_id\":%u,\"rate\":%u,\"alarm_threshold\":%u}",
             (i == 0) ? "" : ",", slot.device_id, slot.rate, slot.alarm_threshold);
+            
         if (written <= 0 || static_cast<std::size_t>(written) >= out_buf.size() - offset) {
             LOG_WRN("Status JSON truncated after %u of %u device entries", i, snap.slot_count);
             break;
@@ -348,21 +393,27 @@ std::size_t UsbShell::formatStatus(const StatusSnapshot& snap, StatusBuffer& out
     }
     return static_cast<std::size_t>(offset);
 }
+
 void UsbShell::cmdStatus([[maybe_unused]] std::string_view args) noexcept {
     const StatusSnapshot snap = collectStatus();
-    StatusBuffer json_stack_buf;
+    static StatusBuffer json_stack_buf;
     [[maybe_unused]] const std::size_t json_len = formatStatus(snap, json_stack_buf);
     usb.transmit(json_stack_buf.data());
 }
+
 void UsbShell::cmdSetRate(std::string_view args) noexcept {
     args = trim(args);
-    const std::size_t space_pos = args.find(' ');
-    if (space_pos == std::string_view::npos) {
+
+    const std::size_t separator_pos = args.find_first_of(" \t");
+
+    if (separator_pos == std::string_view::npos) {
         usb.transmit(kSetRateUsageMsg);
         return;
     }
-    std::string_view device_str = trim(args.substr(0, space_pos));
-    std::string_view rate_str   = trim(args.substr(space_pos + 1));
+
+    std::string_view device_str = trim(args.substr(0, separator_pos));
+    std::string_view rate_str = trim(args.substr(separator_pos + 1));
+    
     int device_id_in = 0;
     int rate_in        = 0;
     if (!parseIntToken(device_str, device_id_in) ||
@@ -374,7 +425,7 @@ void UsbShell::cmdSetRate(std::string_view args) noexcept {
         usb.transmit(kRateRangeMsg);
         return;
     }
-    const uint8_t rate = static_cast<uint8_t>(rate_in);
+    const auto rate = static_cast<uint8_t>(rate_in);
     auto& cfg = ConfigStore::getInstance();
     uint8_t slot = 0;
     if (!cfg.findSlotByDeviceId(static_cast<uint32_t>(device_id_in), slot)) {
@@ -399,19 +450,54 @@ void UsbShell::cmdSetRate(std::string_view args) noexcept {
         usb.transmit(kPersistFailMsg);
     }
 }
+
 void UsbShell::cmdLogDump([[maybe_unused]] std::string_view args) noexcept {
     usb.transmit(kLogDumpHeader);
-    usb.transmit(kLogDumpBooted);
-    usb.transmit(kLogDumpI2c);
+
+    auto& cfg = ConfigStore::getInstance();
+    const uint32_t logCount = cfg.getStoredLogCount();
+
+    if (logCount == 0) {
+        usb.transmit("No logs found.\r\n");
+    } else {
+        std::array<char, 128> logLineBuffer{}; 
+
+        for (uint32_t i = 0; i < logCount; ++i) {
+            ConfigStore::LogEntry entry{};
+            if (cfg.getLogEntry(i, entry)) {
+                
+                const int written = SNPRINTF(logLineBuffer.data(), logLineBuffer.size(),
+                    "[%08lu] Event: %u, Data: %d\r\n", 
+                    static_cast<unsigned long>(entry.timestamp_ms),
+                    static_cast<unsigned>(entry.event_id), 
+                    static_cast<int>(entry.event_data));
+
+                if (written > 0 && static_cast<std::size_t>(written) < logLineBuffer.size()) {
+                    usb.transmit(std::string_view(logLineBuffer.data(), static_cast<std::size_t>(written)));
+                } else {
+                    LOG_WRN("Log entry %u formatting truncated or failed", i);
+                }
+            } else {
+                usb.transmit("Error: Failed to read log entry.\r\n");
+                break;
+            }
+            
+            if ((i % 10) == 0) {
+                k_yield(); 
+            }
+        }
+    }
+
     usb.transmit(kLogDumpFooter);
 }
+
 void UsbShell::cmdReboot([[maybe_unused]] std::string_view args) noexcept {
     usb.transmit(kRebootingMsg);
     k_msleep(100);
     sys_reboot(SYS_REBOOT_COLD);
 }
+
 void shell_thread(void) {
     diag_shell.process();
 }
 K_THREAD_DEFINE(shell_tid, ShellStackSize, shell_thread, nullptr, nullptr, nullptr, ShellPriority, 0, 0);
-

@@ -1,8 +1,48 @@
+/ {
+    chosen {
+        /* Route Zephyr system logs and console to the USB Virtual COM port */
+        zephyr,console = &usart2;
+        zephyr,shell-uart = &usart2;
+    };
+
+    aliases {
+        cdc-acm-uart0 = &cdc_acm_uart0;
+    };
+
+    zephyr_user: zephyr,user {
+        io-channels = <&adc1 0>;
+    };
+
+    cpus {
+        cpu0: cpu@0 {
+            cpu-power-states = <&stop0>;
+        };
+    };
+
+    power-states {
+        stop0: state0 {
+            compatible = "zephyr,power-state";
+            power-state-name = "suspend-to-ram";
+            min-residency-us = <100000>;
+            exit-latency-us = <100>;
+        };
+    };
+};
+
+/* Disable ST-Link UART for Standalone Mode */
+&usart2 {
+    status = "okay";
+    current-speed = <115200>;
+    pinctrl-0 = <&usart2_tx_pa2 &usart2_rx_pa3>;
+    pinctrl-names = "default";
+};
+
 &i2c1 {
     status = "okay";
-
+    pinctrl-0 = <&i2c1_scl_pb8 &i2c1_sda_pb9>;
+    pinctrl-1 = <&i2c1_scl_pb8 &i2c1_sda_pb9>;
+    pinctrl-names = "default", "sleep";
     clock-frequency = <I2C_BITRATE_STANDARD>;
-
     zephyr,pm-device-runtime-auto;
 
     lps22hb: lps22hb@5c {
@@ -21,13 +61,11 @@
         status = "okay";
     };
     ina226: ina226@40 {
-    compatible = "ti,ina226";
-    reg = <0x40>;
-
-    rshunt-micro-ohms = <100000>;
-    current-lsb-microamps = <25>;
-
-    status = "okay";
+        compatible = "ti,ina226";
+        reg = <0x40>;
+        rshunt-micro-ohms = <100000>;
+        current-lsb-microamps = <25>;
+        status = "okay";
     };
 };
 
@@ -35,9 +73,10 @@
     status = "okay";
     #address-cells = <1>;
     #size-cells = <0>;
+    pinctrl-0 = <&adc1_in0_pa0>;
     pinctrl-names = "default";
     st,adc-prescaler = <4>;
-    pinctrl-0 = <&adc1_in0_pa0>;
+    
     channel@0 {
         reg = <0>;
         zephyr,gain = "ADC_GAIN_1";
@@ -47,24 +86,8 @@
     };
 };
 
-/ {
-    zephyr_user: zephyr,user {
-        io-channels = <&adc1 0>;
-    };
-};
-
 &gpioa {
     status = "okay";
-};
-
-&usart2 {
-    status = "okay";
-    current-speed = <9600>;
-    zephyr,pm-device-runtime-auto;
-    daly_bms: daly_bms {
-        compatible = "daly,bms";
-        status = "okay";
-    };
 };
 
 &iwdg {
@@ -76,34 +99,66 @@
     wakeup-source;
 };
 
-/ {
-    cpus {
-        cpu0: cpu@0 {
-            cpu-power-states = <&stop0>;
-        };
-    };
+/* Enable the External High-Speed Clock */
+&clk_hse {
+    clock-frequency = <DT_FREQ_M(8)>; 
+    status = "okay";
+};
 
-    power-states {
-        stop0: state0 {
-            compatible = "zephyr,power-state";
-            power-state-name = "suspend-to-ram";
-            min-residency-us = <100000>;
-            exit-latency-us = <100>;
-        };
-    };
+/* 1. Configure the Main PLL using HSE for a perfect 48 MHz USB Clock */
+&pll {
+    clocks = <&clk_hse>; /* Changed from clk_hsi to clk_hse */
+    div-m = <8>;         /* 8MHz / 8 = 1MHz VCO Input */
+    mul-n = <384>;       /* 1MHz * 384 = 384MHz VCO */
+    div-p = <4>;         /* 384MHz / 4 = 96MHz System Clock */
+    div-q = <8>;         /* 384MHz / 8 = 48MHz EXACTLY for USB! */
+    status = "okay";
+};
 
-    aliases {
-        cdc-acm-uart0 = &cdc_acm_uart0;
-        bms = &daly_bms;
-    };
+/* 2. Apply the new PLL settings to the RCC (Reset and Clock Control) */
+&rcc {
+    clocks = <&pll>;
+    clock-frequency = <DT_FREQ_M(96)>;
+    ahb-prescaler = <1>;
+    apb1-prescaler = <2>;
+    apb2-prescaler = <1>;
 };
 
 &usbotg_fs {
     status = "okay";
-    pinctrl-0 = <&usb_otg_fs_dm_pa11 &usb_otg_fs_dp_pa12>;
+    pinctrl-0 = <&usb_otg_fs_dm_pa11 &usb_otg_fs_dp_pa12 &usb_otg_fs_vbus_pa9>;
     pinctrl-names = "default";
-    zephyr,pm-device-runtime-auto;
+    
+    /* ADD THIS BACK HERE */
     cdc_acm_uart0: cdc_acm_uart0 {
         compatible = "zephyr,cdc-acm-uart";
+        label = "CDC_ACM_0";
+    };
+};
+
+/* Nuke the default overlapping partitions */
+/delete-node/ &boot_partition;
+/delete-node/ &slot0_partition;
+/delete-node/ &slot1_partition;
+/delete-node/ &scratch_partition;
+/delete-node/ &storage_partition;
+
+&flash0 {
+    partitions {
+        compatible = "fixed-partitions";
+        #address-cells = <1>;
+        #size-cells = <1>;
+
+        /* Application space: Sectors 0-5 (256 KB MAX) */
+        code_partition: partition@0 {
+            label = "image-0";
+            reg = <0x00000000 0x00040000>;
+        };
+
+        /* Storage space: Sectors 6-7 (256 KB) */
+        storage_partition: partition@40000 {
+            label = "storage";
+            reg = <0x00040000 0x00040000>;
+        };
     };
 };

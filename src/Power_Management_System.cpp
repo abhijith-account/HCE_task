@@ -4,12 +4,14 @@
 #include <zephyr/pm/pm.h>
 #include <zephyr/pm/policy.h>
 #include <zephyr/pm/device.h>
-#include <zephyr/drivers/counter.h>
+#include <zephyr/drivers/rtc.h>
+#include <cstring>
 
 LOG_MODULE_REGISTER(PWR_SYS, LOG_LEVEL_INF);
 
 #ifdef IS_TEST_ENVIRONMENT
     extern bool run_thread_once;
+    __attribute__((weak)) bool g_force_init_fail = false;
     #define THREAD_LOOP_CONDITION (run_thread_once ? (run_thread_once = false, true) : false)
 #else
     #define THREAD_LOOP_CONDITION true
@@ -17,8 +19,7 @@ LOG_MODULE_REGISTER(PWR_SYS, LOG_LEVEL_INF);
 
 static struct k_timer sim_rtc_timer;
 static void sim_rtc_timer_handler(struct k_timer *timer_id) {
-    // Manually trigger the FSM's wake callback
-    PowerManager::rtc_alarm_handler(nullptr, 0, 0, &PowerManager::getInstance());
+    PowerManager::rtc_alarm_handler(nullptr, 0, &PowerManager::getInstance());
 }
 
 constexpr uint32_t ACTIVE_TIMEOUT_MS = 30000;
@@ -29,20 +30,23 @@ constexpr uint32_t THREAD_PERIOD_MS  = 1000;
 extern const struct device* i2c_hardware;
 extern const struct device* uart_hardware;
 extern const struct device* usb_hardware;
+extern const struct device* adc_hardware;
 extern DeviceContext sys_context;
 
 #ifdef IS_TEST_ENVIRONMENT
-
     __attribute__((weak)) const struct device* rtc_hardware = nullptr;
     __attribute__((weak)) const struct device* uart_hardware = nullptr;
     __attribute__((weak)) const struct device* usb_hardware = nullptr;
+    __attribute__((weak)) const struct device* adc_hardware = nullptr;
 #else
-    const struct device* rtc_hardware = DEVICE_DT_GET_OR_NULL(DT_NODELABEL(rtc));
-    const struct device* uart_hardware = DEVICE_DT_GET(DT_CHOSEN(zephyr_console));
-    #ifndef CONFIG_BOARD_MPS2_AN386
-    const struct device* usb_hardware = DEVICE_DT_GET(DT_NODELABEL(cdc_acm_uart0));
+    const struct device* rtc_hardware = DEVICE_DT_GET_OR_NULL(DT_ALIAS(rtc0));
+    const struct device* adc_hardware = DEVICE_DT_GET_OR_NULL(DT_NODELABEL(adc1)); 
+    const struct device* usb_hardware = DEVICE_DT_GET_OR_NULL(DT_ALIAS(cdc_acm_uart0));
+
+    #if DT_NODE_EXISTS(DT_CHOSEN(zephyr_console)) && DT_NODE_HAS_COMPAT(DT_CHOSEN(zephyr_console), st_stm32_usart)
+        const struct device* uart_hardware = DEVICE_DT_GET(DT_CHOSEN(zephyr_console));
     #else
-    const struct device* usb_hardware = nullptr;
+        const struct device* uart_hardware = DEVICE_DT_GET_OR_NULL(DT_ALIAS(uart_hardware));
     #endif
 #endif
 
@@ -54,6 +58,7 @@ PowerManager::PowerManager()
       i2c_dev(nullptr),
       uart_dev(nullptr),
       usb_dev(nullptr),
+      adc_dev(nullptr),
       observer_count(0),
       fault_context(nullptr),
       consecutive_pm_failures(0)
@@ -68,13 +73,16 @@ PowerManager& PowerManager::getInstance() {
     return instance;
 }
 
-bool PowerManager::init(const struct device* rtc, const struct device* i2c,
-                         const struct device* uart, const struct device* usb,
-                         DeviceContext* fault_ctx) {
+bool PowerManager::init(const struct device* rtc, const struct device* i2c,const struct device* uart, const struct device* usb,const struct device* adc, DeviceContext* fault_ctx) {
+    #ifdef IS_TEST_ENVIRONMENT
+    // Allows the test framework to evaluate the false branch of pwr_manager.init()
+    if (g_force_init_fail) return false;
+    #endif
     rtc_dev = rtc;
     i2c_dev = i2c;
     uart_dev = uart;
     usb_dev = usb;
+    adc_dev = adc;
     fault_context = fault_ctx;
     last_activity_time.store(k_uptime_get_32());
 
@@ -95,12 +103,20 @@ bool PowerManager::init(const struct device* rtc, const struct device* i2c,
         LOG_WRN("USB device not ready. Bypassing for simulation.");
         usb_dev = nullptr;
     }
+    
+    if (adc_dev == nullptr || !device_is_ready(adc_dev)) {
+        LOG_WRN("ADC device not ready. Bypassing for simulation.");
+        adc_dev = nullptr;
+    }
 
     if (rtc_dev) {
-        int err = counter_start(rtc_dev);
-        if (err) {
-            LOG_ERR("Failed to start RTC counter (err: %d)", err);
-            return false;
+        /* Seed the RTC if it is uninitialized (important for QEMU emulator) */
+        struct rtc_time time;
+        if (rtc_get_time(rtc_dev, &time) != 0) {
+            memset(&time, 0, sizeof(time));
+            time.tm_mday = 1;
+            time.tm_year = 126; // 2026
+            rtc_set_time(rtc_dev, &time);
         }
     }
 
@@ -248,8 +264,7 @@ void PowerManager::processFSM() {
     }
 }
 
-void PowerManager::rtc_alarm_handler(const struct device* , uint8_t ,
-                                      uint32_t , void* user_data) {
+void PowerManager::rtc_alarm_handler(const struct device* , uint16_t , void* user_data) {
     auto* self = static_cast<PowerManager*>(user_data);
     atomic_set(&self->wake_pending, 1);
 }
@@ -322,26 +337,33 @@ bool StopState::enter(PowerManager& pm) {
     sleep_prepared = false;
     int err = 0;
     if (pm.getRtcDev() != nullptr) {
-        err = counter_cancel_channel_alarm(pm.getRtcDev(), 0);
-        if (err && err != -ETIME && err != -ENOTSUP) {
-            LOG_WRN("Failed to cancel RTC alarm (err: %d)", err);
+        /* 1. Disable existing alarm by passing a null mask/time */
+        rtc_alarm_set_time(pm.getRtcDev(), 0, 0, nullptr);
+
+        /* 2. Get current time */
+        struct rtc_time time;
+        rtc_get_time(pm.getRtcDev(), &time);
+
+        /* 3. Add STOP_WAKEUP_US (60 seconds) */
+        time.tm_sec += (STOP_WAKEUP_US / 1000000);
+
+        /* Normalize seconds and minutes for the 60s jump */
+        if (time.tm_sec >= 60) {
+            time.tm_sec -= 60;
+            time.tm_min += 1;
+            if (time.tm_min >= 60) {
+                time.tm_min -= 60;
+                time.tm_hour += 1;
+                if (time.tm_hour >= 24) time.tm_hour = 0;
+            }
         }
 
-        struct counter_alarm_cfg alarm_cfg = {};
-        alarm_cfg.flags = 0;
+        /* 4. Set Callback and Alarm */
+        rtc_alarm_set_callback(pm.getRtcDev(), 0, PowerManager::rtc_alarm_handler, &pm);
 
-        uint32_t ticks = counter_us_to_ticks(pm.getRtcDev(), STOP_WAKEUP_US);
-        if (ticks == 0) {
-            LOG_ERR("Alarm tick conversion failed or overflowed. Aborting STOP entry.");
-            pm.reportPmFailure();
-            return false;
-        }
+        uint16_t mask = RTC_ALARM_TIME_MASK_SECOND | RTC_ALARM_TIME_MASK_MINUTE | RTC_ALARM_TIME_MASK_HOUR;
+        err = rtc_alarm_set_time(pm.getRtcDev(), 0, mask, &time);
 
-        alarm_cfg.ticks = ticks;
-        alarm_cfg.callback = PowerManager::rtc_alarm_handler;
-        alarm_cfg.user_data = &pm;
-
-        err = counter_set_channel_alarm(pm.getRtcDev(), 0, &alarm_cfg);
         if (err) {
             LOG_ERR("Failed to set RTC alarm (err: %d). Aborting STOP entry.", err);
             pm.reportPmFailure();
@@ -356,36 +378,44 @@ bool StopState::enter(PowerManager& pm) {
     pm.setExpectedWakeTime(pm.getSleepTime() + (STOP_WAKEUP_US / 1000));
 
     pm.notifyBeforeSleep();
+    
+    err = pm_device_action_run(pm.getAdcDev(), PM_DEVICE_ACTION_SUSPEND);
+    if (err && err != -EALREADY && err != -ENOSYS && err != -ENOTSUP) {
+        LOG_ERR("Failed to suspend ADC peripheral (err: %d). Rolling back.", err);
+        if (pm.getRtcDev()) {
+            rtc_alarm_set_time(pm.getRtcDev(), 0, 0, nullptr);
+        }
+        pm.notifySleepAborted();
+        pm.reportPmFailure();
+        return false;
+    }
 
     err = pm_device_action_run(pm.getI2cDev(), PM_DEVICE_ACTION_SUSPEND);
     if (err && err != -EALREADY && err != -ENOSYS && err != -ENOTSUP) {
         LOG_ERR("Failed to suspend I2C peripheral (err: %d). Rolling back.", err);
-        (void)counter_cancel_channel_alarm(pm.getRtcDev(), 0);
+        if (pm.getRtcDev()) {
+            rtc_alarm_set_time(pm.getRtcDev(), 0, 0, nullptr);
+        }
         pm.notifySleepAborted();
         pm.reportPmFailure();
         return false;
     }
 
-    err = pm_device_action_run(pm.getUartDev(), PM_DEVICE_ACTION_SUSPEND);
-    if (err && err != -EALREADY && err != -ENOSYS && err != -ENOTSUP) {
-        LOG_ERR("Failed to suspend UART peripheral (err: %d). Rolling back.", err);
-        (void)pm_device_action_run(pm.getI2cDev(), PM_DEVICE_ACTION_RESUME);
-        (void)counter_cancel_channel_alarm(pm.getRtcDev(), 0);
-        pm.notifySleepAborted();
-        pm.reportPmFailure();
-        return false;
-    }
-
-    err = pm_device_action_run(pm.getUsbDev(), PM_DEVICE_ACTION_SUSPEND);
-    if (err && err != -EALREADY && err != -ENOSYS && err != -ENOTSUP) {
-        LOG_ERR("Failed to suspend USB peripheral (err: %d). Rolling back.", err);
-        (void)pm_device_action_run(pm.getUartDev(), PM_DEVICE_ACTION_RESUME);
-        (void)pm_device_action_run(pm.getI2cDev(), PM_DEVICE_ACTION_RESUME);
-        (void)counter_cancel_channel_alarm(pm.getRtcDev(), 0);
-        pm.notifySleepAborted();
-        pm.reportPmFailure();
-        return false;
-    }
+   #ifndef IS_TEST_ENVIRONMENT
+     #if DT_NODE_EXISTS(DT_CHOSEN(zephyr_console)) && DT_NODE_HAS_COMPAT(DT_CHOSEN(zephyr_console), st_stm32_usart)
+      err = pm_device_action_run(pm.getUartDev(), PM_DEVICE_ACTION_SUSPEND);
+      if (err && err != -EALREADY && err != -ENOSYS && err != -ENOTSUP) {
+          LOG_ERR("Failed to suspend UART peripheral (err: %d). Rolling back.", err);
+          (void)pm_device_action_run(pm.getI2cDev(), PM_DEVICE_ACTION_RESUME);
+          if (pm.getRtcDev()) {
+              rtc_alarm_set_time(pm.getRtcDev(), 0, 0, nullptr);
+          }
+          pm.notifySleepAborted();
+          pm.reportPmFailure();
+          return false;
+      }
+      #endif
+    #endif
 
     sleep_prepared = true;
     pm_policy_state_lock_put(PM_STATE_SUSPEND_TO_RAM, PM_ALL_SUBSTATES);
@@ -402,8 +432,8 @@ void StopState::exit(PowerManager& pm) {
     }
     int err = 0;
     if (pm.getRtcDev() != nullptr) {
-        int err = counter_cancel_channel_alarm(pm.getRtcDev(), 0);
-        if (err && err != -ETIME && err != -ENOTSUP) {
+        int err = rtc_alarm_set_time(pm.getRtcDev(), 0, 0, nullptr);
+        if (err && err != -ENOTSUP) {
             LOG_WRN("Failed to cancel RTC alarm on STOP exit (err: %d)", err);
         }
     } else {
@@ -424,21 +454,25 @@ void StopState::exit(PowerManager& pm) {
 
     bool resume_ok = true;
 
-    err = pm_device_action_run(pm.getUsbDev(), PM_DEVICE_ACTION_RESUME);
-    if (err && err != -EALREADY && err != -ENOSYS && err != -ENOTSUP) {
-        LOG_ERR("Failed to resume USB (err: %d)", err);
-        resume_ok = false;
-    }
-
-    err = pm_device_action_run(pm.getUartDev(), PM_DEVICE_ACTION_RESUME);
-    if (err && err != -EALREADY && err != -ENOSYS && err != -ENOTSUP) {
-        LOG_ERR("Failed to resume UART (err: %d)", err);
-        resume_ok = false;
-    }
+    #ifndef IS_TEST_ENVIRONMENT
+      #if DT_NODE_EXISTS(DT_CHOSEN(zephyr_console)) && DT_NODE_HAS_COMPAT(DT_CHOSEN(zephyr_console), st_stm32_usart)
+      err = pm_device_action_run(pm.getUartDev(), PM_DEVICE_ACTION_RESUME);
+      if (err && err != -EALREADY && err != -ENOSYS && err != -ENOTSUP) {
+          LOG_ERR("Failed to resume UART (err: %d)", err);
+          resume_ok = false;
+      }
+      #endif
+    #endif
 
     err = pm_device_action_run(pm.getI2cDev(), PM_DEVICE_ACTION_RESUME);
     if (err && err != -EALREADY && err != -ENOSYS && err != -ENOTSUP) {
         LOG_ERR("Failed to resume I2C (err: %d)", err);
+        resume_ok = false;
+    }
+    
+    err = pm_device_action_run(pm.getAdcDev(), PM_DEVICE_ACTION_RESUME);
+    if (err && err != -EALREADY && err != -ENOSYS && err != -ENOTSUP) {
+        LOG_ERR("Failed to resume ADC (err: %d)", err);
         resume_ok = false;
     }
 
@@ -454,11 +488,10 @@ void StopState::exit(PowerManager& pm) {
 
 void power_monitor_thread() {
     auto& pwr_manager = PowerManager::getInstance();
-    if (!pwr_manager.init(rtc_hardware, i2c_hardware, uart_hardware, usb_hardware, &sys_context)) {
+    if (!pwr_manager.init(rtc_hardware, i2c_hardware, uart_hardware, usb_hardware, adc_hardware, &sys_context)) {
         LOG_ERR("Power Manager Init Failed. Thread halting.");
         return;
     }
-
     do {
         pwr_manager.processFSM();
 
@@ -472,4 +505,3 @@ void power_monitor_thread() {
 }
 
 K_THREAD_DEFINE(pr_tid, 1024, power_monitor_thread, NULL, NULL, NULL, 14, 0, 0);
-

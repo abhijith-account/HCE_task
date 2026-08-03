@@ -50,7 +50,7 @@ namespace {
 }
 
 namespace CurveFitting {
-    struct OcvPoint { uint16_t mv; uint8_t soc_pct; };
+    struct OcvPoint { uint16_t mv{}; uint8_t soc_pct{}; };
     struct NtcPoint { int32_t mv; int16_t temp_tenths; };
 
     static constexpr OcvPoint OCV_LUT[] = {
@@ -74,7 +74,8 @@ namespace CurveFitting {
 
     template <size_t N>
     uint8_t interpolateOcv(const OcvPoint (&lut)[N], uint16_t mv) {
-        if (mv <= lut[0].mv) return lut[0].soc_pct;
+        if (mv <= lut[0].mv) { return lut[0].soc_pct;
+}
 
         for (size_t i = 0; i < N - 1; ++i) {
             if (mv <= lut[i+1].mv) {
@@ -89,7 +90,8 @@ namespace CurveFitting {
 
     template <size_t N>
     int16_t interpolateNtc(const NtcPoint (&lut)[N], int32_t mv) {
-        if (mv >= lut[0].mv) return lut[0].temp_tenths;
+        if (mv >= lut[0].mv) { return lut[0].temp_tenths;
+}
 
         for (size_t i = 0; i < N - 1; ++i) {
             if (mv >= lut[i+1].mv) {
@@ -104,10 +106,6 @@ namespace CurveFitting {
 }
 
 namespace Thermistor {
-#ifdef CONFIG_BOARD_MPS2_AN386
-bool init() { return true; }
-Reading<int16_t> readCelsius() { return Reading<int16_t>::Ok(250); }
-#else
 const struct adc_dt_spec thermistor_adc_chan = ADC_DT_SPEC_GET_BY_IDX(DT_NODELABEL(zephyr_user), 0);
 
 bool init() {
@@ -138,14 +136,15 @@ Reading<int16_t> readCelsius() {
         sum_mv += mv;
     }
 
-    int32_t avg_mv = sum_mv / static_cast<int32_t>(OVERSAMPLE_COUNT);
+    int32_t avg_mv = 0 ;
+    avg_mv = sum_mv / static_cast<int32_t>(OVERSAMPLE_COUNT);
 
     if ((avg_mv <= 0) || (avg_mv >= SUPPLY_MILLIVOLTS)) return Reading<int16_t>::Err(Fault::OUT_OF_RANGE);
+    
     const int16_t celsius_tenths = CurveFitting::interpolateNtc(CurveFitting::NTC_LUT, avg_mv);
 
     return Reading<int16_t>::Ok(celsius_tenths);
 }
-#endif
 }
 
 namespace INA226 {
@@ -170,8 +169,9 @@ Result<int16_t> Driver::readBusVoltageRaw() {
 Result<int16_t> Driver::readCurrentRaw() {
     const Result<uint16_t> r = i2c->readWord(I2C_ADDR, REG_CURRENT);
     if (!r.isOk()) return Result<int16_t>::Err(r.error);
-
+    
     uint16_t raw_val = r.unwrap();
+    
     return Result<int16_t>::Ok(static_cast<int16_t>((raw_val << 8) | (raw_val >> 8)));
 }
 
@@ -183,7 +183,8 @@ SbsBattery::SbsBattery(I2CManager* i2c_bus, DeviceContext* context, WatchdogFeed
       cache_mutex{}, last_valid_comm_time(k_uptime_get_32()), consecutive_comm_failures(0U),
       consecutive_mutex_failures(0U),
       cache{}, stats{}, soc_initialized(false), accumulated_uAh(0), last_poll_time_ms(0U),
-      consecutive_jump_rejects(0U), rest_period_start_ms(0U) {}
+      consecutive_jump_rejects(0U), rest_period_start_ms(0U),
+      kf_soc_pct(0.0f), kf_p_covariance(1.0f) {}
 
 bool SbsBattery::init() {
     k_mutex_init(&cache_mutex);
@@ -306,6 +307,11 @@ void SbsBattery::seedOrResyncCoulombCounter(uint16_t pack_mv, int32_t current_ma
     if (force_seed || full_charge || full_discharge || long_rest_resync) {
         const uint8_t ocv_soc_pct = estimateSocFromVoltage(pack_mv);
         accumulated_uAh = (static_cast<int64_t>(ocv_soc_pct) * BatteryLimits::NOMINAL_CAPACITY_MAH * 1000LL) / 100LL;
+        
+        // FIX: Seed the Kalman Filter states
+        kf_soc_pct = static_cast<float>(ocv_soc_pct);
+        kf_p_covariance = 1.0f; 
+        
         soc_initialized = true;
     }
 }
@@ -318,19 +324,47 @@ void SbsBattery::updateStateAndPublish(uint16_t pack_mv, int32_t current_ma, int
     }
 
     const uint32_t now = k_uptime_get_32();
+    
+    // FIX: Moved max_uAh to the top so both the Kalman math and the clamping logic can use it
+    const int64_t max_uAh = static_cast<int64_t>(BatteryLimits::NOMINAL_CAPACITY_MAH) * 1000LL;
 
     if (!soc_initialized) {
         seedOrResyncCoulombCounter(pack_mv, current_ma, true);
         last_poll_time_ms = now;
     } else {
         const uint32_t delta_ms = now - last_poll_time_ms;
-        const int64_t uAh_change = (static_cast<int64_t>(current_ma) * static_cast<int64_t>(delta_ms)) / 3600LL;
-        accumulated_uAh += uAh_change;
+        const float dt_hours = static_cast<float>(delta_ms) / 3600000.0f;
+        const float capacity_mah = static_cast<float>(BatteryLimits::NOMINAL_CAPACITY_MAH);
+
+        // --- 1. KALMAN PREDICT (Coulomb Counting) ---
+        float soc_change = (static_cast<float>(current_ma) * dt_hours / capacity_mah) * 100.0f;
+        kf_soc_pct += soc_change;
+        kf_p_covariance += BatteryLimits::KF_PROCESS_NOISE; 
+
+        // --- 2. MEASUREMENT (OCV Compensation) ---
+        int32_t ir_drop_mv = (current_ma * BatteryLimits::ESTIMATED_PACK_IR_MILLIOHMS) / 1000;
+        int32_t estimated_ocv_mv = static_cast<int32_t>(pack_mv) - ir_drop_mv;
+        estimated_ocv_mv = std::clamp(estimated_ocv_mv, 0, static_cast<int32_t>(UINT16_MAX));
+        float z_measured_soc = static_cast<float>(estimateSocFromVoltage(static_cast<uint16_t>(estimated_ocv_mv)));
+
+        // --- 3. KALMAN UPDATE (Sensor Fusion) ---
+        float r_noise = (absolute(current_ma) < BatteryLimits::REST_CURRENT_THRESHOLD_MA) 
+                        ? BatteryLimits::KF_MEAS_NOISE_REST 
+                        : BatteryLimits::KF_MEAS_NOISE_ACTIVE;
+
+        float kalman_gain = kf_p_covariance / (kf_p_covariance + r_noise);
+        
+        kf_soc_pct = kf_soc_pct + kalman_gain * (z_measured_soc - kf_soc_pct);
+        kf_p_covariance = (1.0f - kalman_gain) * kf_p_covariance;
+        kf_soc_pct = std::clamp(kf_soc_pct, 0.0f, 100.0f);
+
+        // Sync back to traditional Coulomb accumulator
+        accumulated_uAh = static_cast<int64_t>((kf_soc_pct / 100.0f) * static_cast<float>(max_uAh));
+        
         last_poll_time_ms = now;
         seedOrResyncCoulombCounter(pack_mv, current_ma, false);
     }
 
-    const int64_t max_uAh = static_cast<int64_t>(BatteryLimits::NOMINAL_CAPACITY_MAH) * 1000LL;
     accumulated_uAh = std::clamp(accumulated_uAh, int64_t{0}, max_uAh);
     const uint8_t soc_pct = static_cast<uint8_t>((accumulated_uAh * 100LL) / max_uAh);
 
@@ -351,29 +385,7 @@ void SbsBattery::updateStateAndPublish(uint16_t pack_mv, int32_t current_ma, int
 }
 
 void SbsBattery::pollHardwareAndUpdateCache() {
-#ifdef CONFIG_BOARD_MPS2_AN386
 
-    static uint16_t mock_voltage_mv = 11100U;
-    static int32_t mock_current_ma = -200;
-    static int16_t mock_temp_tenths = 250;
-
-    if (mock_voltage_mv <= BatteryLimits::PACK_MIN_VOLTAGE_MV + 200) {
-        mock_current_ma = 500;
-    } else if (mock_voltage_mv >= BatteryLimits::PACK_MAX_VOLTAGE_MV - 200) {
-        mock_current_ma = -300;
-    }
-
-    if (mock_current_ma > 0) {
-        mock_voltage_mv += 12;
-        if (mock_temp_tenths < 400) mock_temp_tenths += 2;
-    } else {
-        mock_voltage_mv -= 10;
-        if (mock_temp_tenths > 220) mock_temp_tenths -= 1;
-    }
-    updateStateAndPublish(11100U, -150, 250);
-    feedWatchdog();
-    return;
-#else
     const result<int16_t> voltage_raw = fetchBusVoltageRawWithRetry();
     if (!voltage_raw.success) {
         publishError(voltage_raw.error);
@@ -381,7 +393,7 @@ void SbsBattery::pollHardwareAndUpdateCache() {
     }
 
     const uint32_t pack_mv_32 = static_cast<uint32_t>(voltage_raw.value) + (static_cast<uint32_t>(voltage_raw.value) / 4U);
-    if (pack_mv_32 > BatteryLimits::MAX_VALID_VOLTAGE_MV) {
+    if (pack_mv_32 > BatteryLimits::MAX_VALID_VOLTAGE_MV || pack_mv_32 < BatteryLimits::MIN_VALID_VOLTAGE_MV) {
         atomic_inc(&stats.validation_errors);
         publishError(CommFault::VALIDATION_ERROR);
         return;
@@ -409,7 +421,8 @@ void SbsBattery::pollHardwareAndUpdateCache() {
 
     const BmsCache snapshot = getCacheSnapshot();
 
-    if (snapshot.valid || snapshot.last_error == CommFault::VALIDATION_ERROR) {
+    // FIX 2: Only perform jump detection if the cache actually has historical data!
+    if (snapshot.timestamp_ms != 0 && (snapshot.valid || snapshot.last_error == CommFault::VALIDATION_ERROR)) {
         const int32_t v_delta = absolute(static_cast<int32_t>(pack_mv) - static_cast<int32_t>(snapshot.voltage.value));
         const int32_t c_delta = absolute(current_ma - snapshot.current.value);
         const int32_t prev_temp_tenths_c = static_cast<int32_t>(snapshot.temperature.value) - Thermistor::KELVIN_OFFSET_TENTHS;
@@ -433,7 +446,7 @@ void SbsBattery::pollHardwareAndUpdateCache() {
     updateStateAndPublish(pack_mv, current_ma, temp_tenths.value);
     atomic_inc(&stats.successful_publishes);
     feedWatchdog();
-#endif
+
 }
 
 void SbsBattery::publishError(CommFault fault) {
@@ -533,9 +546,13 @@ void SbsBattery::processFSM() {
     const BatteryFSM current_fsm_state = current_state.load();
 
     if (current_fsm_state != BatteryFSM::CUTOFF) {
-        if (current_ma > 0) current_state.store(BatteryFSM::CHARGING);
-        else if (current_ma < 0) current_state.store(BatteryFSM::DISCHARGING);
-        else current_state.store(BatteryFSM::IDLE);
+        if (current_ma > 0) {
+            current_state.store(BatteryFSM::CHARGING);
+        } else if (current_ma < 0) {
+            current_state.store(BatteryFSM::DISCHARGING);
+        } else {
+            current_state.store(BatteryFSM::IDLE);
+        }
     }
 
     if (soc_pct >= 100U) {
@@ -589,13 +606,14 @@ namespace {
 
     class BmsPowerObserver final : public IPowerObserver {
     private:
-        atomic_t is_sleeping;
+        atomic_t is_sleeping{};
     public:
         BmsPowerObserver() { atomic_set(&is_sleeping, 0); }
         void beforeSleep() override { atomic_set(&is_sleeping, 1); }
         void afterWakeup() override {
             atomic_set(&is_sleeping, 0);
-            if (smart_battery != nullptr) smart_battery->notifySystemWakeup();
+            if (smart_battery != nullptr) { smart_battery->notifySystemWakeup();
+}
         }
         void sleepAborted() override { atomic_set(&is_sleeping, 0); }
         bool isSleeping() const noexcept { return atomic_get(&is_sleeping) != 0; }
@@ -658,7 +676,8 @@ void bms_comm_thread(void) {
 
     k_sem_give(&bms_objects_ready_sem);
     PowerManager::getInstance().registerObserver(&g_bmsPowerObserver);
-
+    smart_battery->notifySystemWakeup(); 
+    k_msleep(250);
     do {
        if (!g_bmsPowerObserver.isSleeping()) {
            smart_battery->pollHardwareAndUpdateCache();
@@ -669,6 +688,8 @@ void bms_comm_thread(void) {
 
 void battery_monitor_thread(void) {
     k_sem_take(&bms_objects_ready_sem, K_FOREVER);
+    
+    k_msleep(500); 
 
     do {
         if (smart_battery != nullptr) {
@@ -676,15 +697,18 @@ void battery_monitor_thread(void) {
                 smart_battery->processFSM();
 
                 const auto vol = smart_battery->getVoltage();
+                const auto curr = smart_battery->getCurrent(); 
                 const auto soc = smart_battery->getStateOfCharge();
                 const auto temp = smart_battery->getTemperature();
+                
+                if (vol.success && curr.success && soc.success && temp.success) {
 
-                if (vol.success && soc.success && temp.success) {
-
-                    int32_t temp_c_tenths = static_cast<int32_t>(temp.value.value) - Thermistor::KELVIN_OFFSET_TENTHS;
-
-                    LOG_INF("BATTERY: Voltage = %u mV | SoC = %u%% | Temp = %d.%d C",
+                    int32_t temp_c_tenths = 0 ;
+                    temp_c_tenths = static_cast<int32_t>(temp.value.value) - Thermistor::KELVIN_OFFSET_TENTHS;
+                    
+                    LOG_INF("BATTERY: Voltage = %u mV | Current = %d mA | SoC = %u%% | Temp = %d.%d C",
                             vol.value.value,
+                            curr.value.value,
                             soc.value.value,
                             temp_c_tenths / 10, absolute(temp_c_tenths % 10));
                 }
@@ -700,6 +724,6 @@ void battery_monitor_thread(void) {
     } while(THREAD_LOOP_CONDITION);
 }
 
-K_THREAD_DEFINE(bms_comm_tid, 384, bms_comm_thread, NULL, NULL, NULL, BatteryLimits::BMS_THREAD_PRIO, 0, 0);
-K_THREAD_DEFINE(battery_tid, 512, battery_monitor_thread, NULL, NULL, NULL, BatteryLimits::MONITOR_THREAD_PRIO, 0, 0);
+K_THREAD_DEFINE(bms_comm_tid, 1024, bms_comm_thread, NULL, NULL, NULL, BatteryLimits::BMS_THREAD_PRIO, 0, 0);
+K_THREAD_DEFINE(battery_tid, 1024, battery_monitor_thread, NULL, NULL, NULL, BatteryLimits::MONITOR_THREAD_PRIO, 0, 0);
 
