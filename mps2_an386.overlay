@@ -3,10 +3,10 @@
 
 / {
     zephyr_user: zephyr,user {
-        io-channels = <&adc1 0>;
+        io-channels = <&adc_emul0 0>;
     };
 
-    adc1: adc_emul {
+    adc_emul0: adc_emul {
         compatible = "zephyr,adc-emul";
         nchannels = <1>;
         #io-channel-cells = <1>;

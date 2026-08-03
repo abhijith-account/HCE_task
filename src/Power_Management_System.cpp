@@ -40,7 +40,11 @@ extern DeviceContext sys_context;
     __attribute__((weak)) const struct device* adc_hardware = nullptr;
 #else
     const struct device* rtc_hardware = DEVICE_DT_GET_OR_NULL(DT_ALIAS(rtc0));
-    const struct device* adc_hardware = DEVICE_DT_GET_OR_NULL(DT_NODELABEL(adc1)); 
+    #ifndef (CONFIG_BOARD_MPS2_AN386)
+    const struct device* adc_hardware = DEVICE_DT_GET_OR_NULL(DT_NODELABEL(adc1));
+    #else
+    const struct device* adc_hardware = DEVICE_DT_GET_OR_NULL(DT_NODELABEL(adc_emul0));
+    #endif
     const struct device* usb_hardware = DEVICE_DT_GET_OR_NULL(DT_ALIAS(cdc_acm_uart0));
 
     #if DT_NODE_EXISTS(DT_CHOSEN(zephyr_console)) && DT_NODE_HAS_COMPAT(DT_CHOSEN(zephyr_console), st_stm32_usart)
