@@ -1,4 +1,3 @@
-
 #include <gtest/gtest.h>
 #include <array>
 #include <cstring>
@@ -237,16 +236,17 @@ TEST_F(SmartBatteryTestSuite, FetchCurrent_RetryAndFail) {
 }
 
 TEST_F(SmartBatteryTestSuite, PollHardware_ValidationRejects) {
-
-    g_i2c_mock_v_val = 30000;
+    g_i2c_mock_v_val = 0;
     battery.pollHardwareAndUpdateCache();
     EXPECT_EQ(battery.cache.last_error, CommFault::VALIDATION_ERROR);
 
     battery.cache.last_error = CommFault::NONE;
     battery.cache.valid = true;
     g_i2c_mock_v_val = 10000;
-    g_i2c_mock_i_val = 32000;
-    battery.pollHardwareAndUpdateCache();
+    g_i2c_mock_i_val = 0x7FFF;
+    for (int i = 0; i < 10; ++i) {
+        battery.pollHardwareAndUpdateCache();
+    }
     EXPECT_EQ(battery.cache.last_error, CommFault::VALIDATION_ERROR);
 }
 
@@ -343,13 +343,14 @@ TEST_F(SmartBatteryTestSuite, CoulombCounter_AtRestDuration) {
 
 TEST_F(SmartBatteryTestSuite, UpdateStateAndPublish_ClampLimits) {
     battery.soc_initialized = true;
+    battery.last_poll_time_ms = virtual_uptime;
 
-    battery.accumulated_uAh = 50000 * 1000LL;
-    battery.updateStateAndPublish(11000, 100, 250);
+    battery.kf_soc_pct = 200.0f;
+    battery.updateStateAndPublish(13000, 0, 250);
     EXPECT_EQ(battery.cache.soc.value, 100);
 
-    battery.accumulated_uAh = -50000;
-    battery.updateStateAndPublish(11000, 100, 250);
+    battery.kf_soc_pct = -50.0f;
+    battery.updateStateAndPublish(8000, 0, 250);
     EXPECT_EQ(battery.cache.soc.value, 0);
 }
 
