@@ -40,7 +40,7 @@ extern DeviceContext sys_context;
     __attribute__((weak)) const struct device* adc_hardware = nullptr;
 #else
     const struct device* rtc_hardware = DEVICE_DT_GET_OR_NULL(DT_ALIAS(rtc0));
-    #ifndef (CONFIG_BOARD_MPS2_AN386)
+    #ifndef CONFIG_BOARD_MPS2_AN386
     const struct device* adc_hardware = DEVICE_DT_GET_OR_NULL(DT_NODELABEL(adc1));
     #else
     const struct device* adc_hardware = DEVICE_DT_GET_OR_NULL(DT_NODELABEL(adc_emul0));
