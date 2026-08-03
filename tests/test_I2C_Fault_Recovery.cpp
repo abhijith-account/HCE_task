@@ -462,10 +462,12 @@ TEST_F(I2CFaultRecoveryTestSuite, CacheFullLogsError) {
     I2CManager mgr(mock_dev);
     mock_i2c_err_code = 0;
 
-    for(int i = 0; i < 15; i++) {
+    // Fill all 64 available cache slots
+    for(int i = 0; i < 64; i++) {
         mgr.readRegister(1, i);
     }
 
+    // The 65th unique read will trigger the full cache log
     testing::internal::CaptureStdout();
     mgr.readRegister(1, 99);
     auto output = testing::internal::GetCapturedStdout();
