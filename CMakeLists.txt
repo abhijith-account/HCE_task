@@ -8,20 +8,22 @@ zephyr_cc_option(-Wno-deprecated-declarations -Wno-deprecated)
 target_include_directories(app PRIVATE include)
 
 target_sources(app PRIVATE
-	src/main.cpp
-    	src/RTOS_Command_based_thread_system.cpp
-    	src/RTOS_Synchronization_Layer.cpp
-        src/Device_State_Machine+Watchdog.cpp
-        src/Fault_Tolerant_I2C_Communication_Layer.cpp
-        src/Persistent_Configuration_System.cpp
-        src/Power_Management_System.cpp
-        src/Smart_Battery_System.cpp
-        src/Static_Memory+MISRA_Compliance_Layer.cpp
-        src/USB_CDC_Virtual_COM_Shell_Interface.cpp
+    src/main.cpp
+    src/RTOS_Command_based_thread_system.cpp
+    src/RTOS_Synchronization_Layer.cpp
+    src/Device_State_Machine+Watchdog.cpp
+    src/Fault_Tolerant_I2C_Communication_Layer.cpp
+    src/Persistent_Configuration_System.cpp
+    src/Power_Management_System.cpp
+    src/Smart_Battery_System.cpp
+    src/Static_Memory+MISRA_Compliance_Layer.cpp
+    src/USB_CDC_Virtual_COM_Shell_Interface.cpp
 )
 
-if(CONFIG_BOARD_NATIVE_POSIX OR CONFIG_BOARD_NATIVE_SIM OR CONFIG_QEMU_TARGET)
-    zephyr_library_sources(src/qemu_sensor_mocks.c)
+if(CONFIG_BOARD_MPS2_AN386)
+    target_sources(app PRIVATE
+        src/qemu_sensor_mocks.c
+    )
 endif()
 
 target_compile_options(app PRIVATE
