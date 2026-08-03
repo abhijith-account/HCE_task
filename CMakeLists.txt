@@ -18,8 +18,11 @@ target_sources(app PRIVATE
         src/Smart_Battery_System.cpp
         src/Static_Memory+MISRA_Compliance_Layer.cpp
         src/USB_CDC_Virtual_COM_Shell_Interface.cpp
-        src/qemu_sensor_mocks.c
 )
+
+if(CONFIG_BOARD_NATIVE_POSIX OR CONFIG_BOARD_NATIVE_SIM OR CONFIG_QEMU_TARGET)
+    zephyr_library_sources(src/qemu_sensor_mocks.c)
+endif()
 
 target_compile_options(app PRIVATE
     -Wall
