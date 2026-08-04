@@ -133,7 +133,7 @@ struct BatteryLimits {
     static constexpr int MONITOR_THREAD_PRIO = 11;
 
     static constexpr uint16_t MAX_VALID_VOLTAGE_MV = 20000U;
-    static constexpr int32_t MAX_VALID_CURRENT_MA = 1500;
+    static constexpr int32_t MAX_VALID_CURRENT_MA = 818;
 
     static constexpr uint16_t MAX_VOLTAGE_DELTA_MV = 2000U;
     static constexpr int32_t MAX_CURRENT_DELTA_MA = 8000;

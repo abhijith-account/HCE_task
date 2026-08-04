@@ -236,17 +236,28 @@ TEST_F(SmartBatteryTestSuite, FetchCurrent_RetryAndFail) {
 }
 
 TEST_F(SmartBatteryTestSuite, PollHardware_ValidationRejects) {
+    // 1. Trigger voltage < MIN_VALID_VOLTAGE_MV
     g_i2c_mock_v_val = 0;
     battery.pollHardwareAndUpdateCache();
     EXPECT_EQ(battery.cache.last_error, CommFault::VALIDATION_ERROR);
 
+    // 2. Trigger voltage > MAX_VALID_VOLTAGE_MV
     battery.cache.last_error = CommFault::NONE;
     battery.cache.valid = true;
-    g_i2c_mock_v_val = 10000;
-    g_i2c_mock_i_val = 0x7FFF;
-    for (int i = 0; i < 10; ++i) {
-        battery.pollHardwareAndUpdateCache();
-    }
+    // 0xFFFF reads as -1 (int16_t). When the code casts it to uint32_t, 
+    // it underflows to ~4.2 billion, easily exceeding MAX_VALID_VOLTAGE_MV.
+    g_i2c_mock_v_val = 0xFFFF; 
+    battery.pollHardwareAndUpdateCache();
+    EXPECT_EQ(battery.cache.last_error, CommFault::VALIDATION_ERROR);
+
+    // 3. Trigger current > MAX_VALID_CURRENT_MA (Lines 411-413)
+    battery.cache.last_error = CommFault::NONE;
+    battery.cache.valid = true;
+    g_i2c_mock_v_val = 10000; // Reset to a safe, valid voltage
+    // 0xFF7F byte-swaps to 0x7FFF (32767) inside the driver, 
+    // maximizing current_ma to securely trip the upper limit.
+    g_i2c_mock_i_val = 0x8000;
+    battery.pollHardwareAndUpdateCache();
     EXPECT_EQ(battery.cache.last_error, CommFault::VALIDATION_ERROR);
 }
 
@@ -263,7 +274,7 @@ TEST_F(SmartBatteryTestSuite, JumpReject_ThresholdReached) {
     battery.cache.valid = true;
     battery.cache.last_error = CommFault::NONE;
     battery.cache.voltage.value = 5000;
-    g_i2c_mock_v_val = 0;
+    g_i2c_mock_v_val = 10000;
 
     for(int i = 0; i < 10; ++i) {
         battery.pollHardwareAndUpdateCache();
@@ -352,6 +363,8 @@ TEST_F(SmartBatteryTestSuite, UpdateStateAndPublish_ClampLimits) {
     battery.kf_soc_pct = -50.0f;
     battery.updateStateAndPublish(8000, 0, 250);
     EXPECT_EQ(battery.cache.soc.value, 0);
+    
+    battery.updateStateAndPublish(13000, 5000, 250);
 }
 
 TEST_F(SmartBatteryTestSuite, NotifySystemWakeup_Edges) {
@@ -1214,3 +1227,42 @@ TEST_F(SmartBatteryTestSuite, FullChargeLog_ConfigStoreUninitializedCoversLine55
     ConfigStore::getInstance().initialized = backup_initialized;
 }
 
+TEST_F(SmartBatteryTestSuite, PollHardware_JumpDetection_CacheCombinations) {
+    // Combination 1: timestamp == 0 (Triggers short-circuit of the && operator)
+    battery.cache.timestamp_ms = 0;
+    g_i2c_mock_v_val = 10000;
+    battery.pollHardwareAndUpdateCache();
+
+    // Combination 2: valid == false, but last_error == VALIDATION_ERROR
+    battery.cache.timestamp_ms = virtual_uptime;
+    battery.cache.valid = false;
+    battery.cache.last_error = CommFault::VALIDATION_ERROR;
+    battery.pollHardwareAndUpdateCache();
+}
+
+TEST_F(SmartBatteryTestSuite, MonitorThread_TempFailsAloneCoversLine704) {
+    extern SbsBattery* smart_battery;
+    auto backup = smart_battery;
+    smart_battery = &battery;
+
+    battery.cache.valid = true;
+    battery.cache.last_error = CommFault::NONE;
+    battery.cache.timestamp_ms = virtual_uptime;
+    battery.cache.current.value = 0;
+    battery.cache.soc.value = 50;
+
+    g_mutex_lock_target_ptr = &battery.cache_mutex;
+    g_mutex_lock_target_call_counter = 0;
+    
+    // Locks happen in order: processFSM(1), vol(2), curr(3), soc(4), temp(5)
+    // Fails on call 5 to make temp.success = false
+    g_mutex_lock_target_fail_on_call_n = 5; 
+    
+    test_iterations_remaining = 0;
+    battery_monitor_thread();
+    
+    // Cleanup
+    g_mutex_lock_target_ptr = nullptr;
+    g_mutex_lock_target_fail_on_call_n = 0;
+    smart_battery = backup;
+}

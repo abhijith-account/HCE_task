@@ -37,6 +37,25 @@ __attribute__((weak)) PowerManager pwr_manager;
 static std::array<int, 2> execution_order{};
 static std::atomic<size_t> exec_index{0};
 
+uint16_t g_i2c_mock_word_val = 0; 
+extern int g_i2c_force_errno;
+extern "C" {
+    int i2c_burst_read(const struct device *dev, uint16_t dev_addr,
+                        uint8_t start_addr, uint8_t *buf, uint32_t num_bytes) {
+        ++g_i2c_call_counter;
+        if (g_i2c_force_errno != 0) return g_i2c_force_errno;
+        if (g_i2c_fail_on_call_n != 0 && g_i2c_call_counter == g_i2c_fail_on_call_n) {
+            return g_i2c_fail_on_call_errno;
+        }
+        if (buf && num_bytes == 2) {
+            buf[0] = g_i2c_mock_word_val & 0xFF;
+            buf[1] = (g_i2c_mock_word_val >> 8) & 0xFF;
+        } else if (buf && num_bytes > 0) {
+            memset(buf, 0, num_bytes);   // Triple/Block reads unaffected -- same as before
+        }
+        return 0;
+    }
+}
 class PreemptionTestCmd final : public ICommand {
 private:
     int thread_priority;
@@ -50,8 +69,6 @@ public:
         }
     }
 };
-
-extern int g_i2c_force_errno;
 extern bool g_device_ready_override;
 
 namespace {
@@ -59,6 +76,7 @@ namespace {
 }
 
 extern void resetRtosCommandTestState() noexcept;
+extern void resetSensorReadCmdLastValsForTest() noexcept;
 
 static void drainAndDestroy(k_msgq* q) {
     ICommand* cmd = nullptr;
@@ -78,10 +96,12 @@ protected:
 
     resetRtosCommandTestState();
     resetI2CCacheForTests();
+    resetSensorReadCmdLastValsForTest(); 
     g_i2c_force_errno = 0;
     g_i2c_call_counter = 0;
     g_i2c_fail_on_call_n = 0;
     g_device_ready_override = true;
+    g_i2c_mock_word_val = 0; 
 }
 
 };
@@ -752,3 +772,28 @@ TEST_F(RTOSCommandsTestSuite, PrintLPS22HBMeasurementLoggerQueueFull) {
     EXPECT_GT(g_queueStats.loggerQueueFull, 0u);
 }
 
+TEST_F(RTOSCommandsTestSuite, SensorReadCmdExecuteBranchCoverage) {
+    SensorReadCmd pav_cmd(SensorID::PAV3015, SensorReg::PAV_DESC.reg, ReadLength::Word);
+    pav_cmd.execute();
+
+    SensorReadCmd unknown_reg_cmd(SensorID::LPS22HB, 0xFF, ReadLength::Word);
+    unknown_reg_cmd.execute();
+
+    SensorReadCmd lps_t_cmd(SensorID::LPS22HB, SensorReg::LPS_T_DESC.reg, ReadLength::Word);
+
+    // A: last_raw_lps_t == 0 after SetUp's reset -> covers line 464's
+    //    "*last_val_ptr == 0" branch (right side of ||), regardless of diff.
+    g_i2c_mock_word_val = 0x0010;
+    lps_t_cmd.execute();               // last_raw_lps_t becomes 0x0010
+
+    // B: raw(0x0100) > *last_val_ptr(0x0010) AND diff(0xF0) > threshold(0x10)
+    //    -> covers ternary TRUE side (line 462) and OR left-branch true (line 464)
+    g_i2c_mock_word_val = 0x0100;
+    lps_t_cmd.execute();               // last_raw_lps_t becomes 0x0100
+
+    // C: raw(0x00F8) < *last_val_ptr(0x0100) AND diff(0x08) <= threshold(0x10),
+    //    *last_val_ptr != 0 -> covers ternary FALSE side (line 462) and
+    //    OR both-false (line 464); *last_val_ptr stays 0x0100 (not updated)
+    g_i2c_mock_word_val = 0x00F8;
+    lps_t_cmd.execute();
+}

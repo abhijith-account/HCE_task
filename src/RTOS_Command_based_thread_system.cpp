@@ -413,6 +413,11 @@ Result<uint64_t> SensorReadCmd::readHardwareData() const noexcept {
     }
 }
 
+static uint64_t last_raw_bme = 0;
+static uint64_t last_raw_lps_p = 0;
+static uint64_t last_raw_lps_t = 0;
+static uint64_t last_raw_pav = 0;
+
 void SensorReadCmd::execute() noexcept {
     CycleProfiler profiler(LogTags::READ, command_id);
     uint64_t raw = 0;
@@ -436,11 +441,6 @@ void SensorReadCmd::execute() noexcept {
     }
     raw = res.unwrap();
 #endif
-    static uint64_t last_raw_bme = 0;
-    static uint64_t last_raw_lps_p = 0;
-    static uint64_t last_raw_lps_t = 0;
-    static uint64_t last_raw_pav = 0;
-
     uint64_t* last_val_ptr = nullptr;
     uint64_t threshold = 0;
 
@@ -471,6 +471,15 @@ void SensorReadCmd::execute() noexcept {
         logCommandError(LogTags::READ, command_id, "Compute queue full. Discarding raw data.");
     }
 }
+
+#ifdef IS_TEST_ENVIRONMENT
+void resetSensorReadCmdLastValsForTest() noexcept {
+    last_raw_bme = 0;
+    last_raw_lps_p = 0;
+    last_raw_lps_t = 0;
+    last_raw_pav = 0;
+}
+#endif
 
 ComputeCmd::ComputeCmd(SensorID s_id, uint8_t r_addr, uint64_t data) noexcept
     : sensor_id(s_id), reg_addr(r_addr), raw_data(data) {}
@@ -623,6 +632,7 @@ void resetRtosCommandTestState() noexcept {
     g_bme280_initialized = false;
     g_powerObserver.resetForTest();
 }
+void resetSensorReadCmdLastValsForTest() noexcept;
 #endif
 
 void processor_thread(void) {
