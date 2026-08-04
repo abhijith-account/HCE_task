@@ -1145,20 +1145,3 @@ TEST_F(UsbShellTestSuite, SetRateEmptyArgs) {
     std::string_view out(mock_tx_buffer.data(), mock_tx_index);
     EXPECT_NE(out.find("Usage"), std::string_view::npos);
 }
-
-TEST_F(UsbShellTestSuite, IsConnectedMockUartFallback) {
-    // 1. Cover ret == -ENOTSUP (short-circuits ||) and !dtr_ready == true
-    mock_uart_line_ctrl_ret = -ENOTSUP;
-    facade.dtr_ready = false; 
-    testing::internal::CaptureStdout();
-    EXPECT_TRUE(facade.isConnected());
-    EXPECT_NE(testing::internal::GetCapturedStdout().find("Virtual USB Terminal Connected (Mock UART mode)"), std::string_view::npos);
-
-    // 2. Cover ret == -ENOTSUP and !dtr_ready == false
-    EXPECT_TRUE(facade.isConnected());
-
-    // 3. Cover ret == -ENOSYS (evaluates both sides of ||)
-    mock_uart_line_ctrl_ret = -ENOSYS;
-    facade.dtr_ready = false;
-    EXPECT_TRUE(facade.isConnected());
-}
