@@ -340,56 +340,26 @@ float PAV3015Math::decodeAirflow(uint64_t raw_data) noexcept {
 SensorReadCmd::SensorReadCmd(SensorID s_id, uint8_t r_addr, ReadLength len) noexcept
     : sensor_id(s_id), reg_addr(r_addr), length(len) {}
 
-uint64_t SensorReadCmd::readMockData() const noexcept {
-    static int32_t mock_bme_t = MockValues::BME_T_BASE;
-    static int32_t mock_bme_p = MockValues::BME_P_BASE;
-    static int32_t mock_bme_h = MockValues::BME_H_BASE;
-    static int32_t mock_lps_t = MockValues::LPS_T_BASE;
-    static int32_t mock_lps_p = MockValues::LPS_P_BASE;
-    static int32_t mock_pav   = MockValues::PAV_BASE;
+#ifdef CONFIG_BOARD_MPS2_AN386
+uint64_t SensorReadCmd::readMockPAVData() const noexcept {
+    static int32_t mock_pav = MockValues::PAV_BASE;
+    static bool increasing = true;
 
-    static bool heating_up = true;
-
-    if (heating_up) {
-        mock_bme_t += 15;
-        mock_bme_p -= 5;
-        mock_bme_h -= 10;
-        mock_lps_t += 2;
-        mock_lps_p -= 10;
-        mock_pav   += 1;
-
-        if (mock_bme_t > static_cast<int32_t>(MockValues::BME_T_BASE) + 8000) {
-            heating_up = false;
+    // Create a simple synthetic waveform for airflow
+    if (increasing) {
+        mock_pav += 1;
+        if (mock_pav > static_cast<int32_t>(MockValues::PAV_BASE) + 50) { 
+            increasing = false;
         }
     } else {
-        mock_bme_t -= 15;
-        mock_bme_p += 5;
-        mock_bme_h += 10;
-        mock_lps_t -= 2;
-        mock_lps_p += 10;
-        mock_pav   -= 1;
-
-        if (mock_bme_t < static_cast<int32_t>(MockValues::BME_T_BASE) - 8000) {
-            heating_up = true;
+        mock_pav -= 1;
+        if (mock_pav < static_cast<int32_t>(MockValues::PAV_BASE) - 50) {
+            increasing = true;
         }
     }
-
-    switch (sensor_id) {
-        case SensorID::BME280:
-            return ((static_cast<uint64_t>(mock_bme_p) << 4) << 40) |
-                   ((static_cast<uint64_t>(mock_bme_t) << 4) << 16) |
-                   (static_cast<uint64_t>(mock_bme_h));
-        case SensorID::LPS22HB:
-            if (reg_addr == SensorReg::LPS_T_DESC.reg) return mock_lps_t;
-
-            return ((static_cast<uint64_t>(mock_lps_p) & 0xFF) << 16) |
-                   (static_cast<uint64_t>(mock_lps_p) & 0xFF00) |
-                   ((static_cast<uint64_t>(mock_lps_p) >> 16) & 0xFF);
-        case SensorID::PAV3015:
-            return mock_pav;
-        default: return 0;
-    }
+    return mock_pav;
 }
+#endif
 
 Result<uint64_t> SensorReadCmd::readHardwareData() const noexcept {
     const uint16_t s_addr = static_cast<uint16_t>(sensor_id);

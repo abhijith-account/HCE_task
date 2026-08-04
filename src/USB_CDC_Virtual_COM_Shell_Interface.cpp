@@ -136,10 +136,8 @@ bool UsbCdcFacade::init() {
 bool UsbCdcFacade::isConnected() {
     uint32_t dtr = 0;
     const int ret = uart_line_ctrl_get(dev, UART_LINE_CTRL_DTR, &dtr);
-    
+    #ifdef CONFIG_BOARD_MPS2_AN386
     if (ret == -ENOTSUP || ret == -ENOSYS) {
-        // The hardware UART being used as a mock doesn't support DTR.
-        // We treat it as permanently connected.
         line_ctrl_get_failed_logged = false;
         if (!dtr_ready) {
             LOG_INF("Virtual USB Terminal Connected (Mock UART mode)");
@@ -148,6 +146,7 @@ bool UsbCdcFacade::isConnected() {
         }
         return true;
     }
+    #endif
     
     if (ret != 0) {
         if (!line_ctrl_get_failed_logged) {

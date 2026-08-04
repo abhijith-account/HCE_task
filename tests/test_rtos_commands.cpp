@@ -246,23 +246,6 @@ TEST_F(RTOSCommandsTestSuite, HardwareDataTripleAndWordFailures) {
     g_i2c_force_errno = 0;
 }
 
-TEST_F(RTOSCommandsTestSuite, MockDataGenerationBranches) {
-    SensorReadCmd bme(SensorID::BME280, 0, ReadLength::Block);
-    EXPECT_GT(bme.readMockData(), 0u);
-
-    SensorReadCmd lps_t(SensorID::LPS22HB, SensorReg::LPS_T_DESC.reg, ReadLength::Word);
-    EXPECT_GT(lps_t.readMockData(), 0u);
-
-    SensorReadCmd lps_p(SensorID::LPS22HB, SensorReg::LPS_P_DESC.reg, ReadLength::Triple);
-    EXPECT_GT(lps_p.readMockData(), 0u);
-
-    SensorReadCmd pav(SensorID::PAV3015, 0, ReadLength::Word);
-    EXPECT_GT(pav.readMockData(), 0u);
-
-    SensorReadCmd unknown(static_cast<SensorID>(0xFFFF), 0, ReadLength::Word);
-    EXPECT_EQ(unknown.readMockData(), 0u);
-}
-
 TEST_F(RTOSCommandsTestSuite, SensorReadCmdComputeQueueFullLogsError) {
     for (int i = 0; i < QueueConfig::Depth; i++) {
         ASSERT_TRUE(enqueueCommand<PreemptionTestCmd>(PROCESSOR_Q, i));
@@ -722,14 +705,6 @@ TEST_F(RTOSCommandsTestSuite, ProducerThreadBME280InitFirstWriteFailsSecondSucce
 
     EXPECT_NE(out.find("Failed to initialize BME280"), std::string_view::npos);
     g_i2c_fail_on_call_n = 0;
-}
-
-TEST_F(RTOSCommandsTestSuite, MockDataFullEnvironmentalCycle) {
-    SensorReadCmd cmd(SensorID::BME280, SensorReg::BME280_DATA_START, ReadLength::Block);
-    for (int i = 0; i < 1700; ++i) {
-        (void)cmd.readMockData();
-    }
-    SUCCEED();
 }
 
 TEST_F(RTOSCommandsTestSuite, PrintCmdUnknownSensorDirectCall) {
