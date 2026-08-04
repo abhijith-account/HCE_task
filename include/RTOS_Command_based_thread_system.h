@@ -164,7 +164,7 @@ private:
     ReadLength length;
 
     [[nodiscard]] Result<uint64_t> readHardwareData() const noexcept;
-    [[nodiscard]] uint64_t readMockData() const noexcept;
+    [[nodiscard]] uint64_t readMockPAVData() const noexcept;
 
 public:
     SensorReadCmd(SensorID s_id, uint8_t r_addr, ReadLength len) noexcept;

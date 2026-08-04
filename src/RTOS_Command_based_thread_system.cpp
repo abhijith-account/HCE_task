@@ -394,7 +394,7 @@ void SensorReadCmd::execute() noexcept {
 
 #ifdef CONFIG_BOARD_MPS2_AN386
     if (sensor_id == SensorID::PAV3015) {
-        raw = readMockData();
+        raw = readMockPAVData();
     } else {
         auto res = readHardwareData();
         if (!res.isOk()) {
