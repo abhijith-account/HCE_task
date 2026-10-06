@@ -13,9 +13,16 @@ on:
 
   workflow_dispatch:
 
+env:
+  # Zephyr version that west.yml must resolve to. Keep in sync with west.yml.
+  EXPECTED_ZEPHYR_VERSION: "4.4.0"
+
 jobs:
   build-test-qemu:
     runs-on: ubuntu-latest
+    # CHANGE (optional but recommended): replace ":latest" with a fixed CI image tag/digest
+    # whose bundled Zephyr SDK matches what Zephyr 4.4.0 requires
+    # (see SDK_VERSION in the zephyr repo at tag v4.4.0).
     container: zephyrprojectrtos/ci:latest
 
     steps:
@@ -31,6 +38,24 @@ jobs:
           SDK_DIR=$(ls -d /opt/toolchains/zephyr-sdk-* | head -n 1)
           echo "Using Zephyr SDK: $SDK_DIR"
           $SDK_DIR/setup.sh -c
+
+      # NEW: fail fast if west.yml does not resolve to the expected Zephyr version
+      - name: Verify pinned Zephyr version
+        run: |
+          ZEPHYR_DIR="$(west topdir)/zephyr"
+          west list zephyr
+          cat "$ZEPHYR_DIR/VERSION"
+
+          MAJOR=$(awk -F' = ' '/^VERSION_MAJOR/ {print $2}' "$ZEPHYR_DIR/VERSION")
+          MINOR=$(awk -F' = ' '/^VERSION_MINOR/ {print $2}' "$ZEPHYR_DIR/VERSION")
+          PATCH=$(awk -F' = ' '/^PATCHLEVEL/ {print $2}' "$ZEPHYR_DIR/VERSION")
+          ACTUAL="$MAJOR.$MINOR.$PATCH"
+
+          echo "Expected Zephyr: $EXPECTED_ZEPHYR_VERSION, actual: $ACTUAL"
+          if [ "$ACTUAL" != "$EXPECTED_ZEPHYR_VERSION" ]; then
+            echo "::error::Zephyr version mismatch. Check 'revision' in west.yml."
+            exit 1
+          fi
 
       - name: Install required packages
         run: |

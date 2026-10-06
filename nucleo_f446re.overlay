@@ -111,12 +111,12 @@
 };
 
 &adc1 {
-  
     #address-cells = <1>;
     #size-cells = <0>;
     pinctrl-0 = <&adc1_in0_pa0>;
     pinctrl-1 = <&adc1_in0_sleep>;
     pinctrl-names = "default", "sleep";
+    st,adc-prescaler = <2>;
     status = "okay";
 
     channel@0 {
