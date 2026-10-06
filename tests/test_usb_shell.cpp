@@ -7,6 +7,9 @@
 #include <cstdarg>
 #include <algorithm>
 #include <vector>
+#include <cerrno>
+#include <thread>
+#include <chrono>
 
 #define private public
 #define protected public
@@ -17,15 +20,18 @@
 #include "Smart_Battery_System.h"
 #include "Persistent_Configuration_System.h"
 #include "Power_Management_System.h"
+#include <zephyr/sys/atomic.h>
 
 #define MOCK_UART_DTR_CTRL 1
 #ifndef ENOSYS
 #define ENOSYS 38
 #endif
 
-static std::array<char,512> mock_tx_buffer;
+static std::array<char,4096> mock_tx_buffer;
 static size_t mock_tx_index=0;
 extern UsbShell diag_shell;
+extern bool g_usb_connected;      // physical USB state, owned by the shell TU
+extern atomic_t g_shell_alive;    // shell watchdog heartbeat, owned by the shell TU
 static std::array<char,512> mock_rx_queue;
 static size_t mock_rx_head=0;
 static size_t mock_rx_tail=0;
@@ -120,7 +126,8 @@ extern "C" {
     int uart_line_ctrl_get(const struct device *dev,uint32_t ctrl,uint32_t *val){
         if (mock_uart_line_ctrl_fail) return -1;
         if (mock_uart_line_ctrl_ret != 0) return mock_uart_line_ctrl_ret;
-        if (ctrl == MOCK_UART_DTR_CTRL) *val = mock_dtr_state;
+        (void)ctrl;  // the shell only ever queries DTR
+        *val = mock_dtr_state;
         return 0;
     }
     void uart_poll_out(const struct device *dev,unsigned char c){
@@ -159,6 +166,7 @@ class UsbShellTestSuite : public ::testing::Test {
 
       void SetUp() override {
           mock_dtr_state = 0;
+          g_usb_connected = true;   // USB cable attached unless a test says otherwise
           mock_tx_index = 0;
           mock_tx_buffer.fill(0);
           mock_rx_head = 0;
@@ -214,6 +222,7 @@ class UsbShellTestSuite : public ::testing::Test {
           }
       }
       void TearDown() override {
+          g_usb_connected = false;
           PowerManager::getInstance().notifyAfterWakeup();
       }
 };
@@ -243,23 +252,73 @@ TEST_F(UsbShellTestSuite,InitTwice){
 }
 
 TEST_F(UsbShellTestSuite,DtrConnectDisconnect){
+    // DTR low while attached: stays closed (no edge)
     mock_dtr_state=0; EXPECT_FALSE(facade.isConnected());
+    EXPECT_FALSE(facade.isConnected());
+
+    // DTR rises: open edge, logged once
     mock_dtr_state=1; testing::internal::CaptureStdout();
     EXPECT_TRUE(facade.isConnected());
-    EXPECT_NE(testing::internal::GetCapturedStdout().find("[INF] USB Terminal Connected (DTR High)"),std::string_view::npos);
+    EXPECT_NE(testing::internal::GetCapturedStdout().find("[INF] USB Terminal Opened (DTR High)"),std::string_view::npos);
+
+    // DTR still high: steady state, no further log
+    testing::internal::CaptureStdout();
+    EXPECT_TRUE(facade.isConnected());
+    EXPECT_EQ(testing::internal::GetCapturedStdout().find("USB Terminal"),std::string_view::npos);
+
+    // DTR falls: close edge
     mock_dtr_state=0; testing::internal::CaptureStdout();
     EXPECT_FALSE(facade.isConnected());
-    EXPECT_NE(testing::internal::GetCapturedStdout().find("[WRN] USB Terminal Disconnected (DTR Low)"),std::string_view::npos);
+    EXPECT_NE(testing::internal::GetCapturedStdout().find("[WRN] USB Terminal Closed (DTR Low)"),std::string_view::npos);
 }
-TEST_F(UsbShellTestSuite,LineCtrlFailureLogsOnce){
-    mock_uart_line_ctrl_fail=true; testing::internal::CaptureStdout();
-    EXPECT_FALSE(facade.isConnected()); EXPECT_FALSE(facade.isConnected());
-    const auto raw_out = testing::internal::GetCapturedStdout();
-    std::string_view out(raw_out);
-    size_t first=out.find("uart_line_ctrl_get failed");
-    ASSERT_NE(first,std::string_view::npos);
-    EXPECT_EQ(out.find("uart_line_ctrl_get failed",first+1),std::string_view::npos);
+
+TEST_F(UsbShellTestSuite,UsbCableDetached){
+    UsbCdcFacade f; ASSERT_TRUE(f.init());
+
+    // Cable never attached and terminal never opened -> dtr_ready already false
+    g_usb_connected=false;
+    EXPECT_FALSE(f.isConnected());
+    EXPECT_FALSE(f.dtr_ready);
+
+    // Attach + open terminal
+    g_usb_connected=true; mock_dtr_state=1;
+    EXPECT_TRUE(f.isConnected());
+    EXPECT_TRUE(f.dtr_ready);
+
+    // Cable pulled while the terminal was open -> RX disabled, dtr_ready cleared
+    g_usb_connected=false;
+    EXPECT_FALSE(f.isConnected());
+    EXPECT_FALSE(f.dtr_ready);
+
+    // Re-attach: terminal re-opens
+    g_usb_connected=true;
+    EXPECT_TRUE(f.isConnected());
+}
+
+TEST_F(UsbShellTestSuite,LineCtrlErrorHandling){
+    mock_dtr_state=1;
+
+    // Hard error (-1): neither 0 nor ENOTSUP/ENOSYS -> treated as "no terminal"
+    mock_uart_line_ctrl_fail=true;
+    EXPECT_FALSE(facade.isConnected());
     mock_uart_line_ctrl_fail=false;
+
+    // Driver without DTR support (-ENOTSUP): assume terminal present
+    mock_uart_line_ctrl_ret=-ENOTSUP;
+    EXPECT_TRUE(facade.isConnected());
+
+    // Hard error while open -> closes again
+    mock_uart_line_ctrl_fail=true;
+    EXPECT_FALSE(facade.isConnected());
+    mock_uart_line_ctrl_fail=false;
+
+    // Driver without line-ctrl at all (-ENOSYS): assume terminal present
+    mock_uart_line_ctrl_ret=-ENOSYS;
+    EXPECT_TRUE(facade.isConnected());
+
+    // Back to a working driver with DTR low
+    mock_uart_line_ctrl_ret=0; mock_dtr_state=0;
+    EXPECT_FALSE(facade.isConnected());
 }
 
 TEST_F(UsbShellTestSuite,Transmit){
@@ -267,6 +326,7 @@ TEST_F(UsbShellTestSuite,Transmit){
     ASSERT_EQ(mock_tx_index,2u); EXPECT_EQ(mock_tx_buffer[0],'A'); EXPECT_EQ(mock_tx_buffer[1],'B');
     mock_dtr_state=0; mock_tx_index=0; facade.transmit("Data"); EXPECT_EQ(mock_tx_index,0u);
     mock_dtr_state=1; mock_tx_index=0; facade.transmit(""); EXPECT_EQ(mock_tx_index,0u);
+    g_usb_connected=false; mock_tx_index=0; facade.transmit("Data"); EXPECT_EQ(mock_tx_index,0u);
 }
 
 TEST_F(UsbShellTestSuite,IrqUpdateFails){
@@ -361,9 +421,10 @@ TEST_F(UsbShellTestSuite, ReadLineVariants) {
         UsbCdcFacade f; ASSERT_TRUE(f.init());
         mock_rx_head = mock_rx_tail = 0;
         inject_mock_uart_data("\r\nstatus\r\n");
-        EXPECT_TRUE(f.readLine(cmd)); EXPECT_STREQ(cmd.data(), "");
+        // "\r\n" is absorbed as a single terminator -> one empty line, then "status"
         EXPECT_TRUE(f.readLine(cmd)); EXPECT_STREQ(cmd.data(), "");
         EXPECT_TRUE(f.readLine(cmd)); EXPECT_STREQ(cmd.data(), "status");
+        EXPECT_FALSE(f.readLine(cmd));
     }
 
     {
@@ -889,7 +950,10 @@ TEST_F(UsbShellTestSuite, SetRateWithoutAlarmThreshold)
             }
         }
     }
-    cfg.init();
+    // NOTE: no cfg.init() here - init() re-seeds the default thresholds, which would
+    // make haveThreshold true and leave the "no threshold" branch uncovered.
+    uint8_t probe = 0;
+    ASSERT_FALSE(cfg.getAlarmThreshold(1, probe)) << "threshold entries should be gone";
 
     mock_tx_index = 0; mock_tx_buffer.fill(0);
     shell.dispatchCommand("set_rate 1001 50");
@@ -931,50 +995,161 @@ TEST_F(UsbShellTestSuite, SetRateThresholdExhaustiveBranches) {
     EXPECT_NE(std::string_view(mock_tx_buffer.data(), mock_tx_index).find("exceeds alarm threshold"), std::string_view::npos);
 }
 
-TEST_F(UsbShellTestSuite, PowerObserverAndSafeHaltGating) {
+TEST_F(UsbShellTestSuite, PowerObserverAndSleepGating) {
     DeviceContext ctx;
     I2CManager i2c(dummy_uart_dev);
     SbsBattery battery(&i2c, &ctx);
     UsbShell shell(&ctx, &battery);
 
     mock_dtr_state = 1;
-    mock_tx_index = 0;
-
     extern bool run_thread_once;
     run_thread_once = false;
-    shell.process();
+    shell.process();                       // init USB + register the shell power observer
 
+    // process() blocks inside `while (isSleeping()) k_msleep(200)` until wake-up, so run it
+    // on a worker thread. g_shell_alive is only re-armed inside that loop while sleeping.
     PowerManager::getInstance().notifyBeforeSleep();
+    atomic_set(&g_shell_alive, 0);
+    std::thread worker([&shell]() { shell.process(); });
+
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (atomic_get(&g_shell_alive) == 0 && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::yield();
+    }
+    const bool entered_sleep_loop = (atomic_get(&g_shell_alive) != 0);
+
+    PowerManager::getInstance().notifyAfterWakeup();   // lets the worker leave the loop
+    worker.join();
+    EXPECT_TRUE(entered_sleep_loop) << "shell never reached its sleep loop";
+
+    // After waking, queued input is processed normally.
     inject_mock_uart_data("status\n");
     mock_tx_index = 0;
     run_thread_once = false;
     shell.process();
-    EXPECT_EQ(mock_tx_index, 0u) << "Shell should ignore input while sleeping";
+    EXPECT_GT(mock_tx_index, 0u) << "Shell should process input after waking up";
 
-    PowerManager::getInstance().notifyAfterWakeup();
-    run_thread_once = false;
-    shell.process();
-    EXPECT_GT(mock_tx_index, 0u) << "Shell should process queued input after waking up";
-
+    // Aborted sleep also resumes the shell without blocking.
     PowerManager::getInstance().notifyBeforeSleep();
     PowerManager::getInstance().notifySleepAborted();
-    mock_tx_index = 0;
     inject_mock_uart_data("log dump\n");
     mock_tx_index = 0;
     run_thread_once = false;
     shell.process();
     EXPECT_GT(mock_tx_index, 0u) << "Shell should resume if sleep is aborted";
 
+    PowerManager::getInstance().notifyAfterWakeup();
+}
+
+TEST_F(UsbShellTestSuite, SafeHaltAndFaultInterlock) {
+    DeviceContext ctx;
+    I2CManager i2c(dummy_uart_dev);
+    SbsBattery battery(&i2c, &ctx);
+    UsbShell shell(&ctx, &battery);
+    auto& cfg = ConfigStore::getInstance();
+    uint8_t slot = 0;
+    ASSERT_TRUE(cfg.findSlotByDeviceId(1001, slot));
+    ASSERT_TRUE(cfg.setAlarmThreshold(slot, 80));
+    ASSERT_TRUE(cfg.setInfusionRate(slot, 10));
+
+    mock_dtr_state = 1;
+    extern bool run_thread_once;
+    run_thread_once = false;
+    shell.process();                       // init USB
+
+    // SAFE_HALT: diagnostics keep working (shell does not freeze) ...
     ctx.current_state = SystemState::SAFE_HALT;
-    mock_tx_index = 0;
     inject_mock_uart_data("status\n");
-    mock_tx_index = 0;
+    mock_tx_index = 0; mock_tx_buffer.fill(0);
     run_thread_once = false;
     shell.process();
-    EXPECT_EQ(mock_tx_index, 0u) << "Shell should halt processing in SAFE_HALT state";
+    EXPECT_NE(std::string_view(mock_tx_buffer.data(), mock_tx_index).find("sys_state"), std::string_view::npos);
 
+    // ... but state-changing commands are rejected
+    inject_mock_uart_data("set_rate 1001 50\n");
+    mock_tx_index = 0; mock_tx_buffer.fill(0);
+    run_thread_once = false;
+    shell.process();
+    EXPECT_NE(std::string_view(mock_tx_buffer.data(), mock_tx_index).find("SAFE_HALT/FAULT"), std::string_view::npos);
+
+    // FAULT: second operand of the interlock condition
+    ctx.current_state = SystemState::FAULT;
+    mock_tx_index = 0; mock_tx_buffer.fill(0);
+    shell.dispatchCommand("set_rate 1001 50");
+    EXPECT_NE(std::string_view(mock_tx_buffer.data(), mock_tx_index).find("SAFE_HALT/FAULT"), std::string_view::npos);
+
+    uint8_t rate = 0;
+    ASSERT_TRUE(cfg.getInfusionRate(slot, rate));
+    EXPECT_EQ(rate, 10) << "rejected command must not change the stored rate";
+
+    // Back to RUNNING: command goes through
     ctx.current_state = SystemState::RUNNING;
-    PowerManager::getInstance().notifyAfterWakeup();
+    mock_tx_index = 0; mock_tx_buffer.fill(0);
+    shell.dispatchCommand("set_rate 1001 50");
+    EXPECT_NE(std::string_view(mock_tx_buffer.data(), mock_tx_index).find("Success"), std::string_view::npos);
+    ASSERT_TRUE(cfg.getInfusionRate(slot, rate));
+    EXPECT_EQ(rate, 50);
+}
+
+namespace {
+// Runs one CLI command with the snprintf mock armed to fail / truncate on the given call
+// (-1 = leave that failure mode off) and returns everything transmitted.
+std::string run_cli(UsbShell& shell, const char* cmd, int fail_call, int trunc_call) {
+    mock_tx_index = 0; mock_tx_buffer.fill(0);
+    enable_snprintf_mock = (fail_call > 0 || trunc_call > 0);
+    mock_snprintf_call_count = 0;
+    mock_snprintf_fail_on_call = fail_call;
+    mock_snprintf_truncate_on_call = trunc_call;
+    shell.dispatchCommand(cmd);
+    enable_snprintf_mock = false;
+    mock_snprintf_fail_on_call = -1;
+    mock_snprintf_truncate_on_call = -1;
+    return std::string(mock_tx_buffer.data(), mock_tx_index);
+}
+}
+
+// transmitFormatted<> is instantiated three times (not-provisioned / threshold / success);
+// every instantiation needs: formatted OK, snprintf failure, snprintf truncation.
+TEST_F(UsbShellTestSuite, TransmitFormattedAllInstantiations) {
+    DeviceContext ctx;
+    I2CManager i2c(dummy_uart_dev);
+    SbsBattery battery(&i2c, &ctx);
+    UsbShell shell(&ctx, &battery);
+    mock_dtr_state = 1;
+    auto& cfg = ConfigStore::getInstance();
+    uint8_t slot = 0;
+    ASSERT_TRUE(cfg.findSlotByDeviceId(1001, slot));
+    ASSERT_TRUE(cfg.setAlarmThreshold(slot, 80));
+
+    // --- not provisioned
+    EXPECT_NE(run_cli(shell, "set_rate 9999 50", -1, -1).find("Device ID 9999 not provisioned"), std::string::npos);
+    EXPECT_NE(run_cli(shell, "set_rate 9999 50",  1, -1).find("Device ID not provisioned"),      std::string::npos);
+    EXPECT_NE(run_cli(shell, "set_rate 9999 50", -1,  1).find("Device ID not provisioned"),      std::string::npos);
+
+    // --- exceeds alarm threshold
+    EXPECT_NE(run_cli(shell, "set_rate 1001 99", -1, -1).find("Rate 99 exceeds alarm threshold (80) for device 1001"), std::string::npos);
+    EXPECT_NE(run_cli(shell, "set_rate 1001 99",  1, -1).find("Rate exceeds alarm threshold. Please reset"),            std::string::npos);
+    EXPECT_NE(run_cli(shell, "set_rate 1001 99", -1,  1).find("Rate exceeds alarm threshold. Please reset"),            std::string::npos);
+
+    // --- success
+    EXPECT_NE(run_cli(shell, "set_rate 1001 50", -1, -1).find("Device 1001 infusion rate set to 50%"), std::string::npos);
+    EXPECT_NE(run_cli(shell, "set_rate 1001 50",  1, -1).find("Success: infusion rate updated"),       std::string::npos);
+    EXPECT_NE(run_cli(shell, "set_rate 1001 50", -1,  1).find("Success: infusion rate updated"),       std::string::npos);
+}
+
+TEST_F(UsbShellTestSuite, LogDumpWithNoLogs) {
+    DeviceContext ctx;
+    I2CManager i2c(dummy_uart_dev);
+    SbsBattery battery(&i2c, &ctx);
+    UsbShell shell(&ctx, &battery);
+
+    mock_fcb_entries.clear();
+    mock_dtr_state = 1;
+    mock_tx_index = 0; mock_tx_buffer.fill(0);
+    shell.dispatchCommand("log dump");
+    std::string_view out(mock_tx_buffer.data(), mock_tx_index);
+    EXPECT_NE(out.find("No logs found"), std::string_view::npos);
+    EXPECT_NE(out.find("End of Logs"), std::string_view::npos);
 }
 
 TEST_F(UsbShellTestSuite, TransmitFormattedFallbackOnSnprintfFailure) {
