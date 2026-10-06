@@ -110,10 +110,6 @@
     };
 };
 
-&adc_common {
-    st,adc-prescaler = <4>;
-};
-
 &adc1 {
     status = "okay";
     #address-cells = <1>;
