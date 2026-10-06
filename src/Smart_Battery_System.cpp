@@ -58,9 +58,6 @@ namespace {
         }
     }
 
-    // --- FSM direction filtering state --------------------------------------
-    // Low-pass filter (EMA) the shunt current, then apply the hysteresis thresholds
-    // to the *smoothed* value instead of raw samples to prevent FSM state chatter.
     constexpr int32_t FSM_HYSTERESIS_UV = 1500;   // extra margin (uV) to *exit* the current direction
     constexpr float FSM_EMA_ALPHA = 0.05f;        // smoothing factor: higher = faster reaction, less noise immunity
 
