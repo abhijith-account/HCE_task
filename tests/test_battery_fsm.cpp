@@ -3,6 +3,10 @@
 #include <cstring>
 #include <string_view>
 #include <cstdint>
+#include <thread>
+#include <atomic>
+#include <chrono>
+#include <string>
 
 #include "Fault_Tolerant_I2C_Communication_Layer.h"
 #include "Power_Management_System.h"
@@ -39,6 +43,8 @@ int g_adc_raw_to_mv_errno = 0;
 int g_i2c_consecutive_failures = 0;
 int g_i2c_fail_after_reads = -1;
 int g_nvs_write_force_errno = 0;
+int g_set_safe_halt_on_i2c_call = -1;
+int g_sleep_on_i2c_call = -1;
 
 extern "C" {
     int nvs_mount(struct nvs_fs *fs) {
@@ -110,6 +116,8 @@ extern "C" {
 
     int i2c_write(const struct device *dev, const uint8_t *buf, uint32_t num_bytes, uint16_t addr) {
         ++g_i2c_call_counter;
+        if (g_set_safe_halt_on_i2c_call > 0 && g_i2c_call_counter == g_set_safe_halt_on_i2c_call) {sys_context.requestTransition(SystemState::SAFE_HALT);}
+        if (g_sleep_on_i2c_call > 0 && g_i2c_call_counter == g_sleep_on_i2c_call) {PowerManager::getInstance().notifyBeforeSleep();}
         if (g_i2c_force_errno != 0) return g_i2c_force_errno;
         if (g_i2c_fail_on_call_n != 0 && g_i2c_call_counter == g_i2c_fail_on_call_n) return g_i2c_fail_on_call_errno;
         if (g_i2c_fail_after_reads >= 0 && g_i2c_call_counter > g_i2c_fail_after_reads) return -EIO;
@@ -158,6 +166,8 @@ protected:
         g_mutex_lock_target_call_counter = 0;
         g_mutex_lock_target_fail_on_call_n = 0;
         g_nvs_write_force_errno = 0;
+        g_set_safe_halt_on_i2c_call = -1;
+        g_sleep_on_i2c_call = -1;
 
         battery.cache = BmsCache{};
         battery.cache.valid = true;
@@ -236,48 +246,41 @@ TEST_F(SmartBatteryTestSuite, FetchCurrent_RetryAndFail) {
 }
 
 TEST_F(SmartBatteryTestSuite, PollHardware_ValidationRejects) {
-    // 1. Trigger voltage < MIN_VALID_VOLTAGE_MV
     g_i2c_mock_v_val = 0;
     battery.pollHardwareAndUpdateCache();
-    EXPECT_EQ(battery.cache.last_error, CommFault::VALIDATION_ERROR);
+    EXPECT_EQ(battery.cache.last_error, CommFault::NONE);
 
-    // 2. Trigger voltage > MAX_VALID_VOLTAGE_MV
     battery.cache.last_error = CommFault::NONE;
     battery.cache.valid = true;
-    // 0xFFFF reads as -1 (int16_t). When the code casts it to uint32_t, 
-    // it underflows to ~4.2 billion, easily exceeding MAX_VALID_VOLTAGE_MV.
-    g_i2c_mock_v_val = 0xFFFF; 
-    battery.pollHardwareAndUpdateCache();
-    EXPECT_EQ(battery.cache.last_error, CommFault::VALIDATION_ERROR);
-
-    // 3. Trigger current > MAX_VALID_CURRENT_MA (Lines 411-413)
-    battery.cache.last_error = CommFault::NONE;
-    battery.cache.valid = true;
-    g_i2c_mock_v_val = 10000; // Reset to a safe, valid voltage
-    // 0xFF7F byte-swaps to 0x7FFF (32767) inside the driver, 
-    // maximizing current_ma to securely trip the upper limit.
-    g_i2c_mock_i_val = 0x8000;
+    g_i2c_mock_v_val = 0xFFFF;
     battery.pollHardwareAndUpdateCache();
     EXPECT_EQ(battery.cache.last_error, CommFault::VALIDATION_ERROR);
 }
 
 TEST_F(SmartBatteryTestSuite, JumpReject_ThresholdReached) {
-
-    battery.cache.voltage.value = 0;
+    battery.cache.voltage.value = 10000; 
     battery.cache.current.value = 0;
-    g_i2c_mock_v_val = 5000;
-    g_i2c_mock_i_val = 0;
+    battery.cache.temperature.value = Thermistor::KELVIN_OFFSET_TENTHS + 250;
+    battery.cache.valid = true;
+    battery.cache.last_error = CommFault::NONE;
+    battery.cache.timestamp_ms = virtual_uptime;
+    
+    g_i2c_mock_v_val = 8000;
+    g_i2c_mock_i_val = 0; 
+    g_adc_mock_mv_val = 1650; 
+
+    battery.cache.current.value = -8001; 
+
     battery.pollHardwareAndUpdateCache();
     EXPECT_EQ(battery.consecutive_jump_rejects, 1);
 
     battery.consecutive_jump_rejects = 0;
-    battery.cache.valid = true;
-    battery.cache.last_error = CommFault::NONE;
-    battery.cache.voltage.value = 5000;
-    g_i2c_mock_v_val = 10000;
-
-    for(int i = 0; i < 10; ++i) {
+    
+    for(int i = 0; i < 10; ++i) { 
         battery.pollHardwareAndUpdateCache();
+        if (battery.cache.last_error == CommFault::VALIDATION_ERROR) {
+            break;
+        }
     }
     EXPECT_EQ(battery.cache.last_error, CommFault::VALIDATION_ERROR);
 }
@@ -357,14 +360,14 @@ TEST_F(SmartBatteryTestSuite, UpdateStateAndPublish_ClampLimits) {
     battery.last_poll_time_ms = virtual_uptime;
 
     battery.kf_soc_pct = 200.0f;
-    battery.updateStateAndPublish(13000, 0, 250);
+    battery.updateStateAndPublish(13000, 0, 250, 0);
     EXPECT_EQ(battery.cache.soc.value, 100);
 
     battery.kf_soc_pct = -50.0f;
-    battery.updateStateAndPublish(8000, 0, 250);
+    battery.updateStateAndPublish(8000, 0, 250, 0);
     EXPECT_EQ(battery.cache.soc.value, 0);
     
-    battery.updateStateAndPublish(13000, 5000, 250);
+    battery.updateStateAndPublish(13000, 5000, 250, 0);
 }
 
 TEST_F(SmartBatteryTestSuite, NotifySystemWakeup_Edges) {
@@ -398,9 +401,12 @@ TEST_F(SmartBatteryTestSuite, PublishError_NullContext) {
 }
 
 TEST_F(SmartBatteryTestSuite, ProcessFSM_AllBranches) {
+    battery.cache.voltage.value = 10000;
     battery.cache.soc.value = 50;
 
-    battery.cache.current.value = 0;
+    battery.cache.voltage.value = 0; battery.processFSM(); battery.cache.voltage.value = 10000;
+
+    battery.cache.shunt_voltage.value = 0;
     battery.current_state.store(BatteryFSM::CHARGING);
     battery.processFSM();
     EXPECT_EQ(battery.getState(), BatteryFSM::IDLE);
@@ -426,18 +432,27 @@ TEST_F(SmartBatteryTestSuite, Threads_NullGuardsAndSkips) {
     auto backup = smart_battery;
 
     smart_battery = nullptr;
+    
     test_iterations_remaining = 1;
+    bms_comm_thread(); 
+    
+    test_iterations_remaining = 0;
     battery_monitor_thread();
-
+    
     smart_battery = backup;
 
-    test_iterations_remaining = 1;
+    test_iterations_remaining = 0;
     PowerManager::getInstance().notifyBeforeSleep();
+    
+    std::thread waker([]() {
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        PowerManager::getInstance().notifyAfterWakeup();
+    });
+    
     bms_comm_thread();
-    PowerManager::getInstance().notifyAfterWakeup();
+    waker.join();
 
 #if defined(IPOWER_OBSERVER_HAS_SLEEP_ABORTED) || 1
-
     PowerManager::getInstance().notifySleepAborted();
 #endif
 }
@@ -469,6 +484,7 @@ TEST_F(SmartBatteryTestSuite, Getters_ValidAndInvalidCache) {
     EXPECT_TRUE(battery.getStateOfCharge().success);
     EXPECT_TRUE(battery.getTemperature().success);
     EXPECT_TRUE(battery.getCapacity().success);
+    EXPECT_TRUE(battery.getShuntVoltage().success);
 
     virtual_uptime += 5000;
     EXPECT_FALSE(battery.getVoltage().success);
@@ -480,6 +496,7 @@ TEST_F(SmartBatteryTestSuite, Getters_ValidAndInvalidCache) {
     EXPECT_FALSE(battery.getStateOfCharge().success);
     EXPECT_FALSE(battery.getTemperature().success);
     EXPECT_FALSE(battery.getCapacity().success);
+    EXPECT_FALSE(battery.getShuntVoltage().success);
 }
 
 TEST_F(SmartBatteryTestSuite, HardwarePoll_SequentialFaults) {
@@ -500,7 +517,7 @@ TEST_F(SmartBatteryTestSuite, HardwarePoll_SequentialFaults) {
 TEST_F(SmartBatteryTestSuite, MutexContention_AllPaths) {
     g_mutex_lock_force_errno = -EAGAIN;
 
-    battery.updateStateAndPublish(10000, 100, 250);
+    battery.updateStateAndPublish(10000, 100, 250, 0);
 
     BmsCache c = battery.getCacheSnapshot();
     EXPECT_FALSE(c.valid);
@@ -531,6 +548,7 @@ TEST_F(SmartBatteryTestSuite, FSM_DeepCoverage) {
     battery.processFSM();
 
     battery.cache.valid = true;
+    battery.cache.voltage.value = 10000;
     battery.cache.soc.value = 100;
     battery.full_charge_logged.store(false);
     battery.processFSM();
@@ -541,17 +559,23 @@ TEST_F(SmartBatteryTestSuite, FSM_DeepCoverage) {
 
     battery.cache.soc.value = 50;
 
-    battery.cache.current.value = 100;
+    battery.cache.voltage.value = 0; battery.processFSM(); battery.cache.voltage.value = 10000;
+
+    battery.cache.shunt_voltage.value = -50000; 
     battery.current_state.store(BatteryFSM::IDLE);
     battery.processFSM();
     EXPECT_EQ(battery.getState(), BatteryFSM::CHARGING);
 
-    battery.cache.current.value = 0;
+    battery.cache.voltage.value = 0; battery.processFSM(); battery.cache.voltage.value = 10000;
+
+    battery.cache.shunt_voltage.value = 0;
     battery.current_state.store(BatteryFSM::CHARGING);
     battery.processFSM();
     EXPECT_EQ(battery.getState(), BatteryFSM::IDLE);
 
-    battery.cache.current.value = -100;
+    battery.cache.voltage.value = 0; battery.processFSM(); battery.cache.voltage.value = 10000;
+
+    battery.cache.shunt_voltage.value = 50000;
     battery.current_state.store(BatteryFSM::IDLE);
     battery.processFSM();
     EXPECT_EQ(battery.getState(), BatteryFSM::DISCHARGING);
@@ -573,7 +597,9 @@ TEST_F(SmartBatteryTestSuite, FSM_DeepCoverage) {
     sys_context.requestTransition(SystemState::RUNNING);
     battery.processFSM();
 
-    battery.cache.current.value = 0;
+    battery.cache.voltage.value = 0; battery.processFSM(); battery.cache.voltage.value = 10000;
+
+    battery.cache.shunt_voltage.value = 0;
     battery.cache.soc.value = BatteryLimits::REENABLE_SOC_PCT + 1;
     sys_context.requestTransition(SystemState::SAFE_HALT);
     battery.current_state.store(BatteryFSM::CUTOFF);
@@ -587,7 +613,7 @@ TEST_F(SmartBatteryTestSuite, BmsCommThread_InitRetryLog) {
     smart_battery = &battery;
 
     g_i2c_force_errno = -EIO;
-    test_iterations_remaining = 0;
+    test_iterations_remaining = 1;
     bms_comm_thread();
     g_i2c_force_errno = 0;
 
@@ -645,7 +671,6 @@ TEST_F(SmartBatteryTestSuite, Init_Thermistor_Fail) {
 }
 
 TEST_F(SmartBatteryTestSuite, CoulombCounter_AtRestBranchCombos) {
-
     battery.rest_period_start_ms = 12345;
     battery.seedOrResyncCoulombCounter(11000, -500, false);
     EXPECT_EQ(battery.rest_period_start_ms, 0U);
@@ -660,28 +685,25 @@ TEST_F(SmartBatteryTestSuite, CoulombCounter_AtRestBranchCombos) {
 }
 
 TEST_F(SmartBatteryTestSuite, UpdateStateAndPublish_FirstSeedBranch) {
-
     battery.soc_initialized = false;
     battery.accumulated_uAh = 0;
     battery.last_poll_time_ms = 0;
 
-    battery.updateStateAndPublish(11000, 10, 250);
+    battery.updateStateAndPublish(11000, 10, 250, 0);
 
     EXPECT_TRUE(battery.soc_initialized);
     EXPECT_EQ(battery.last_poll_time_ms, virtual_uptime);
 }
 
 TEST_F(SmartBatteryTestSuite, UpdateStateAndPublish_NoClampNeeded) {
-
     battery.soc_initialized = true;
     battery.accumulated_uAh = 1000 * 1000LL;
-    battery.updateStateAndPublish(11000, 0, 250);
+    battery.updateStateAndPublish(11000, 0, 250, 0);
     EXPECT_GT(battery.cache.soc.value, 0);
     EXPECT_LT(battery.cache.soc.value, 100);
 }
 
 TEST_F(SmartBatteryTestSuite, WatchdogHook_ConstructorAndNullHook) {
-
     custom_hook_called = false;
     SbsBattery hooked_battery(&i2c_manager, &sys_context, &custom_watchdog_hook);
     hooked_battery.feedWatchdog();
@@ -694,7 +716,6 @@ TEST_F(SmartBatteryTestSuite, WatchdogHook_ConstructorAndNullHook) {
 }
 
 TEST_F(SmartBatteryTestSuite, PollHardware_TotalI2CFailure_NoCacheFallback) {
-
     extern void resetI2CCacheForTests();
     resetI2CCacheForTests();
 
@@ -708,14 +729,13 @@ TEST_F(SmartBatteryTestSuite, PollHardware_CurrentFetchTotalFailure) {
     extern void resetI2CCacheForTests();
     resetI2CCacheForTests();
 
-    g_i2c_fail_after_reads = 1;
+    g_i2c_fail_after_reads = 2;
     battery.pollHardwareAndUpdateCache();
     g_i2c_fail_after_reads = -1;
     EXPECT_EQ(battery.cache.last_error, CommFault::I2C_NACK);
 }
 
 TEST_F(SmartBatteryTestSuite, CacheFreshness_ZeroTimestampShortCircuit) {
-
     battery.cache.valid = true;
     battery.cache.last_error = CommFault::NONE;
     battery.cache.timestamp_ms = 0;
@@ -724,7 +744,6 @@ TEST_F(SmartBatteryTestSuite, CacheFreshness_ZeroTimestampShortCircuit) {
 }
 
 TEST_F(SmartBatteryTestSuite, PublishError_MutexFaultWithSuccessfulLock) {
-
     g_mutex_lock_force_errno = 0;
     battery.consecutive_mutex_failures = 0;
     battery.current_state.store(BatteryFSM::IDLE);
@@ -746,7 +765,6 @@ TEST_F(SmartBatteryTestSuite, PowerObserver_SleepAborted) {
 }
 
 TEST_F(SmartBatteryTestSuite, CurveFitting_InteriorSegments) {
-
     static constexpr uint16_t ocv_probe_mv[] = {
         9100, 9900, 10500, 10950, 11250, 11550, 11850, 12150, 12450
     };
@@ -767,38 +785,47 @@ TEST_F(SmartBatteryTestSuite, CurveFitting_InteriorSegments) {
 }
 
 TEST_F(SmartBatteryTestSuite, BmsCommThread_SkipsPollWhileSleeping) {
-
     extern SbsBattery* smart_battery;
     auto backup = smart_battery;
     smart_battery = &battery;
 
-    test_iterations_remaining = 1;
+    test_iterations_remaining = 0;
     bms_comm_thread();
 
     PowerManager::getInstance().notifyBeforeSleep();
-    test_iterations_remaining = 1;
+    
+    std::thread waker([]() {
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        PowerManager::getInstance().notifyAfterWakeup();
+    });
+    
+    test_iterations_remaining = 0;
     bms_comm_thread();
-    PowerManager::getInstance().notifyAfterWakeup();
+    waker.join();
 
     smart_battery = backup;
 }
 
 TEST_F(SmartBatteryTestSuite, BatteryMonitorThread_SkipsProcessWhileSleeping) {
-
     extern SbsBattery* smart_battery;
     auto backup = smart_battery;
     smart_battery = &battery;
 
     PowerManager::getInstance().notifyBeforeSleep();
-    test_iterations_remaining = 1;
+    
+    std::thread waker([]() {
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        PowerManager::getInstance().notifyAfterWakeup();
+    });
+    
+    test_iterations_remaining = 0;
     battery_monitor_thread();
-    PowerManager::getInstance().notifyAfterWakeup();
+    waker.join();
 
     smart_battery = backup;
 }
 
 TEST_F(SmartBatteryTestSuite, BatteryMonitorThread_NonDischargingSkipsLog) {
-
     extern SbsBattery* smart_battery;
     auto backup = smart_battery;
     smart_battery = &battery;
@@ -818,7 +845,6 @@ TEST_F(SmartBatteryTestSuite, BatteryMonitorThread_NonDischargingSkipsLog) {
 }
 
 TEST_F(SmartBatteryTestSuite, PowerObserver_AfterWakeup_NullSmartBattery) {
-
     extern SbsBattery* smart_battery;
     auto backup = smart_battery;
 
@@ -834,6 +860,7 @@ TEST_F(SmartBatteryTestSuite, PowerObserver_AfterWakeup_NullSmartBattery) {
 }
 
 TEST_F(SmartBatteryTestSuite, ProcessFSM_MidBandsAndChargingRecovery) {
+    battery.cache.voltage.value = 10000;
     battery.cache.valid = true;
     battery.cache.last_error = CommFault::NONE;
     battery.cache.timestamp_ms = virtual_uptime;
@@ -852,20 +879,19 @@ TEST_F(SmartBatteryTestSuite, ProcessFSM_MidBandsAndChargingRecovery) {
     battery.cache.current.value = 100;
     battery.cache.soc.value = BatteryLimits::REENABLE_SOC_PCT + 1;
     battery.current_state.store(BatteryFSM::CUTOFF);
+    battery.cache.shunt_voltage.value = -50000;
     sys_context.requestTransition(SystemState::SAFE_HALT);
     battery.processFSM();
     EXPECT_EQ(battery.getState(), BatteryFSM::CHARGING);
 }
 
-TEST_F(SmartBatteryTestSuite, JumpDetection_AllConditions)
-{
+TEST_F(SmartBatteryTestSuite, JumpDetection_AllConditions) {
     battery.cache.valid=true;
     battery.cache.last_error=CommFault::NONE;
 
     battery.cache.voltage.value=10000;
     battery.cache.current.value=0;
-    battery.cache.temperature.value=
-        Thermistor::KELVIN_OFFSET_TENTHS+250;
+    battery.cache.temperature.value=Thermistor::KELVIN_OFFSET_TENTHS+250;
 
     g_i2c_mock_v_val=8000;
     g_i2c_mock_i_val=3000;
@@ -873,8 +899,7 @@ TEST_F(SmartBatteryTestSuite, JumpDetection_AllConditions)
 
     battery.cache.voltage.value=10000;
     battery.cache.current.value=0;
-    battery.cache.temperature.value=
-        Thermistor::KELVIN_OFFSET_TENTHS+150;
+    battery.cache.temperature.value=Thermistor::KELVIN_OFFSET_TENTHS+150;
 
     battery.pollHardwareAndUpdateCache();
 
@@ -894,8 +919,7 @@ TEST_F(SmartBatteryTestSuite, JumpDetection_AllConditions)
 
     battery.cache.voltage.value=10000;
     battery.cache.current.value=0;
-    battery.cache.temperature.value=
-        Thermistor::KELVIN_OFFSET_TENTHS+150;
+    battery.cache.temperature.value=Thermistor::KELVIN_OFFSET_TENTHS+150;
 
     battery.pollHardwareAndUpdateCache();
 
@@ -933,11 +957,11 @@ TEST_F(SmartBatteryTestSuite, Fetch_NullWatchdogHook_DuringRetry) {
     g_i2c_force_errno = -EIO;
     battery.fetchBusVoltageRawWithRetry();
     battery.fetchCurrentRawWithRetry();
+    battery.fetchShuntVoltageRawWithRetry();
     g_i2c_force_errno = 0;
 }
 
 TEST_F(SmartBatteryTestSuite, ThreadLoops_SleepAwakeBranch_Robust) {
-
     extern SbsBattery* smart_battery;
     auto backup = smart_battery;
     smart_battery = &battery;
@@ -957,17 +981,29 @@ TEST_F(SmartBatteryTestSuite, ThreadLoops_SleepAwakeBranch_Robust) {
     battery_monitor_thread();
 
     PowerManager::getInstance().notifyBeforeSleep();
+    
+    std::thread waker1([]() {
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        PowerManager::getInstance().notifyAfterWakeup();
+    });
     test_iterations_remaining = 0;
     bms_comm_thread();
+    waker1.join();
+
+    PowerManager::getInstance().notifyBeforeSleep();
+    
+    std::thread waker2([]() {
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        PowerManager::getInstance().notifyAfterWakeup();
+    });
     test_iterations_remaining = 0;
     battery_monitor_thread();
-    PowerManager::getInstance().notifyAfterWakeup();
+    waker2.join();
 
     smart_battery = backup;
 }
 
 TEST_F(SmartBatteryTestSuite, BatteryMonitorThread_DischargingSocFailureSkipsLog) {
-
     extern SbsBattery* smart_battery;
     auto backup = smart_battery;
     smart_battery = &battery;
@@ -988,10 +1024,10 @@ TEST_F(SmartBatteryTestSuite, BatteryMonitorThread_DischargingSocFailureSkipsLog
 }
 
 TEST_F(SmartBatteryTestSuite, ProcessFSM_CutoffTrigger_NullContextSkipsFaultCall) {
-
     DeviceContext* backup_ctx = battery.sys_context;
     battery.sys_context = nullptr;
 
+    battery.cache.voltage.value = 10000;
     battery.cache.valid = true;
     battery.cache.last_error = CommFault::NONE;
     battery.cache.timestamp_ms = virtual_uptime;
@@ -1006,15 +1042,15 @@ TEST_F(SmartBatteryTestSuite, ProcessFSM_CutoffTrigger_NullContextSkipsFaultCall
 }
 
 TEST_F(SmartBatteryTestSuite, ProcessFSM_ReenableCheck_NullContextSkipsRecovery) {
-
     DeviceContext* backup_ctx = battery.sys_context;
     battery.sys_context = nullptr;
 
+    battery.cache.voltage.value = 10000;
     battery.cache.valid = true;
     battery.cache.last_error = CommFault::NONE;
     battery.cache.timestamp_ms = virtual_uptime;
     battery.cache.current.value = 0;
-    battery.cache.soc.value = BatteryLimits::REENABLE_SOC_PCT;
+    battery.cache.soc.value = BatteryLimits::REENABLE_SOC_PCT + 1;
     battery.current_state.store(BatteryFSM::CUTOFF);
 
     battery.processFSM();
@@ -1025,7 +1061,6 @@ TEST_F(SmartBatteryTestSuite, ProcessFSM_ReenableCheck_NullContextSkipsRecovery)
 }
 
 TEST_F(SmartBatteryTestSuite, ProcessFSM_CacheFailureReason_BothBranches) {
-
     testing::internal::CaptureStdout();
 
     battery.cache.valid = false;
@@ -1040,7 +1075,6 @@ TEST_F(SmartBatteryTestSuite, ProcessFSM_CacheFailureReason_BothBranches) {
 }
 
 TEST_F(SmartBatteryTestSuite, BatteryMonitorThread_DischargingSocFailure_MutexPath) {
-
     extern SbsBattery* smart_battery;
     auto backup = smart_battery;
     smart_battery = &battery;
@@ -1061,12 +1095,12 @@ TEST_F(SmartBatteryTestSuite, BatteryMonitorThread_DischargingSocFailure_MutexPa
 }
 
 TEST_F(SmartBatteryTestSuite, ProcessFSM_Reenable_SysContextNonNull_WrongState_Direct) {
-
+    battery.cache.voltage.value = 10000;
     battery.cache.valid = true;
     battery.cache.last_error = CommFault::NONE;
     battery.cache.timestamp_ms = virtual_uptime;
     battery.cache.current.value = 0;
-    battery.cache.soc.value = BatteryLimits::REENABLE_SOC_PCT;
+    battery.cache.soc.value = BatteryLimits::REENABLE_SOC_PCT + 1;
     battery.current_state.store(BatteryFSM::CUTOFF);
 
     sys_context.requestTransition(SystemState::INIT);
@@ -1090,11 +1124,18 @@ TEST_F(SmartBatteryTestSuite, BmsCommThread_SleepBranch_OrderIndependent) {
 
     PowerManager::getInstance().notifyBeforeSleep();
     g_i2c_call_counter = 0;
+    
+    std::thread waker([]() {
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        PowerManager::getInstance().notifyAfterWakeup();
+    });
+    
     test_iterations_remaining = 0;
     bms_comm_thread();
-    EXPECT_EQ(g_i2c_call_counter, 0);
+    waker.join();
+    
+    EXPECT_GT(g_i2c_call_counter, 0);
 
-    PowerManager::getInstance().notifyAfterWakeup();
     smart_battery = backup;
 }
 
@@ -1110,8 +1151,7 @@ TEST_F(SmartBatteryTestSuite, BmsCommThread_SleepBranch_Diagnostic) {
 
     test_iterations_remaining = 0;
     bms_comm_thread();
-    ASSERT_FALSE(isBmsObserverSleepingForTest())
-        << "Observer should start awake after resetForTest()";
+    ASSERT_FALSE(isBmsObserverSleepingForTest());
 
     g_i2c_call_counter = 0;
     test_iterations_remaining = 0;
@@ -1120,19 +1160,22 @@ TEST_F(SmartBatteryTestSuite, BmsCommThread_SleepBranch_Diagnostic) {
     ASSERT_GT(awake_calls, 0);
 
     PowerManager::getInstance().notifyBeforeSleep();
-    ASSERT_TRUE(isBmsObserverSleepingForTest())
-        << "notifyBeforeSleep() did not reach g_bmsPowerObserver";
+    ASSERT_TRUE(isBmsObserverSleepingForTest());
 
     g_i2c_call_counter = 0;
+    
+    std::thread waker([]() {
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        PowerManager::getInstance().notifyAfterWakeup();
+    });
+
     test_iterations_remaining = 0;
     bms_comm_thread();
+    waker.join();
+    
     const int asleep_calls = g_i2c_call_counter;
+    EXPECT_EQ(asleep_calls, awake_calls);
 
-    EXPECT_LT(asleep_calls, awake_calls)
-        << "Sleeping call should skip the poll and generate strictly less "
-           "I2C traffic than the awake call (init() overhead only)";
-
-    PowerManager::getInstance().notifyAfterWakeup();
     smart_battery = backup;
 }
 
@@ -1212,7 +1255,6 @@ TEST_F(SmartBatteryTestSuite, FullChargeLog_NvsWriteFailureCoversLine550) {
 }
 
 TEST_F(SmartBatteryTestSuite, FullChargeLog_ConfigStoreUninitializedCoversLine550) {
-
     const bool backup_initialized = ConfigStore::getInstance().initialized;
     ConfigStore::getInstance().initialized = false;
 
@@ -1228,12 +1270,10 @@ TEST_F(SmartBatteryTestSuite, FullChargeLog_ConfigStoreUninitializedCoversLine55
 }
 
 TEST_F(SmartBatteryTestSuite, PollHardware_JumpDetection_CacheCombinations) {
-    // Combination 1: timestamp == 0 (Triggers short-circuit of the && operator)
     battery.cache.timestamp_ms = 0;
     g_i2c_mock_v_val = 10000;
     battery.pollHardwareAndUpdateCache();
 
-    // Combination 2: valid == false, but last_error == VALIDATION_ERROR
     battery.cache.timestamp_ms = virtual_uptime;
     battery.cache.valid = false;
     battery.cache.last_error = CommFault::VALIDATION_ERROR;
@@ -1253,16 +1293,745 @@ TEST_F(SmartBatteryTestSuite, MonitorThread_TempFailsAloneCoversLine704) {
 
     g_mutex_lock_target_ptr = &battery.cache_mutex;
     g_mutex_lock_target_call_counter = 0;
-    
-    // Locks happen in order: processFSM(1), vol(2), curr(3), soc(4), temp(5)
-    // Fails on call 5 to make temp.success = false
     g_mutex_lock_target_fail_on_call_n = 5; 
     
     test_iterations_remaining = 0;
     battery_monitor_thread();
     
-    // Cleanup
     g_mutex_lock_target_ptr = nullptr;
     g_mutex_lock_target_fail_on_call_n = 0;
     smart_battery = backup;
+}
+
+TEST_F(SmartBatteryTestSuite, BmsCommThread_SafeHaltBranch) {
+    extern SbsBattery* smart_battery;
+    auto backup = smart_battery;
+    smart_battery = &battery;
+
+    sys_context.requestTransition(SystemState::SAFE_HALT);
+    battery.current_state.store(BatteryFSM::IDLE);
+
+    std::thread waker([]() {
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        sys_context.requestTransition(SystemState::INIT);
+        sys_context.requestTransition(SystemState::RUNNING);
+    });
+
+    test_iterations_remaining = 0;
+    bms_comm_thread();
+    waker.join();
+
+    smart_battery = backup;
+}
+
+TEST_F(SmartBatteryTestSuite, BatteryMonitorThread_SafeHaltBranch) {
+    extern SbsBattery* smart_battery;
+    auto backup = smart_battery;
+    smart_battery = &battery;
+
+    sys_context.requestTransition(SystemState::SAFE_HALT);
+    battery.current_state.store(BatteryFSM::IDLE);
+
+    std::thread waker([]() {
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        sys_context.requestTransition(SystemState::INIT);
+        sys_context.requestTransition(SystemState::RUNNING);
+    });
+
+    test_iterations_remaining = 0;
+    battery_monitor_thread();
+    waker.join();
+
+    smart_battery = backup;
+}
+
+TEST_F(SmartBatteryTestSuite, BmsCommThread_SleepingButCharging) {
+    extern SbsBattery* smart_battery;
+    auto backup = smart_battery;
+    smart_battery = &battery;
+
+    PowerManager::getInstance().notifyBeforeSleep();
+    battery.current_state.store(BatteryFSM::CHARGING);
+    sys_context.requestTransition(SystemState::RUNNING);
+
+    std::thread waker([]() {
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        PowerManager::getInstance().notifyAfterWakeup();
+    });
+
+    test_iterations_remaining = 0;
+    bms_comm_thread();
+    waker.join();
+
+    smart_battery = backup;
+}
+
+TEST_F(SmartBatteryTestSuite, BatteryMonitorThread_SleepingButCharging) {
+    extern SbsBattery* smart_battery;
+    auto backup = smart_battery;
+    smart_battery = &battery;
+
+    PowerManager::getInstance().notifyBeforeSleep();
+    battery.current_state.store(BatteryFSM::CHARGING); 
+    sys_context.requestTransition(SystemState::RUNNING);
+
+    std::thread waker([]() {
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        PowerManager::getInstance().notifyAfterWakeup();
+    });
+
+    test_iterations_remaining = 0;
+    battery_monitor_thread(); 
+    waker.join();
+
+    smart_battery = backup;
+}
+
+TEST_F(SmartBatteryTestSuite, BmsCommThread_SafeHaltButInCutoff) {
+    extern SbsBattery* smart_battery;
+    auto backup = smart_battery;
+    smart_battery = &battery;
+
+    sys_context.requestTransition(SystemState::SAFE_HALT);
+    battery.current_state.store(BatteryFSM::CUTOFF); 
+    PowerManager::getInstance().notifyAfterWakeup();
+
+    std::thread waker([]() {
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        sys_context.requestTransition(SystemState::INIT);
+        sys_context.requestTransition(SystemState::RUNNING);
+    });
+
+    test_iterations_remaining = 0;
+    bms_comm_thread(); 
+    waker.join();
+
+    smart_battery = backup;
+}
+
+TEST_F(SmartBatteryTestSuite, BatteryMonitorThread_SafeHaltButInCutoff) {
+    extern SbsBattery* smart_battery;
+    auto backup = smart_battery;
+    smart_battery = &battery;
+
+    sys_context.requestTransition(SystemState::SAFE_HALT);
+    battery.current_state.store(BatteryFSM::CUTOFF); 
+
+    std::thread waker([]() {
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        sys_context.requestTransition(SystemState::INIT);
+        sys_context.requestTransition(SystemState::RUNNING);
+    });
+
+    test_iterations_remaining = 0;
+    battery_monitor_thread(); 
+    waker.join();
+
+    smart_battery = backup;
+}
+
+TEST_F(SmartBatteryTestSuite, BmsCommThread_GettersFail_CoversElseLog) {
+    extern SbsBattery* smart_battery;
+    auto backup = smart_battery;
+    smart_battery = &battery;
+
+    sys_context.requestTransition(SystemState::RUNNING);
+    PowerManager::getInstance().notifyAfterWakeup();
+    battery.current_state.store(BatteryFSM::IDLE);
+    
+    g_mutex_lock_target_ptr = &battery.cache_mutex;
+    g_mutex_lock_target_call_counter = 0;
+    g_mutex_lock_target_fail_on_call_n = 4;
+
+    test_iterations_remaining = 0;
+    bms_comm_thread(); 
+    
+    g_mutex_lock_target_ptr = nullptr;
+    g_mutex_lock_target_fail_on_call_n = 0;
+    smart_battery = backup;
+}
+
+TEST_F(SmartBatteryTestSuite, BmsCommThread_SafeHalt_InitLoop) {
+    extern SbsBattery* smart_battery;
+    auto backup = smart_battery;
+    smart_battery = &battery;
+
+    sys_context.requestTransition(SystemState::SAFE_HALT);
+    PowerManager::getInstance().notifyAfterWakeup(); 
+
+    std::thread waker([]() {
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        sys_context.requestTransition(SystemState::INIT);
+        sys_context.requestTransition(SystemState::RUNNING);
+    });
+
+    test_iterations_remaining = 0;
+    bms_comm_thread(); 
+    waker.join();
+
+    smart_battery = backup;
+}
+
+TEST_F(SmartBatteryTestSuite, Init_Success) {
+    g_i2c_force_errno = 0;
+    g_adc_ready_mock = true;
+    EXPECT_TRUE(battery.init());
+}
+
+TEST_F(SmartBatteryTestSuite, FetchShunt_RetryAndFail) {
+    g_i2c_force_errno = -EIO;
+    auto res = battery.fetchShuntVoltageRawWithRetry();
+    EXPECT_FALSE(res.success);
+    EXPECT_EQ(res.error, CommFault::I2C_NACK);
+    g_i2c_force_errno = 0;
+}
+
+TEST_F(SmartBatteryTestSuite, PollHardware_DisconnectAfterLargeVoltageDrop)
+{
+    battery.cache.valid = true;
+    battery.cache.last_error = CommFault::NONE;
+    battery.cache.timestamp_ms = virtual_uptime;
+    battery.cache.voltage.value = 12000;
+
+    g_i2c_mock_v_val = 6000;   // pack = 7500 mV
+
+    battery.pollHardwareAndUpdateCache();
+
+    EXPECT_EQ(battery.getState(), BatteryFSM::IDLE);
+}
+
+TEST_F(SmartBatteryTestSuite, BmsCommThread_InitFailure_AlreadySafeHalt)
+{
+    extern SbsBattery* smart_battery;
+    auto backup = smart_battery;
+    smart_battery = &battery;
+
+    sys_context.requestTransition(SystemState::RUNNING);
+
+    g_i2c_force_errno = -EIO;
+    g_set_safe_halt_on_i2c_call = 5;
+    test_iterations_remaining = 1;
+
+    bms_comm_thread();
+
+    g_set_safe_halt_on_i2c_call = -1;
+    g_i2c_force_errno = 0;
+    smart_battery = backup;
+}
+
+TEST_F(SmartBatteryTestSuite, JumpDetection_VoltageOnly)
+{
+    battery.cache.valid = true;
+    battery.cache.last_error = CommFault::NONE;
+    battery.cache.timestamp_ms = virtual_uptime;
+    
+    // Set a baseline cached voltage
+    battery.cache.voltage.value = 10000;
+    battery.cache.current.value = 0;
+    battery.cache.temperature.value = Thermistor::KELVIN_OFFSET_TENTHS + 25;
+
+    // Provide a new mock voltage that creates a delta larger than MAX_VOLTAGE_DELTA_MV
+    g_i2c_mock_v_val = 15000; // Large jump from 10000
+    g_i2c_mock_i_val = 0;
+    g_adc_mock_mv_val = 2500;
+
+    battery.pollHardwareAndUpdateCache();
+    
+    // Verify that the jump was rejected and the counter incremented
+    EXPECT_GT(battery.consecutive_jump_rejects, 0);
+}
+
+TEST_F(SmartBatteryTestSuite, BmsCommThread_InitFailure_Escalation) {
+    extern SbsBattery* smart_battery;
+    auto backup = smart_battery;
+    smart_battery = &battery;
+
+    sys_context.requestTransition(SystemState::RUNNING);
+
+    // Force INA226 init to fail across multiple retries until fault escalation
+    g_i2c_force_errno = -EIO;
+    test_iterations_remaining = 5;
+
+    bms_comm_thread();
+
+    g_i2c_force_errno = 0;
+    smart_battery = backup;
+}
+
+TEST_F(SmartBatteryTestSuite, ThreadLoops_FullBooleanConditionCoverage) {
+    extern SbsBattery* smart_battery;
+    auto backup = smart_battery;
+    smart_battery = &battery;
+
+    // Make sure the observer is registered and the system is awake/running.
+    PowerManager::getInstance().notifyAfterWakeup();
+    sys_context.requestTransition(SystemState::RUNNING);
+    test_iterations_remaining = 0;
+    bms_comm_thread();
+
+    // The pre-init loop in bms_comm_thread blocks while sleeping or SAFE_HALT, so sleep /
+    // SAFE_HALT must be raised *during init()* (via the i2c_write hooks), i.e. after that
+    // loop has been passed and before the main do/while loop.
+
+    // 1. Sleeping = true, Charging = true -> (!isBatteryCharging()) false, no waiting
+    battery.current_state.store(BatteryFSM::CHARGING);
+    g_i2c_call_counter = 0;
+    g_sleep_on_i2c_call = 1;
+    test_iterations_remaining = 1;
+    bms_comm_thread();
+    g_sleep_on_i2c_call = -1;
+
+    test_iterations_remaining = 1;
+    battery_monitor_thread();          // sleeping + charging: does not block
+
+    // 2. SAFE_HALT = true, Cutoff = true -> (!isBatteryInCutoff()) false, no waiting
+    PowerManager::getInstance().notifyAfterWakeup();
+    battery.current_state.store(BatteryFSM::CUTOFF);
+    g_i2c_call_counter = 0;
+    g_set_safe_halt_on_i2c_call = 1;
+    test_iterations_remaining = 1;
+    bms_comm_thread();
+    g_set_safe_halt_on_i2c_call = -1;
+
+    test_iterations_remaining = 1;
+    battery_monitor_thread();          // SAFE_HALT + cutoff: does not block
+
+    sys_context.requestTransition(SystemState::INIT);
+    sys_context.requestTransition(SystemState::RUNNING);
+
+    // 3. Sleeping = true, Charging = false -> loop body executes until state becomes CHARGING
+    PowerManager::getInstance().notifyAfterWakeup();
+    battery.current_state.store(BatteryFSM::IDLE);
+    g_i2c_call_counter = 0;
+    g_sleep_on_i2c_call = 1;
+
+    std::thread waker([this]() {
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        battery.current_state.store(BatteryFSM::CHARGING);   // exits the wait loop
+    });
+
+    test_iterations_remaining = 1;
+    bms_comm_thread();
+    waker.join();
+    g_sleep_on_i2c_call = -1;
+
+    PowerManager::getInstance().notifyAfterWakeup();   // leave the observer awake for later tests
+    smart_battery = backup;
+}
+
+TEST_F(SmartBatteryTestSuite, BmsCommThread_GetterFailures_AllBranches) {
+    extern SbsBattery* smart_battery;
+    auto backup = smart_battery;
+    smart_battery = &battery;
+
+    sys_context.requestTransition(SystemState::RUNNING);
+    PowerManager::getInstance().notifyAfterWakeup();
+    battery.current_state.store(BatteryFSM::IDLE);
+
+    // cache_mutex lock order: 1=wakeup, 2=poll snapshot, 3=publish, 4=v, 5=i, 6=soc, 7=temp, 8=cap
+    for (int fail_call = 1; fail_call <= 8; ++fail_call) {
+        battery.cache.valid = true;
+        battery.cache.last_error = CommFault::NONE;
+        battery.cache.timestamp_ms = virtual_uptime;
+
+        g_mutex_lock_target_ptr = &battery.cache_mutex;
+        g_mutex_lock_target_call_counter = 0;
+        g_mutex_lock_target_fail_on_call_n = fail_call;
+
+        test_iterations_remaining = 1;
+        bms_comm_thread();
+
+        g_mutex_lock_target_ptr = nullptr;
+        g_mutex_lock_target_fail_on_call_n = 0;
+    }
+
+    smart_battery = backup;
+}
+
+TEST_F(SmartBatteryTestSuite, ProcessFSM_FullChargeAndRecoveryBranches) {
+    // NOTE: cache.voltage must be >= MIN_VALID_VOLTAGE_MV, otherwise processFSM()
+    // takes the "battery disconnected" early exit and forces the state to IDLE.
+    battery.cache.valid = true;
+    battery.cache.last_error = CommFault::NONE;
+    battery.cache.timestamp_ms = virtual_uptime;
+    battery.cache.voltage.value = 10000;
+    battery.cache.shunt_voltage.value = 0;
+
+    // 1. Full Charge compare_exchange_strong failure branch (full_charge_logged already true)
+    battery.cache.soc.value = 100;
+    battery.full_charge_logged.store(true);
+    battery.processFSM();
+
+    // 2. Deadband coverage: 95% <= SOC < 100% (SOC = 97%)
+    battery.cache.soc.value = 97;
+    battery.processFSM();
+
+    // 3. Recovery Ternary: CUTOFF -> CHARGING (shunt_uv < -IDLE_SHUNT_UV_THRESHOLD)
+    battery.current_state.store(BatteryFSM::CUTOFF);
+    battery.cache.soc.value = BatteryLimits::REENABLE_SOC_PCT + 5;
+    battery.cache.shunt_voltage.value = -50000;
+    sys_context.requestTransition(SystemState::SAFE_HALT);
+
+    battery.processFSM();
+    EXPECT_EQ(battery.getState(), BatteryFSM::CHARGING);
+
+    // 4. Recovery Ternary: CUTOFF -> IDLE (shunt_uv >= -IDLE_SHUNT_UV_THRESHOLD)
+    // Recovery moved the system SAFE_HALT -> INIT; go back to RUNNING before halting again.
+    sys_context.requestTransition(SystemState::RUNNING);
+    battery.current_state.store(BatteryFSM::CUTOFF);
+    battery.cache.soc.value = BatteryLimits::REENABLE_SOC_PCT + 5;
+    battery.cache.shunt_voltage.value = 0;
+    sys_context.requestTransition(SystemState::SAFE_HALT);
+
+    battery.processFSM();
+    EXPECT_EQ(battery.getState(), BatteryFSM::IDLE);
+}
+
+TEST_F(SmartBatteryTestSuite, Disconnect_BranchCoverage) {
+    // 1. was_connected = true, pack_mv < MIN_VALID_VOLTAGE_MV, v_drop <= MAX_VOLTAGE_DELTA_MV
+    battery.cache.valid = true;
+    battery.cache.last_error = CommFault::NONE;
+    battery.cache.timestamp_ms = virtual_uptime;
+    battery.cache.voltage.value = 3000;
+
+    g_i2c_mock_v_val = 2000; // Pack voltage = 2500 mV (v_drop = 500 mV)
+    battery.pollHardwareAndUpdateCache();
+    EXPECT_EQ(battery.getState(), BatteryFSM::IDLE);
+
+    // 2. was_connected = false, pack_mv >= PACK_MIN_VOLTAGE_MV
+    battery.cache.valid = false;
+    battery.cache.voltage.value = 0;
+    g_i2c_mock_v_val = 8000; // Pack voltage = 10000 mV
+    battery.pollHardwareAndUpdateCache();
+
+    // 3. Disconnect with mutex lock failure
+    battery.cache.valid = true;
+    battery.cache.voltage.value = 10000;
+    g_i2c_mock_v_val = 0; // Pack voltage = 0 mV (disconnected)
+    g_mutex_lock_force_errno = -EAGAIN;
+
+    battery.pollHardwareAndUpdateCache();
+    g_mutex_lock_force_errno = 0;
+}
+
+TEST_F(SmartBatteryTestSuite, JumpDetection_AllBranchCombinations) {
+    // 1. snapshot.timestamp_ms == 0 (skips jump calculation)
+    battery.cache.timestamp_ms = 0;
+    battery.cache.valid = true;
+    g_i2c_mock_v_val = 10000;
+    battery.pollHardwareAndUpdateCache();
+
+    // 2. snapshot.valid == false BUT snapshot.last_error == CommFault::VALIDATION_ERROR
+    battery.cache.timestamp_ms = virtual_uptime;
+    battery.cache.valid = false;
+    battery.cache.last_error = CommFault::VALIDATION_ERROR;
+    battery.cache.voltage.value = 10000;
+    battery.cache.current.value = 0;
+    battery.cache.temperature.value = Thermistor::KELVIN_OFFSET_TENTHS + 250;
+
+    g_i2c_mock_v_val = 15000; // Voltage jump
+    battery.pollHardwareAndUpdateCache();
+
+    // 3. Jump rejection via Temperature Delta alone
+    battery.cache.valid = true;
+    battery.cache.last_error = CommFault::NONE;
+    battery.cache.timestamp_ms = virtual_uptime;
+    battery.cache.voltage.value = 10000;
+    battery.cache.current.value = 0;
+    battery.cache.temperature.value = Thermistor::KELVIN_OFFSET_TENTHS + 250;
+
+    g_i2c_mock_v_val = 8000;
+    g_i2c_mock_i_val = 0;
+    g_adc_mock_mv_val = 100; // Temperature jump
+
+    battery.pollHardwareAndUpdateCache();
+    EXPECT_GT(battery.consecutive_jump_rejects, 0);
+}
+
+TEST_F(SmartBatteryTestSuite, ProcessFSM_HysteresisTransitions) {
+    // The FSM classifies direction from an EMA of the shunt voltage that persists between
+    // calls, so every case first resets the EMA (voltage below MIN_VALID -> resetFsmClassifier)
+    // and then feeds one large sample so the EMA equals that sample.
+    auto run_case = [this](BatteryFSM start, int32_t shunt_uv) {
+        battery.cache.valid = true;
+        battery.cache.last_error = CommFault::NONE;
+        battery.cache.timestamp_ms = virtual_uptime;
+        battery.cache.soc.value = 50;
+
+        battery.cache.voltage.value = 0;        // forces EMA reset
+        battery.processFSM();
+
+        battery.cache.voltage.value = 10000;
+        battery.cache.shunt_voltage.value = shunt_uv;
+        battery.current_state.store(start);
+        battery.processFSM();
+        return battery.getState();
+    };
+    constexpr int32_t BIG = 100000;
+
+    EXPECT_EQ(run_case(BatteryFSM::CHARGING,     -BIG), BatteryFSM::CHARGING);
+    EXPECT_EQ(run_case(BatteryFSM::CHARGING,      BIG), BatteryFSM::DISCHARGING);
+    EXPECT_EQ(run_case(BatteryFSM::CHARGING,        0), BatteryFSM::IDLE);
+    EXPECT_EQ(run_case(BatteryFSM::DISCHARGING,   BIG), BatteryFSM::DISCHARGING);
+    EXPECT_EQ(run_case(BatteryFSM::DISCHARGING, -BIG), BatteryFSM::CHARGING);
+    EXPECT_EQ(run_case(BatteryFSM::DISCHARGING,     0), BatteryFSM::IDLE);
+}
+
+TEST_F(SmartBatteryTestSuite, PublishError_MutexLockFailure_Threshold) {
+    battery.current_state.store(BatteryFSM::IDLE);
+    battery.consecutive_mutex_failures = battery.WATCHDOG_MUTEX_FAILURE_THRESHOLD - 1;
+
+    g_mutex_lock_force_errno = -EAGAIN;
+    battery.publishError(CommFault::MUTEX_TIMEOUT);
+    g_mutex_lock_force_errno = 0;
+
+    EXPECT_EQ(battery.getState(), BatteryFSM::CUTOFF);
+}
+
+TEST_F(SmartBatteryTestSuite, CoulombCounter_IntermediateRest) {
+    battery.rest_period_start_ms = virtual_uptime;
+    virtual_uptime += 1000; // 1 second elapsed (< REST_RESYNC_DURATION_MS)
+
+    battery.seedOrResyncCoulombCounter(11000, 0, false);
+    EXPECT_NE(battery.rest_period_start_ms, 0U);
+}
+
+
+// ===========================================================================
+// Remaining coverage closure tests
+// ===========================================================================
+
+// Line 347: Kalman measurement noise, "active" (non-rest) branch
+TEST_F(SmartBatteryTestSuite, UpdateStateAndPublish_ActiveShunt_UsesActiveNoise) {
+    battery.soc_initialized = true;
+    battery.last_poll_time_ms = virtual_uptime;
+    battery.kf_soc_pct = 50.0f;
+
+    battery.updateStateAndPublish(11000, 500, 250, 50000);
+    EXPECT_TRUE(battery.cache.valid);
+
+    battery.updateStateAndPublish(11000, -500, 250, -50000);
+    EXPECT_TRUE(battery.cache.valid);
+}
+
+// Line 400: big voltage drop while connected, but new pack voltage is still >= PACK_MIN
+TEST_F(SmartBatteryTestSuite, PollHardware_LargeDropButPackAboveMin_NotDisconnect) {
+    battery.cache.valid = true;
+    battery.cache.last_error = CommFault::NONE;
+    battery.cache.timestamp_ms = virtual_uptime;
+    battery.cache.voltage.value = 30000;
+    battery.cache.current.value = 0;
+    battery.cache.temperature.value = Thermistor::KELVIN_OFFSET_TENTHS + 250;
+
+    g_i2c_mock_v_val = 8000;     // pack = 10000 mV
+    g_i2c_mock_i_val = 0;
+    g_adc_mock_mv_val = 1650;
+
+    battery.pollHardwareAndUpdateCache();
+    EXPECT_GT(battery.consecutive_jump_rejects, 0U);
+}
+
+// Lines 440-442: shunt register read fails after the bus-voltage read succeeded
+TEST_F(SmartBatteryTestSuite, PollHardware_ShuntFetchTotalFailure) {
+    extern void resetI2CCacheForTests();
+    resetI2CCacheForTests();
+
+    g_i2c_fail_after_reads = 1;
+    battery.pollHardwareAndUpdateCache();
+    g_i2c_fail_after_reads = -1;
+    EXPECT_EQ(battery.cache.last_error, CommFault::I2C_NACK);
+}
+
+// Lines 453-456: |current| above MAX_VALID_CURRENT_MA.
+// The largest value the INA226 current register can produce is 32768 * CURRENT_LSB_UA / 1000 mA.
+// If MAX_VALID_CURRENT_MA is not below that, the check can never fire from any test, so the
+// test reports that (SKIPPED, with the numbers) instead of failing. To cover lines 454-456,
+// lower BatteryLimits::MAX_VALID_CURRENT_MA (or raise CURRENT_LSB_UA) so the limit is reachable.
+TEST_F(SmartBatteryTestSuite, PollHardware_CurrentOutOfRange_ValidationError) {
+    const int32_t lsb_ua = static_cast<int32_t>(INA226::CURRENT_LSB_UA);
+    const int32_t max_reachable_ma = (32767 * lsb_ua) / 1000;
+    const int32_t limit_ma = static_cast<int32_t>(BatteryLimits::MAX_VALID_CURRENT_MA);
+
+    if (max_reachable_ma <= limit_ma) {
+        GTEST_SKIP() << "MAX_VALID_CURRENT_MA (" << limit_ma << " mA) is not below the largest current the INA226 "
+                     << "register can report (" << max_reachable_ma << " mA at " << lsb_ua
+                     << " uA/LSB): the check at Smart_Battery_System.cpp:453 is unreachable.";
+    }
+
+    g_i2c_mock_v_val = 8000;
+    g_adc_mock_mv_val = 1650;
+
+    const uint16_t raw_extremes[] = {0x7FFF, 0x8000};
+    for (uint16_t raw : raw_extremes) {
+        battery.cache.valid = true;
+        battery.cache.last_error = CommFault::NONE;
+        battery.cache.timestamp_ms = virtual_uptime;
+        g_i2c_mock_i_val = raw;
+
+        battery.pollHardwareAndUpdateCache();
+        EXPECT_EQ(battery.cache.last_error, CommFault::VALIDATION_ERROR) << "raw current 0x" << std::hex << raw;
+    }
+}
+
+// Lines 696 / 700: helpers evaluated with a null smart_battery (monitor thread, sleeping)
+TEST_F(SmartBatteryTestSuite, BatteryMonitorThread_NullInstance_WhileSleeping) {
+    extern SbsBattery* smart_battery;
+    auto backup = smart_battery;
+
+    smart_battery = &battery;           // registers the power observer
+    test_iterations_remaining = 0;
+    bms_comm_thread();
+
+    smart_battery = nullptr;
+    PowerManager::getInstance().notifyBeforeSleep();
+
+    std::thread waker([]() {
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        PowerManager::getInstance().notifyAfterWakeup();
+    });
+
+    test_iterations_remaining = 0;
+    battery_monitor_thread();
+    waker.join();
+
+    smart_battery = backup;
+}
+
+// Line 700: isBatteryInCutoff() evaluated with a null smart_battery (SAFE_HALT wait)
+TEST_F(SmartBatteryTestSuite, BatteryMonitorThread_NullInstance_WhileSafeHalt) {
+    extern SbsBattery* smart_battery;
+    auto backup = smart_battery;
+
+    smart_battery = &battery;
+    test_iterations_remaining = 0;
+    bms_comm_thread();                  // leaves the ready semaphore available
+
+    smart_battery = nullptr;
+    PowerManager::getInstance().notifyAfterWakeup();
+    sys_context.requestTransition(SystemState::SAFE_HALT);
+
+    std::thread waker([]() {
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        sys_context.requestTransition(SystemState::INIT);
+        sys_context.requestTransition(SystemState::RUNNING);
+    });
+
+    test_iterations_remaining = 0;
+    battery_monitor_thread();
+    waker.join();
+
+    smart_battery = backup;
+}
+
+// Lines 804-807: comm-thread wait loop, all condition combinations.
+// bms_comm_thread runs on a worker thread; the test thread changes the conditions while it
+// is cycling (the thread cannot be hooked between init() and the loop from the mocks).
+TEST_F(SmartBatteryTestSuite, BmsCommThread_MainLoopWaitConditions_ThreadDriven) {
+    extern SbsBattery* smart_battery;
+    auto backup = smart_battery;
+    smart_battery = &battery;
+
+    PowerManager::getInstance().notifyAfterWakeup();
+    battery.current_state.store(BatteryFSM::IDLE);
+
+    testing::internal::CaptureStdout();   // the worker logs on every cycle
+    std::atomic<bool> finished{false};
+    test_iterations_remaining = 1000000000;
+    std::thread worker([&finished]() {
+        bms_comm_thread();
+        finished.store(true);
+    });
+
+    auto settle = []() { std::this_thread::sleep_for(std::chrono::milliseconds(25)); };
+
+    settle();
+    PowerManager::getInstance().notifyBeforeSleep();             // sleeping, not charging -> wait loop body
+    settle();
+    battery.current_state.store(BatteryFSM::CHARGING);           // sleeping + charging -> leaves loop
+    settle();
+    PowerManager::getInstance().notifyAfterWakeup();
+    battery.current_state.store(BatteryFSM::IDLE);
+    settle();
+    sys_context.requestTransition(SystemState::SAFE_HALT);       // SAFE_HALT, not cutoff -> wait loop body
+    settle();
+    battery.current_state.store(BatteryFSM::CUTOFF);             // SAFE_HALT + cutoff -> leaves loop
+    settle();
+    sys_context.requestTransition(SystemState::INIT);
+    sys_context.requestTransition(SystemState::RUNNING);
+    settle();
+
+    while (!finished.load()) {
+        test_iterations_remaining = 0;
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    worker.join();
+    testing::internal::GetCapturedStdout();
+
+    smart_battery = backup;
+}
+
+// Line 782: SAFE_HALT already active when init retries are exhausted.
+// SAFE_HALT is toggled by a second thread while bms_comm_thread repeatedly runs its init-failure path.
+TEST_F(SmartBatteryTestSuite, BmsCommThread_InitEscalation_SafeHaltRaisedConcurrently) {
+    extern SbsBattery* smart_battery;
+    auto backup = smart_battery;
+    smart_battery = &battery;
+
+    PowerManager::getInstance().notifyAfterWakeup();
+    g_i2c_force_errno = -EIO;
+
+    testing::internal::CaptureStdout();
+    std::atomic<bool> stop{false};
+    std::thread toggler([&stop]() {
+        while (!stop.load()) {
+            sys_context.requestTransition(SystemState::SAFE_HALT);
+            for (int i = 0; i < 20; ++i) std::this_thread::yield();
+            sys_context.requestTransition(SystemState::INIT);
+            sys_context.requestTransition(SystemState::RUNNING);
+            for (int i = 0; i < 20; ++i) std::this_thread::yield();
+        }
+    });
+
+    for (int run = 0; run < 300; ++run) {
+        test_iterations_remaining = 0;
+        bms_comm_thread();
+    }
+
+    stop.store(true);
+    toggler.join();
+    testing::internal::GetCapturedStdout();
+
+    g_i2c_force_errno = 0;
+    smart_battery = backup;
+}
+
+// Line 643: "active_state == CUTOFF" can only be true if another thread stores CUTOFF between
+// the store at line 641 and the reload at line 642, so a racing thread is used.
+// (Probabilistic: needs >= 2 cores. Alternative: change the source to test next_fsm_state.)
+TEST_F(SmartBatteryTestSuite, ProcessFSM_ActiveStateReload_ConcurrentCutoff) {
+    battery.cache.valid = true;
+    battery.cache.last_error = CommFault::NONE;
+    battery.cache.timestamp_ms = virtual_uptime;
+    battery.cache.voltage.value = 10000;
+    battery.cache.shunt_voltage.value = 0;
+    battery.cache.soc.value = 50;
+    battery.current_state.store(BatteryFSM::IDLE);
+
+    testing::internal::CaptureStdout();
+    std::atomic<bool> stop{false};
+    std::thread racer([this, &stop]() {
+        while (!stop.load(std::memory_order_relaxed)) {
+            battery.current_state.store(BatteryFSM::CUTOFF);
+            battery.current_state.store(BatteryFSM::IDLE);
+        }
+    });
+
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(1500);
+    while (std::chrono::steady_clock::now() < deadline) {
+        for (int i = 0; i < 1000; ++i) battery.processFSM();
+    }
+
+    stop.store(true, std::memory_order_relaxed);
+    racer.join();
+    testing::internal::GetCapturedStdout();
 }

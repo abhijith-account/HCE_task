@@ -23,6 +23,9 @@ LOG_MODULE_REGISTER(SYNC_LAYER, LOG_LEVEL_INF);
 
 extern DeviceContext sys_context;
 
+atomic_t g_hr_prod_alive = ATOMIC_INIT(1);
+atomic_t g_disp_cons_alive = ATOMIC_INIT(1);
+
 SharedHeartRateBuffer hr_buffer;
 ZephyrSemaphore display_sem(0,10);
 
@@ -78,18 +81,24 @@ namespace {
         atomic_t is_sleeping{};
     public:
         SyncPowerObserver() { atomic_set(&is_sleeping, 0); }
+        
         void beforeSleep() override {
             atomic_set(&is_sleeping, 1);
             status_work.cancel();
+            LOG_INF("SyncPowerObserver: Pausing synchronization work and heart rate threads for sleep.");
         }
+        
         void afterWakeup() override {
             atomic_set(&is_sleeping, 0);
             status_work.schedule(K_SECONDS(1));
+            LOG_INF("SyncPowerObserver: Resuming synchronization work and heart rate threads.");
         }
+        
         void sleepAborted() override {
             atomic_set(&is_sleeping, 0);
             status_work.schedule(K_SECONDS(1));
         }
+        
         bool isSleeping() const noexcept { return atomic_get(&is_sleeping) != 0; }
     };
 
@@ -106,7 +115,7 @@ namespace {
 void print_status(){
     ensure_sync_observer_registered();
 
-    if (!g_syncPowerObserver.isSleeping() && sys_context.getState() != SystemState::SAFE_HALT) {
+    if (!g_syncPowerObserver.isSleeping() && sys_context.getState() == SystemState::RUNNING) {
         LOG_INF("--- [] 1-Second System Statistics Report ---");
         status_work.schedule(K_SECONDS(1));
     }
@@ -122,7 +131,12 @@ void heart_rate_producer_thread(void){
     static uint32_t hold_ticks = 15;
 
     do{
-        if (!g_syncPowerObserver.isSleeping() && sys_context.getState() != SystemState::SAFE_HALT) {
+        while (g_syncPowerObserver.isSleeping()) {
+            k_msleep(200);
+            atomic_set(&g_hr_prod_alive, 1); // Keep WDT alive during sleep holding pattern
+        }
+
+        if (sys_context.getState() == SystemState::RUNNING) {
             hr_buffer.mutex.lock();
 
             hr_buffer.data[hr_buffer.head] = mock_hr;
@@ -150,26 +164,41 @@ void heart_rate_producer_thread(void){
             display_sem.give();
         }
         k_msleep(500);
+
+        atomic_set(&g_hr_prod_alive, 1);
+
     }while(THREAD_LOOP_CONDITION);
 }
 
 void display_consumer_thread(void){
+    ensure_sync_observer_registered();
+
     do{
-        display_sem.take(K_FOREVER);
-
-        hr_buffer.mutex.lock();
-
-        uint32_t hr_val=hr_buffer.data[hr_buffer.tail];
-        hr_buffer.tail=(hr_buffer.tail+1)%hr_buffer.data.size();
-
-        hr_buffer.mutex.unlock();
-
-        if (!g_syncPowerObserver.isSleeping() && sys_context.getState() != SystemState::SAFE_HALT) {
-            LOG_INF("[Display Consumer] Rendered Heart Rate: %u bpm", hr_val);
+        while (g_syncPowerObserver.isSleeping()) {
+            k_msleep(200);
+            atomic_set(&g_disp_cons_alive, 1); // Keep WDT alive during sleep holding pattern
         }
+
+        if (display_sem.take(K_MSEC(500)) == 0) {
+            
+            hr_buffer.mutex.lock();
+
+            uint32_t hr_val=hr_buffer.data[hr_buffer.tail];
+            hr_buffer.tail=(hr_buffer.tail+1)%hr_buffer.data.size();
+
+            hr_buffer.mutex.unlock();
+
+            if (sys_context.getState() == SystemState::RUNNING) {
+                LOG_INF("[Display Consumer] Rendered Heart Rate: %u bpm", hr_val);
+            }
+        }
+
+        atomic_set(&g_disp_cons_alive, 1);
+
     }while(THREAD_LOOP_CONDITION);
 }
 
+extern const k_tid_t hr_prod_tid;
+extern const k_tid_t disp_cons_tid;
 K_THREAD_DEFINE(hr_prod_tid,256,heart_rate_producer_thread,NULL,NULL,NULL,8,0,0);
 K_THREAD_DEFINE(disp_cons_tid,1024,display_consumer_thread,NULL,NULL,NULL,9,0,0);
-

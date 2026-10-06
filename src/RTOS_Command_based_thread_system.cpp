@@ -1,5 +1,6 @@
 #include <zephyr/kernel.h>
 #include <zephyr/sys/atomic.h>
+#include <zephyr/sys/printk.h>
 #include "RTOS_Command_based_thread_system.h"
 #include <zephyr/logging/log.h>
 #include "Static_Memory+MISRA_Compliance_Layer.h"
@@ -16,6 +17,29 @@
 
 LOG_MODULE_REGISTER(COMMANDS, LOG_LEVEL_INF);
 
+#define TRACE_BUFFER_SIZE 4096
+#define TRACE_BUFFER_MASK (TRACE_BUFFER_SIZE - 1)
+
+enum class TraceType : uint8_t {
+    SWITCH_IN,
+    SWITCH_OUT
+};
+
+struct TraceEvent {
+    uint32_t timestamp;
+    struct k_thread* thread;
+    TraceType type;
+};
+
+static TraceEvent g_trace_buffer[TRACE_BUFFER_SIZE];
+static volatile uint32_t g_trace_head = 0;
+static uint32_t g_trace_tail = 0;
+atomic_t g_producer_alive = ATOMIC_INIT(1);
+atomic_t g_processor_alive = ATOMIC_INIT(1);
+atomic_t g_logger_alive = ATOMIC_INIT(1);
+
+atomic_t g_switch_hook_hits = ATOMIC_INIT(0);
+
 inline void logCommandError(const char* tag, uint32_t id, const char* msg) noexcept {
     LOG_ERR("[%s] #%u: %s", tag, id, msg);
 }
@@ -24,6 +48,9 @@ struct alignas(8) MaxCommandSize { uint8_t buffer[PoolConfig::Size]{}; };
 StaticPool<MaxCommandSize, PoolConfig::Elements> g_commandPool;
 QueueStats g_queueStats;
 static bool g_bme280_initialized = false;
+static bool g_lps22hb_initialized = false; 
+static bool g_pav3015_initialized = false;
+extern bool g_usb_connected;
 
 static_assert(sizeof(SensorReadCmd) <= sizeof(MaxCommandSize), "SensorReadCmd exceeds memory pool size");
 static_assert(sizeof(ComputeCmd) <= sizeof(MaxCommandSize), "ComputeCmd exceeds memory pool size");
@@ -39,20 +66,6 @@ static_assert(alignof(MaxCommandSize) >= alignof(PrintBME280Cmd), "Alignment mis
 
 K_MSGQ_DEFINE(processor_queue, sizeof(ICommand*), QueueConfig::Depth, QueueConfig::Alignment);
 K_MSGQ_DEFINE(logger_queue, sizeof(ICommand*), QueueConfig::Depth, QueueConfig::Alignment);
-
-class CycleProfiler {
-private:
-    const char* tag;
-    uint32_t id{};
-    uint32_t start{};
-public:
-    CycleProfiler(const char* t, uint32_t cmd_id) noexcept : tag(t), id(cmd_id), start(k_cycle_get_32()) {}
-    ~CycleProfiler() {
-        #if defined(CONFIG_LOG_EXECUTION_CYCLES) || defined(IS_TEST_ENVIRONMENT)
-        LOG_INF("[%s] #%u: Execution took %u cycles", tag, id, k_cycle_get_32() - start);
-        #endif
-    }
-};
 
 void* allocateCommandMemory() noexcept {
     void* mem = g_commandPool.allocate();
@@ -89,7 +102,7 @@ bool printMeasurement(SensorID id, float value) noexcept {
     return true;
 }
 
-ICommand::ICommand() : timestamp_queued(k_cycle_get_32()) {
+ICommand::ICommand(){
     static atomic_t cmd_counter = 0;
     command_id = static_cast<uint32_t>(atomic_inc(&cmd_counter));
 }
@@ -101,10 +114,6 @@ void ICommand::operator delete(void* ptr) noexcept {
 void ICommand::destroy() noexcept {
     this->~ICommand();
     g_commandPool.deallocate(this);
-}
-
-uint32_t ICommand::queueDelay() const noexcept {
-    return k_cycle_get_32() - timestamp_queued;
 }
 
 extern DeviceContext sys_context;
@@ -170,14 +179,11 @@ namespace {
             calib_mutex_initialized = true;
         }
     }
-    
+
     [[nodiscard]] bool readTempCalibration(uint16_t addr) noexcept {
-        auto t1 = SystemObjects::i2c().readWord(addr, BME280CalibReg::DIG_T1); if (!t1.isOk()) { return false;
-}
-        auto t2 = SystemObjects::i2c().readWord(addr, BME280CalibReg::DIG_T2); if (!t2.isOk()) { return false;
-}
-        auto t3 = SystemObjects::i2c().readWord(addr, BME280CalibReg::DIG_T3); if (!t3.isOk()) { return false;
-}
+        auto t1 = SystemObjects::i2c().readWord(addr, BME280CalibReg::DIG_T1); if (!t1.isOk()) { return false; }
+        auto t2 = SystemObjects::i2c().readWord(addr, BME280CalibReg::DIG_T2); if (!t2.isOk()) { return false; }
+        auto t3 = SystemObjects::i2c().readWord(addr, BME280CalibReg::DIG_T3); if (!t3.isOk()) { return false; }
 
         g_bme280Calib.dig_T1 = t1.unwrap();
         g_bme280Calib.dig_T2 = static_cast<int16_t>(t2.unwrap());
@@ -186,24 +192,15 @@ namespace {
     }
 
     [[nodiscard]] bool readPressureCalibration(uint16_t addr) noexcept {
-        auto p1 = SystemObjects::i2c().readWord(addr, BME280CalibReg::DIG_P1); if (!p1.isOk()) { return false;
-}
-        auto p2 = SystemObjects::i2c().readWord(addr, BME280CalibReg::DIG_P2); if (!p2.isOk()) { return false;
-}
-        auto p3 = SystemObjects::i2c().readWord(addr, BME280CalibReg::DIG_P3); if (!p3.isOk()) { return false;
-}
-        auto p4 = SystemObjects::i2c().readWord(addr, BME280CalibReg::DIG_P4); if (!p4.isOk()) { return false;
-}
-        auto p5 = SystemObjects::i2c().readWord(addr, BME280CalibReg::DIG_P5); if (!p5.isOk()) { return false;
-}
-        auto p6 = SystemObjects::i2c().readWord(addr, BME280CalibReg::DIG_P6); if (!p6.isOk()) { return false;
-}
-        auto p7 = SystemObjects::i2c().readWord(addr, BME280CalibReg::DIG_P7); if (!p7.isOk()) { return false;
-}
-        auto p8 = SystemObjects::i2c().readWord(addr, BME280CalibReg::DIG_P8); if (!p8.isOk()) { return false;
-}
-        auto p9 = SystemObjects::i2c().readWord(addr, BME280CalibReg::DIG_P9); if (!p9.isOk()) { return false;
-}
+        auto p1 = SystemObjects::i2c().readWord(addr, BME280CalibReg::DIG_P1); if (!p1.isOk()) { return false; }
+        auto p2 = SystemObjects::i2c().readWord(addr, BME280CalibReg::DIG_P2); if (!p2.isOk()) { return false; }
+        auto p3 = SystemObjects::i2c().readWord(addr, BME280CalibReg::DIG_P3); if (!p3.isOk()) { return false; }
+        auto p4 = SystemObjects::i2c().readWord(addr, BME280CalibReg::DIG_P4); if (!p4.isOk()) { return false; }
+        auto p5 = SystemObjects::i2c().readWord(addr, BME280CalibReg::DIG_P5); if (!p5.isOk()) { return false; }
+        auto p6 = SystemObjects::i2c().readWord(addr, BME280CalibReg::DIG_P6); if (!p6.isOk()) { return false; }
+        auto p7 = SystemObjects::i2c().readWord(addr, BME280CalibReg::DIG_P7); if (!p7.isOk()) { return false; }
+        auto p8 = SystemObjects::i2c().readWord(addr, BME280CalibReg::DIG_P8); if (!p8.isOk()) { return false; }
+        auto p9 = SystemObjects::i2c().readWord(addr, BME280CalibReg::DIG_P9); if (!p9.isOk()) { return false; }
 
         g_bme280Calib.dig_P1 = p1.unwrap();
         g_bme280Calib.dig_P2 = static_cast<int16_t>(p2.unwrap());
@@ -245,7 +242,6 @@ namespace {
             return true;
         }
 
-
         if (!readTempCalibration(addr) || !readPressureCalibration(addr) || !readHumidityCalibration(addr)) {
             k_mutex_unlock(&calib_mutex);
             return false;
@@ -254,7 +250,6 @@ namespace {
         k_mutex_unlock(&calib_mutex);
         LOG_INF("[%s] BME280 ROM Calibration Loaded Successfully.", LogTags::PRODUCER);
         return true;
-
     }
 }
 
@@ -345,7 +340,6 @@ uint64_t SensorReadCmd::readMockPAVData() const noexcept {
     static int32_t mock_pav = MockValues::PAV_BASE;
     static bool increasing = true;
 
-    // Create a simple synthetic waveform for airflow
     if (increasing) {
         mock_pav += 1;
         if (mock_pav > static_cast<int32_t>(MockValues::PAV_BASE) + 50) { 
@@ -389,28 +383,46 @@ static uint64_t last_raw_lps_t = 0;
 static uint64_t last_raw_pav = 0;
 
 void SensorReadCmd::execute() noexcept {
-    CycleProfiler profiler(LogTags::READ, command_id);
     uint64_t raw = 0;
+
+    static uint8_t bme_failures = 0;
+    static uint8_t lps_failures = 0;
+    static uint8_t pav_failures = 0;
+
+    uint8_t* fail_counter = nullptr;
+    if (sensor_id == SensorID::BME280) fail_counter = &bme_failures;
+    else if (sensor_id == SensorID::LPS22HB) fail_counter = &lps_failures;
+    else if (sensor_id == SensorID::PAV3015) fail_counter = &pav_failures;
 
 #ifdef CONFIG_BOARD_MPS2_AN386
     if (sensor_id == SensorID::PAV3015) {
         raw = readMockPAVData();
+        if (fail_counter) *fail_counter = 0;
     } else {
         auto res = readHardwareData();
         if (!res.isOk()) {
             logCommandError(LogTags::READ, command_id, "I2C Transaction Failed.");
+            if (fail_counter && ++(*fail_counter) >= 3) {
+                SystemObjects::context().triggerFault("I2C Sensor Disconnected");
+            }
             return;
         }
         raw = res.unwrap();
+        if (fail_counter) *fail_counter = 0;
     } 
 #else
     auto res = readHardwareData();
     if (!res.isOk()) {
         logCommandError(LogTags::READ, command_id, "I2C Transaction Failed.");
+        if (fail_counter && ++(*fail_counter) >= 3) {
+            SystemObjects::context().triggerFault("I2C Sensor Disconnected");
+        }
         return;
     }
     raw = res.unwrap();
+    if (fail_counter) *fail_counter = 0;
 #endif
+
     uint64_t* last_val_ptr = nullptr;
     uint64_t threshold = 0;
 
@@ -430,7 +442,6 @@ void SensorReadCmd::execute() noexcept {
 
     if (last_val_ptr != nullptr) {
         uint64_t diff = (raw > *last_val_ptr) ? (raw - *last_val_ptr) : (*last_val_ptr - raw);
-        
         if (diff > threshold || *last_val_ptr == 0) {
             *last_val_ptr = raw;
             SystemObjects::power().reportActivity();
@@ -455,7 +466,6 @@ ComputeCmd::ComputeCmd(SensorID s_id, uint8_t r_addr, uint64_t data) noexcept
     : sensor_id(s_id), reg_addr(r_addr), raw_data(data) {}
 
 void ComputeCmd::execute() noexcept {
-    CycleProfiler profiler(LogTags::COMPUTE, command_id);
 
     switch (sensor_id) {
         case SensorID::BME280: {
@@ -472,11 +482,9 @@ void ComputeCmd::execute() noexcept {
             static bool has_pressure = false;
 
             if (reg_addr == SensorReg::LPS_P_DESC.reg) {
-
                 lps_data.pressure = LPS22HBMath::decodePressure(raw_data);
                 has_pressure = true;
             } else if (reg_addr == SensorReg::LPS_T_DESC.reg) {
-
                 lps_data.temperature = LPS22HBMath::decodeTemperature(raw_data);
                 if (has_pressure) {
                     (void)printLPS22HBMeasurement(lps_data);
@@ -555,44 +563,94 @@ bool printLPS22HBMeasurement(const LPS22HBData& data) noexcept {
     return true;
 }
 
-void producer_thread(void) {
+extern "C" void producer_thread(void *arg1, void *arg2, void *arg3) {
     ProducerState state = ProducerState::ReadBME;
 
     SystemObjects::power().registerObserver(&g_powerObserver);
 
     do {
-       if (SystemObjects::context().getState() != SystemState::SAFE_HALT && !g_powerObserver.isSleeping()) {
-           SystemObjects::power().reportActivity();
-           if (!g_bme280_initialized) {
-               const uint16_t bme_addr = static_cast<uint16_t>(SensorID::BME280);
-               auto res1 = SystemObjects::i2c().writeRegister(bme_addr, SensorReg::BME280_CTRL_HUM, BME280Config::CTRL_HUM);
-               auto res2 = SystemObjects::i2c().writeRegister(bme_addr, SensorReg::BME280_CTRL_MEAS, BME280Config::CTRL_MEAS);
-               if (!res1.isOk() || !res2.isOk()) {
-                   LOG_ERR("[%s] Failed to initialize BME280. Retrying...", LogTags::PRODUCER);
-               } else {
-                   g_bme280_initialized = true;
-               }
-           }
-
-           bool enqueued = false;
-            if (state == ProducerState::ReadBME) {
-                enqueued = enqueueCommand<SensorReadCmd>(PROCESSOR_Q, SensorReg::BME_DESC.id, SensorReg::BME_DESC.reg, SensorReg::BME_DESC.len);
-                state = ProducerState::ReadLPS;
-            } else if (state == ProducerState::ReadLPS) {
-                bool enq1 = false ;
-                enq1= enqueueCommand<SensorReadCmd>(PROCESSOR_Q, SensorReg::LPS_P_DESC.id, SensorReg::LPS_P_DESC.reg, SensorReg::LPS_P_DESC.len);
-                bool enq2 = false ;
-                enq2= enqueueCommand<SensorReadCmd>(PROCESSOR_Q, SensorReg::LPS_T_DESC.id, SensorReg::LPS_T_DESC.reg, SensorReg::LPS_T_DESC.len);
-                enqueued = enq1 && enq2;
-                state = ProducerState::ReadPAV;
-            } else {
-                enqueued = enqueueCommand<SensorReadCmd>(PROCESSOR_Q, SensorReg::PAV_DESC.id, SensorReg::PAV_DESC.reg, SensorReg::PAV_DESC.len);
-                state = ProducerState::ReadBME;
-            }
-
-           (void)enqueued;
+       while (g_powerObserver.isSleeping()) {
+           k_msleep(200);
+           atomic_set(&g_producer_alive, 1);
        }
+
+       const SystemState sys_state = SystemObjects::context().getState();
+
+       if (sys_state == SystemState::FAULT) {
+           LOG_WRN("[%s] System in FAULT state. Disabling sensors and entering SAFE_HALT.", LogTags::PRODUCER);
+           g_bme280_initialized = false;
+           g_lps22hb_initialized = false;
+           g_pav3015_initialized = false;
+           (void)SystemObjects::context().requestTransition(SystemState::SAFE_HALT);
+           k_msleep(100);
+           continue;
+       }
+
+       if (sys_state == SystemState::SAFE_HALT) {
+           /* INDUSTRY STANDARD SAFE HALT: Lock out all autonomous recovery and safely block the thread.
+            * This requires a hardware reboot or an explicitly authorized override IRQ to clear. */
+           LOG_ERR("[%s] System safely halted. Awaiting manual hardware reset.", LogTags::PRODUCER);
+           while (SystemObjects::context().getState() == SystemState::SAFE_HALT) {
+               k_msleep(1000);
+               atomic_set(&g_producer_alive, 1); // Keep WDT fed so it doesn't bounce immediately
+           }
+           continue;
+       }
+
+       SystemObjects::power().reportActivity();
+
+       if (!g_bme280_initialized) {
+           const uint16_t bme_addr = static_cast<uint16_t>(SensorID::BME280);
+           auto res1 = SystemObjects::i2c().writeRegister(bme_addr, SensorReg::BME280_CTRL_HUM, BME280Config::CTRL_HUM);
+           auto res2 = SystemObjects::i2c().writeRegister(bme_addr, SensorReg::BME280_CTRL_MEAS, BME280Config::CTRL_MEAS);
+           if (!res1.isOk() || !res2.isOk()) {
+               LOG_ERR("[%s] Failed to initialize BME280. Retrying...", LogTags::PRODUCER);
+           } else {
+               g_bme280_initialized = true;
+               SystemObjects::context().requestTransition(SystemState::RUNNING);
+               k_msleep(20);
+           }
+       }
+
+       if (!g_lps22hb_initialized) {
+           const uint16_t lps_addr = static_cast<uint16_t>(SensorID::LPS22HB);
+           auto res = SystemObjects::i2c().writeRegister(lps_addr, 0x10, 0x10); 
+           if (!res.isOk()) {
+               LOG_ERR("[%s] Failed to initialize LPS22HB. Retrying...", LogTags::PRODUCER);
+           } else {
+               g_lps22hb_initialized = true;
+               LOG_INF("[%s] LPS22HB Initialized Successfully.", LogTags::PRODUCER);
+           }
+       }
+
+       if (!g_pav3015_initialized) {
+           const uint16_t pav_addr = static_cast<uint16_t>(SensorID::PAV3015);
+           auto res = SystemObjects::i2c().readWord(pav_addr, 0x00);
+           if (!res.isOk()) {
+               LOG_ERR("[%s] Failed to initialize PAV3015. Retrying...", LogTags::PRODUCER);
+           } else {
+               g_pav3015_initialized = true;
+               LOG_INF("[%s] PAV3015 Initialized Successfully.", LogTags::PRODUCER);
+           }
+       }
+
+       bool enqueued = false;
+       if (state == ProducerState::ReadBME) {
+           enqueued = enqueueCommand<SensorReadCmd>(PROCESSOR_Q, SensorReg::BME_DESC.id, SensorReg::BME_DESC.reg, SensorReg::BME_DESC.len);
+           state = ProducerState::ReadLPS;
+       } else if (state == ProducerState::ReadLPS) {
+           bool enq1 = enqueueCommand<SensorReadCmd>(PROCESSOR_Q, SensorReg::LPS_P_DESC.id, SensorReg::LPS_P_DESC.reg, SensorReg::LPS_P_DESC.len);
+           bool enq2 = enqueueCommand<SensorReadCmd>(PROCESSOR_Q, SensorReg::LPS_T_DESC.id, SensorReg::LPS_T_DESC.reg, SensorReg::LPS_T_DESC.len);
+           enqueued = enq1 && enq2;
+           state = ProducerState::ReadPAV;
+       } else {
+           enqueued = enqueueCommand<SensorReadCmd>(PROCESSOR_Q, SensorReg::PAV_DESC.id, SensorReg::PAV_DESC.reg, SensorReg::PAV_DESC.len);
+           state = ProducerState::ReadBME;
+       }
+
+       (void)enqueued;
        k_msleep(500);
+       atomic_set(&g_producer_alive, 1);
     } while(THREAD_LOOP_CONDITION);
 }
 
@@ -600,54 +658,172 @@ void producer_thread(void) {
 void resetRtosCommandTestState() noexcept {
     g_bme280Calib = BME280Calibration{};
     g_bme280_initialized = false;
+    g_lps22hb_initialized = false;
+    g_pav3015_initialized = false;
     g_powerObserver.resetForTest();
 }
 void resetSensorReadCmdLastValsForTest() noexcept;
 #endif
 
-void processor_thread(void) {
+extern "C" void processor_thread(void *arg1, void *arg2, void *arg3) {
     ICommand* incoming_cmd;
     do {
-        // Use K_FOREVER to block indefinitely until a command arrives
-        if (k_msgq_get(PROCESSOR_Q, &incoming_cmd, K_FOREVER) == 0) {
-            #ifdef CONFIG_LOG_PREEMPTION_DELAY
-            LOG_INF("[%s] #%u: waited %u cycles before dispatch (pre-emption delay)",
-                    LogTags::COMPUTE, incoming_cmd->command_id, incoming_cmd->queueDelay());
-            #endif
+        // Halt processing entirely while in SAFE_HALT
+        while (g_powerObserver.isSleeping() || sys_context.getState() == SystemState::SAFE_HALT) {
+            k_msleep(1000);
+            atomic_set(&g_processor_alive, 1);
+        }
+
+        if (k_msgq_get(PROCESSOR_Q, &incoming_cmd, K_MSEC(500)) == 0) {
             incoming_cmd->execute();
             incoming_cmd->destroy();
         }
+
+        atomic_set(&g_processor_alive, 1);
     } while(THREAD_LOOP_CONDITION);
 }
 
-void logger_thread(void) {
+extern "C" void logger_thread(void *arg1, void *arg2, void *arg3) {
     ICommand* incoming_cmd;
     do {
-        // Use K_FOREVER to block indefinitely until a command arrives
-        if (k_msgq_get(LOGGER_Q, &incoming_cmd, K_FOREVER) == 0) {
-            #ifdef CONFIG_LOG_PREEMPTION_DELAY
-            LOG_INF("[%s] #%u: waited %u cycles before dispatch (pre-emption delay)",
-                    LogTags::PRINT, incoming_cmd->command_id, incoming_cmd->queueDelay());
-            #endif
+        // Halt processing entirely while in SAFE_HALT
+        while (g_powerObserver.isSleeping() || sys_context.getState() == SystemState::SAFE_HALT) {
+            k_msleep(1000);
+            atomic_set(&g_logger_alive, 1);
+        }
+
+        if (k_msgq_get(LOGGER_Q, &incoming_cmd, K_MSEC(500)) == 0) {
             incoming_cmd->execute();
             incoming_cmd->destroy();
         }
+
+        atomic_set(&g_logger_alive, 1);
     } while(THREAD_LOOP_CONDITION);
 }
 
-K_THREAD_DEFINE(producer_tid,  ThreadConfig::StackSmall, producer_thread,  NULL, NULL, NULL, ThreadConfig::PrioProducer,  0, 0);
+K_THREAD_DEFINE(producer_tid,  ThreadConfig::StackLarge, producer_thread,  NULL, NULL, NULL, ThreadConfig::PrioProducer,  0, 0);
 K_THREAD_DEFINE(processor_tid, ThreadConfig::StackLarge, processor_thread, NULL, NULL, NULL, ThreadConfig::PrioProcessor, 0, 0);
+extern const k_tid_t logger_tid;
 K_THREAD_DEFINE(logger_tid,    ThreadConfig::StackLarge, logger_thread,    NULL, NULL, NULL, ThreadConfig::PrioLogger,    0, 0);
 
-extern "C" void sys_trace_thread_switched_in_user(struct k_thread *thread) {
-    if (thread == producer_tid || thread == processor_tid || thread == logger_tid) {
-        LOG_INF("PREEMPT: tid=%p switched IN  @ %u cycles", (void*)thread, k_cycle_get_32());
+extern "C" {
+    enum class TraceThread : uint8_t {
+    PRODUCER = 0,
+    PROCESSOR,
+    LOGGER,
+    INVALID
+    };
+
+    static TraceThread get_target_thread(struct k_thread *thread) {
+        if (thread == producer_tid)  return TraceThread::PRODUCER;
+        if (thread == processor_tid) return TraceThread::PROCESSOR;
+        if (thread == logger_tid)    return TraceThread::LOGGER;
+        return TraceThread::INVALID;
+    }
+    static inline void recordTraceEventLocked(struct k_thread* thread, TraceType type) noexcept {
+        /* Caller already holds irq_lock() - do not lock again here. */
+        if (get_target_thread(thread) == TraceThread::INVALID) {
+            return;
+        }
+
+        const uint32_t slot = g_trace_head & TRACE_BUFFER_MASK;
+        
+        g_trace_buffer[slot].timestamp = k_cycle_get_32();
+        g_trace_buffer[slot].thread = thread;
+        g_trace_buffer[slot].type = type;
+        
+        g_trace_head = g_trace_head + 1;
+    }
+
+    void sys_trace_thread_switched_in_user(void) {
+        unsigned int key = irq_lock();
+        struct k_thread *thread = k_sched_current_thread_query();
+        
+        // Replaced get_target_thread_index with get_target_thread
+        if (get_target_thread(thread) != TraceThread::INVALID) {
+            atomic_inc(&g_switch_hook_hits);
+            recordTraceEventLocked(thread, TraceType::SWITCH_IN);
+        }
+        irq_unlock(key);
+    }
+    
+    void sys_trace_thread_switched_out_user(void) {
+        unsigned int key = irq_lock();
+        struct k_thread *thread = k_sched_current_thread_query();
+        recordTraceEventLocked(thread, TraceType::SWITCH_OUT);
+        irq_unlock(key);
     }
 }
+extern "C" void trace_logger_thread(void *arg1, void *arg2, void *arg3) {
+    
+    // Array to track the last SWITCH_OUT timestamp for PRODUCER, PROCESSOR, LOGGER
+    uint32_t thread_out_times[3] = {0, 0, 0};
 
-extern "C" void sys_trace_thread_switched_out_user(struct k_thread *thread) {
-    if (thread == producer_tid || thread == processor_tid || thread == logger_tid) {
-        LOG_INF("PREEMPT: tid=%p switched OUT @ %u cycles", (void*)thread, k_cycle_get_32());
+    while (true) {
+        while (g_powerObserver.isSleeping() || sys_context.getState() == SystemState::SAFE_HALT) {
+            k_msleep(1000);
+        }
+        
+        uint32_t current_head = g_trace_head;
+
+        if (current_head - g_trace_tail > TRACE_BUFFER_SIZE) {
+            uint32_t skipped = (current_head - g_trace_tail) - TRACE_BUFFER_SIZE;
+            g_trace_tail = current_head - TRACE_BUFFER_SIZE;
+            LOG_WRN("Trace buffer overflow: skipped %u stale events", skipped);
+        }
+
+        while (g_trace_tail != g_trace_head) {
+            uint32_t wrapped_idx = g_trace_tail & TRACE_BUFFER_MASK;
+            TraceEvent event;
+
+            unsigned int key = irq_lock();
+            if (g_trace_head - g_trace_tail > TRACE_BUFFER_SIZE) {
+                irq_unlock(key);
+                break; 
+            }
+            event = g_trace_buffer[wrapped_idx];
+            irq_unlock(key);
+
+            TraceThread t_enum = get_target_thread(event.thread);
+            const char* t_name = nullptr;
+            
+            switch (t_enum) {
+                case TraceThread::PRODUCER:  t_name = "PRODUCER "; break;
+                case TraceThread::PROCESSOR: t_name = "PROCESSOR"; break;
+                case TraceThread::LOGGER:    t_name = "LOGGER   "; break;
+                default: break;
+            }
+
+            if (t_name != nullptr) {
+                uint32_t timestamp_us = k_cyc_to_us_floor32(event.timestamp);
+                int t_idx = static_cast<int>(t_enum);
+
+                if (event.type == TraceType::SWITCH_OUT) {
+                    // Record the time the thread was suspended
+                    thread_out_times[t_idx] = timestamp_us;
+                } 
+                else if (event.type == TraceType::SWITCH_IN) {
+                    // Calculate how long the thread was preempted/blocked
+                    uint32_t blocked_duration = timestamp_us - thread_out_times[t_idx];
+                    
+                    if (thread_out_times[t_idx] > 0) {
+                        // Define our known, expected thread suspensions
+                        bool is_fast_i2c_wait = (blocked_duration < 1000);
+                        bool is_normal_500ms_sleep = (blocked_duration >= 490000 && blocked_duration <= 510000);
+
+                        // If the delay is NOT expected, it is a real preemption!
+                        if (!is_fast_i2c_wait && !is_normal_500ms_sleep) {
+                            LOG_INF("[%s] Preemption delay: %u us", t_name, blocked_duration);
+                        }
+                    }
+                }
+            }
+            g_trace_tail++;
+        }
+
+        k_msleep(50); 
     }
 }
-
+extern const k_tid_t trace_tid;
+// Define the thread with the lowest priority to avoid starving your compute loops
+K_THREAD_DEFINE(trace_tid, 1024, trace_logger_thread, NULL, NULL, NULL, K_LOWEST_APPLICATION_THREAD_PRIO, 0, 0);

@@ -17,58 +17,81 @@
 
 #include <zephyr/debug/thread_analyzer.h>
 #include <new>
+#include <zephyr/kernel.h>
+#include <zephyr/sys/atomic.h>
+#include <zephyr/logging/log.h>
 
 LOG_MODULE_REGISTER(MAIN_OS, LOG_LEVEL_INF);
 
+// Add the external flag at the top with your other externs
+extern bool g_usb_connected;
 extern DeviceContext sys_context;
 extern ZephyrWorkQueue status_work;
+
+#ifdef CONFIG_USB_DEVICE_STACK
+/* Callback to monitor physical USB hardware events */
+static void usb_status_cb(enum usb_dc_status_code cb_status, const uint8_t *param) {
+    switch (cb_status) {
+        case USB_DC_DISCONNECTED:
+        case USB_DC_SUSPEND:
+            if (g_usb_connected) {
+                LOG_WRN("USB Hardware Event: Cable Disconnected");
+                g_usb_connected = false;
+                
+                // Immediately trigger the fault when the physical cable is pulled
+                sys_context.triggerFault("USB CDC Cable Disconnected");
+            }
+            break;
+        case USB_DC_CONFIGURED:
+            if (!g_usb_connected) {
+                LOG_INF("USB Hardware Event: Cable Connected & Configured");
+                g_usb_connected = true;
+            }
+            break;
+        default:
+            break;
+    }
+}
+#endif
 
 int main(void)
 {
     const struct device *console_dev  = nullptr;
-    console_dev=DEVICE_DT_GET(DT_CHOSEN(zephyr_console));
+    console_dev = DEVICE_DT_GET(DT_CHOSEN(zephyr_console));
+    
     if (device_is_ready(console_dev)) {
-        
 #ifdef CONFIG_USB_DEVICE_STACK
-        /* Initialize USB Subsystem ONCE globally */
-        int usb_err = usb_enable(nullptr);
+        /* Initialize USB Subsystem ONCE globally, attaching our new callback */
+        int usb_err = usb_enable(usb_status_cb); // Changed from nullptr
         
-        /* Accept 0 (Success) or -EALREADY (-120, already initialized) */
         if (usb_err == 0 || usb_err == -EALREADY) {
             uint32_t dtr = 0;
-            int timeout = 30; // 3 seconds max wait for early logs (100ms * 30)
+            int timeout = 30; // 3 seconds max wait
 
             while (!dtr && timeout > 0) {
-                int ret = 0 ;
-                ret = uart_line_ctrl_get(console_dev, UART_LINE_CTRL_DTR, &dtr);
-                if (ret != 0) {
-                    /* If line control isn't supported, break immediately */
-                    break; 
-                }
+                // If the hardware callback fired and marked us unplugged, skip the wait
+                if (!g_usb_connected) break; 
+                
+                int ret = uart_line_ctrl_get(console_dev, UART_LINE_CTRL_DTR, &dtr);
+                if (ret == -ENOTSUP || ret == -ENOSYS) break; 
+                
                 k_msleep(100);
                 timeout--;
             }
             
-            /* Brief delay to allow desktop serial terminal software to render */
-            if (dtr) {
-                k_msleep(250); 
-            }
+            if (dtr) k_msleep(250); 
         } else {
             LOG_ERR("Failed to initialize USB subsystem (err %d)", usb_err);
         }
 #endif
     }
 
-    /* 2. Resume boot sequence - logs will now safely hit the terminal */
     LOG_INF("Command-Based RTOS Booting");
 
     ConfigStore& config = ConfigStore::getInstance();
-
     if (config.init()) {
         config.validateEndurance(ConfigKey::ALARM_THRESHOLD_BASE);
-
         uint16_t infusion_rate = 0;
-
         if (!config.get(ConfigKey::INFUSION_RATE_BASE, infusion_rate)) {
             LOG_WRN("First boot detected. Setting default infusion rate.");
             config.set(ConfigKey::INFUSION_RATE_BASE, static_cast<uint16_t>(50));
@@ -76,10 +99,7 @@ int main(void)
             LOG_INF("Loaded Infusion Rate from NVS: %u mL/hr", infusion_rate);
         }
     }
-
-    sys_context.requestTransition(SystemState::RUNNING);
-
+    
     status_work.schedule(K_SECONDS(1));
-
     return 0;
 }

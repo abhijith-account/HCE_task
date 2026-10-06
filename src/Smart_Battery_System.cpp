@@ -1,8 +1,11 @@
 #include "Smart_Battery_System.h"
 #include "Persistent_Configuration_System.h"
+#include "Power_Management_System.h" 
 #include <zephyr/logging/log.h>
 #include <zephyr/device.h>
 #include <zephyr/sys/byteorder.h>
+#include <zephyr/sys/atomic.h>
+#include <zephyr/kernel.h>
 #include <array>
 #include <algorithm>
 
@@ -19,6 +22,13 @@ extern I2CManager i2c_manager;
 #endif
 
 LOG_MODULE_REGISTER(BATTERY_SYS, LOG_LEVEL_INF);
+
+/* Thread Health Monitoring Flags for Battery System */
+atomic_t g_bms_comm_alive = ATOMIC_INIT(1);
+atomic_t g_batt_mon_alive = ATOMIC_INIT(1);
+
+extern const k_tid_t bms_comm_tid;
+extern const k_tid_t battery_tid;
 
 extern "C" void daly_watchdog_feed_hook(void) __attribute__((weak));
 
@@ -47,133 +57,100 @@ namespace {
             return CommFault::I2C_NACK;
         }
     }
-}
 
-namespace CurveFitting {
-    struct OcvPoint { uint16_t mv{}; uint8_t soc_pct{}; };
-    struct NtcPoint { int32_t mv; int16_t temp_tenths; };
+    // --- FSM direction filtering state --------------------------------------
+    // Low-pass filter (EMA) the shunt current, then apply the hysteresis thresholds
+    // to the *smoothed* value instead of raw samples to prevent FSM state chatter.
+    constexpr int32_t FSM_HYSTERESIS_UV = 1500;   // extra margin (uV) to *exit* the current direction
+    constexpr float FSM_EMA_ALPHA = 0.05f;        // smoothing factor: higher = faster reaction, less noise immunity
 
-    static constexpr OcvPoint OCV_LUT[] = {
-        { 8700, 0 },    { 9600, 5 },    { 10200, 10 },
-        { 10800, 25 },  { 11100, 40 },  { 11400, 60 },
-        { 11700, 75 },  { 12000, 85 },  { 12300, 95 },
-        { 12600, 100 }
-    };
+    float g_fsm_shunt_ema = 0.0f;
+    bool g_fsm_ema_initialized = false;
 
-    static constexpr NtcPoint NTC_LUT[] = {
-        { 3220, -400 }, { 3187, -350 }, { 3143, -300 }, { 3086, -250 },
-        { 3014, -200 }, { 2925, -150 }, { 2816, -100 }, { 2689,  -50 },
-        { 2543,    0 }, { 2381,   50 }, { 2206,  100 }, { 2023,  150 },
-        { 1836,  200 }, { 1650,  250 }, { 1470,  300 }, { 1301,  350 },
-        { 1143,  400 }, { 1000,  450 }, {  871,  500 }, {  757,  550 },
-        {  657,  600 }, {  570,  650 }, {  494,  700 }, {  428,  750 },
-        {  372,  800 }, {  323,  850 }, {  282,  900 }, {  246,  950 },
-        {  215, 1000 }, {  189, 1050 }, {  166, 1100 }, {  146, 1150 },
-        {  129, 1200 }, {  114, 1250 }
-    };
-
-    template <size_t N>
-    uint8_t interpolateOcv(const OcvPoint (&lut)[N], uint16_t mv) {
-        if (mv <= lut[0].mv) { return lut[0].soc_pct;
-}
-
-        for (size_t i = 0; i < N - 1; ++i) {
-            if (mv <= lut[i+1].mv) {
-                uint32_t v_range = lut[i+1].mv - lut[i].mv;
-                uint32_t s_range = lut[i+1].soc_pct - lut[i].soc_pct;
-                uint32_t v_offset = mv - lut[i].mv;
-                return lut[i].soc_pct + static_cast<uint8_t>((v_offset * s_range) / v_range);
-            }
-        }
-        return lut[N-1].soc_pct;
-    }
-
-    template <size_t N>
-    int16_t interpolateNtc(const NtcPoint (&lut)[N], int32_t mv) {
-        if (mv >= lut[0].mv) { return lut[0].temp_tenths;
-}
-
-        for (size_t i = 0; i < N - 1; ++i) {
-            if (mv >= lut[i+1].mv) {
-                int32_t v_range = lut[i].mv - lut[i+1].mv;
-                int32_t t_range = lut[i+1].temp_tenths - lut[i].temp_tenths;
-                int32_t v_offset = lut[i].mv - mv;
-                return lut[i].temp_tenths + static_cast<int16_t>((v_offset * t_range) / v_range);
-            }
-        }
-        return lut[N-1].temp_tenths;
+    void resetFsmClassifier() {
+        g_fsm_shunt_ema = 0.0f;
+        g_fsm_ema_initialized = false;
     }
 }
+
+// REMOVED: namespace CurveFitting { ... } 
+// (It is already defined in Smart_Battery_System.h)
 
 namespace Thermistor {
-const struct adc_dt_spec thermistor_adc_chan = ADC_DT_SPEC_GET_BY_IDX(DT_NODELABEL(zephyr_user), 0);
+    const struct adc_dt_spec thermistor_adc_chan = ADC_DT_SPEC_GET_BY_IDX(DT_NODELABEL(zephyr_user), 0);
 
-bool init() {
-    if (!adc_is_ready_dt(&thermistor_adc_chan)) {
-        LOG_ERR("Thermistor ADC channel not ready");
-        return false;
+    bool init() {
+        if (!adc_is_ready_dt(&thermistor_adc_chan)) {
+            LOG_ERR("Thermistor ADC channel not ready");
+            return false;
+        }
+        return adc_channel_setup_dt(&thermistor_adc_chan) == 0;
     }
-    return adc_channel_setup_dt(&thermistor_adc_chan) == 0;
-}
 
-Reading<int16_t> readCelsius() {
-    if (!adc_is_ready_dt(&thermistor_adc_chan)) return Reading<int16_t>::Err(Fault::ADC_NOT_READY);
+    Reading<int16_t> readCelsius() {
+        if (!adc_is_ready_dt(&thermistor_adc_chan)) return Reading<int16_t>::Err(Fault::ADC_NOT_READY);
 
-    int32_t sum_mv = 0;
-    for (uint8_t i = 0; i < OVERSAMPLE_COUNT; ++i) {
-        int16_t raw = 0;
-        struct adc_sequence sequence{};
-        sequence.buffer = &raw;
-        sequence.buffer_size = sizeof(raw);
+        int32_t sum_mv = 0;
+        for (uint8_t i = 0; i < OVERSAMPLE_COUNT; ++i) {
+            int16_t raw = 0;
+            struct adc_sequence sequence{};
+            sequence.buffer = &raw;
+            sequence.buffer_size = sizeof(raw);
 
-        if (adc_sequence_init_dt(&thermistor_adc_chan, &sequence) != 0 ||
-            adc_read(thermistor_adc_chan.dev, &sequence) != 0) {
-            return Reading<int16_t>::Err(Fault::ADC_READ_ERROR);
+            if (adc_sequence_init_dt(&thermistor_adc_chan, &sequence) != 0 ||
+                adc_read(thermistor_adc_chan.dev, &sequence) != 0) {
+                return Reading<int16_t>::Err(Fault::ADC_READ_ERROR);
+            }
+
+            int32_t mv = raw;
+            if (adc_raw_to_millivolts_dt(&thermistor_adc_chan, &mv) != 0) return Reading<int16_t>::Err(Fault::ADC_READ_ERROR);
+            sum_mv += mv;
         }
 
-        int32_t mv = raw;
-        if (adc_raw_to_millivolts_dt(&thermistor_adc_chan, &mv) != 0) return Reading<int16_t>::Err(Fault::ADC_READ_ERROR);
-        sum_mv += mv;
+        int32_t avg_mv = sum_mv / static_cast<int32_t>(OVERSAMPLE_COUNT);
+
+        if ((avg_mv <= 0) || (avg_mv >= SUPPLY_MILLIVOLTS)) return Reading<int16_t>::Err(Fault::OUT_OF_RANGE);
+        
+        const int16_t celsius_tenths = CurveFitting::interpolateNtc(CurveFitting::NTC_LUT, avg_mv);
+
+        return Reading<int16_t>::Ok(celsius_tenths);
     }
-
-    int32_t avg_mv = 0 ;
-    avg_mv = sum_mv / static_cast<int32_t>(OVERSAMPLE_COUNT);
-
-    if ((avg_mv <= 0) || (avg_mv >= SUPPLY_MILLIVOLTS)) return Reading<int16_t>::Err(Fault::OUT_OF_RANGE);
-    
-    const int16_t celsius_tenths = CurveFitting::interpolateNtc(CurveFitting::NTC_LUT, avg_mv);
-
-    return Reading<int16_t>::Ok(celsius_tenths);
-}
 }
 
 namespace INA226 {
 
-Driver::Driver(I2CManager* i2c) : i2c(i2c) {}
+    Driver::Driver(I2CManager* i2c) : i2c(i2c) {}
 
-bool Driver::init() {
-    if (i2c == nullptr) return false;
-    const Result<bool> cfg = i2c->writeWord(I2C_ADDR, REG_CONFIG, sys_cpu_to_be16(CONFIG_VALUE));
-    if (!cfg.isOk()) return false;
-    return i2c->writeWord(I2C_ADDR, REG_CALIBRATION, sys_cpu_to_be16(CALIBRATION_VALUE)).isOk();
-}
+    bool Driver::init() {
+        if (i2c == nullptr) return false;
+        const Result<bool> cfg = i2c->writeWord(I2C_ADDR, REG_CONFIG, sys_cpu_to_be16(CONFIG_VALUE));
+        if (!cfg.isOk()) return false;
+        return i2c->writeWord(I2C_ADDR, REG_CALIBRATION, sys_cpu_to_be16(CALIBRATION_VALUE)).isOk();
+    }
 
-Result<int16_t> Driver::readBusVoltageRaw() {
-    const Result<uint16_t> r = i2c->readWord(I2C_ADDR, REG_BUS_VOLT);
-    if (!r.isOk()) return Result<int16_t>::Err(r.error);
+    Result<int16_t> Driver::readBusVoltageRaw() {
+        const Result<uint16_t> r = i2c->readWord(I2C_ADDR, REG_BUS_VOLT);
+        if (!r.isOk()) return Result<int16_t>::Err(r.error);
 
-    uint16_t raw_val = r.unwrap();
-    return Result<int16_t>::Ok(static_cast<int16_t>((raw_val << 8) | (raw_val >> 8)));
-}
+        uint16_t raw_val = r.unwrap();
+        return Result<int16_t>::Ok(static_cast<int16_t>((raw_val << 8) | (raw_val >> 8)));
+    }
 
-Result<int16_t> Driver::readCurrentRaw() {
-    const Result<uint16_t> r = i2c->readWord(I2C_ADDR, REG_CURRENT);
-    if (!r.isOk()) return Result<int16_t>::Err(r.error);
-    
-    uint16_t raw_val = r.unwrap();
-    
-    return Result<int16_t>::Ok(static_cast<int16_t>((raw_val << 8) | (raw_val >> 8)));
-}
+    Result<int16_t> Driver::readShuntVoltageRaw() {
+        const Result<uint16_t> r = i2c->readWord(I2C_ADDR, REG_SHUNT_VOLT);
+        if (!r.isOk()) return Result<int16_t>::Err(r.error);
+        
+        uint16_t raw_val = r.unwrap();
+        return Result<int16_t>::Ok(static_cast<int16_t>((raw_val << 8) | (raw_val >> 8)));
+    }
+
+    Result<int16_t> Driver::readCurrentRaw() {
+        const Result<uint16_t> r = i2c->readWord(I2C_ADDR, REG_CURRENT);
+        if (!r.isOk()) return Result<int16_t>::Err(r.error);
+        
+        uint16_t raw_val = r.unwrap();
+        return Result<int16_t>::Ok(static_cast<int16_t>((raw_val << 8) | (raw_val >> 8)));
+    }
 
 }
 
@@ -237,6 +214,27 @@ result<int16_t> SbsBattery::fetchBusVoltageRawWithRetry() {
     return result<int16_t>::Err(mapI2CFault(response.error));
 }
 
+result<int16_t> SbsBattery::fetchShuntVoltageRawWithRetry() {
+    Result<int16_t> response = Result<int16_t>::Err(I2CFault::TIMEOUT);
+    uint32_t backoff_ms = INITIAL_BACKOFF_MS;
+
+    for (uint32_t attempt = 0U; attempt <= MAX_RETRIES; ++attempt) {
+        feedWatchdog();
+        response = ina226.readShuntVoltageRaw();
+        if (response.isOk()) {
+            atomic_inc(&stats.reads);
+            return result<int16_t>::Ok(response.unwrap());
+        }
+        atomic_inc(&stats.retries);
+        if (attempt < MAX_RETRIES) {
+            k_msleep(backoff_ms);
+            backoff_ms = (backoff_ms >= (MAX_BACKOFF_MS / 2U)) ? MAX_BACKOFF_MS : (backoff_ms * 2U);
+        }
+    }
+    atomic_inc(&stats.i2c_faults);
+    return result<int16_t>::Err(mapI2CFault(response.error));
+}
+
 result<int16_t> SbsBattery::fetchCurrentRawWithRetry() {
     Result<int16_t> response = Result<int16_t>::Err(I2CFault::TIMEOUT);
     uint32_t backoff_ms = INITIAL_BACKOFF_MS;
@@ -283,9 +281,9 @@ uint8_t SbsBattery::estimateSocFromVoltage(uint16_t pack_mv) const {
     return CurveFitting::interpolateOcv(CurveFitting::OCV_LUT, pack_mv);
 }
 
-void SbsBattery::seedOrResyncCoulombCounter(uint16_t pack_mv, int32_t current_ma, bool force_seed) {
-    const bool at_rest = (current_ma > -BatteryLimits::REST_CURRENT_THRESHOLD_MA) &&
-                         (current_ma < BatteryLimits::REST_CURRENT_THRESHOLD_MA);
+void SbsBattery::seedOrResyncCoulombCounter(uint16_t pack_mv, int32_t shunt_uv, bool force_seed) {
+    const bool at_rest = (shunt_uv > -BatteryLimits::IDLE_SHUNT_UV_THRESHOLD) &&
+                         (shunt_uv < BatteryLimits::IDLE_SHUNT_UV_THRESHOLD);
 
     const uint32_t now = k_uptime_get_32();
 
@@ -308,7 +306,6 @@ void SbsBattery::seedOrResyncCoulombCounter(uint16_t pack_mv, int32_t current_ma
         const uint8_t ocv_soc_pct = estimateSocFromVoltage(pack_mv);
         accumulated_uAh = (static_cast<int64_t>(ocv_soc_pct) * BatteryLimits::NOMINAL_CAPACITY_MAH * 1000LL) / 100LL;
         
-        // FIX: Seed the Kalman Filter states
         kf_soc_pct = static_cast<float>(ocv_soc_pct);
         kf_p_covariance = 1.0f; 
         
@@ -316,7 +313,7 @@ void SbsBattery::seedOrResyncCoulombCounter(uint16_t pack_mv, int32_t current_ma
     }
 }
 
-void SbsBattery::updateStateAndPublish(uint16_t pack_mv, int32_t current_ma, int16_t temp_tenths) {
+void SbsBattery::updateStateAndPublish(uint16_t pack_mv, int32_t current_ma, int16_t temp_tenths, int32_t shunt_uv) {
     if (k_mutex_lock(&cache_mutex, K_MSEC(BatteryLimits::MUTEX_TIMEOUT_MS)) != 0) {
         atomic_inc(&stats.validation_errors);
         publishError(CommFault::MUTEX_TIMEOUT);
@@ -324,12 +321,10 @@ void SbsBattery::updateStateAndPublish(uint16_t pack_mv, int32_t current_ma, int
     }
 
     const uint32_t now = k_uptime_get_32();
-    
-    // FIX: Moved max_uAh to the top so both the Kalman math and the clamping logic can use it
     const int64_t max_uAh = static_cast<int64_t>(BatteryLimits::NOMINAL_CAPACITY_MAH) * 1000LL;
 
     if (!soc_initialized) {
-        seedOrResyncCoulombCounter(pack_mv, current_ma, true);
+        seedOrResyncCoulombCounter(pack_mv, shunt_uv, true);
         last_poll_time_ms = now;
     } else {
         const uint32_t delta_ms = now - last_poll_time_ms;
@@ -348,7 +343,7 @@ void SbsBattery::updateStateAndPublish(uint16_t pack_mv, int32_t current_ma, int
         float z_measured_soc = static_cast<float>(estimateSocFromVoltage(static_cast<uint16_t>(estimated_ocv_mv)));
 
         // --- 3. KALMAN UPDATE (Sensor Fusion) ---
-        float r_noise = (absolute(current_ma) < BatteryLimits::REST_CURRENT_THRESHOLD_MA) 
+        float r_noise = (absolute(shunt_uv) < BatteryLimits::IDLE_SHUNT_UV_THRESHOLD) 
                         ? BatteryLimits::KF_MEAS_NOISE_REST 
                         : BatteryLimits::KF_MEAS_NOISE_ACTIVE;
 
@@ -362,7 +357,7 @@ void SbsBattery::updateStateAndPublish(uint16_t pack_mv, int32_t current_ma, int
         accumulated_uAh = static_cast<int64_t>((kf_soc_pct / 100.0f) * static_cast<float>(max_uAh));
         
         last_poll_time_ms = now;
-        seedOrResyncCoulombCounter(pack_mv, current_ma, false);
+        seedOrResyncCoulombCounter(pack_mv, shunt_uv, false);
     }
 
     accumulated_uAh = std::clamp(accumulated_uAh, int64_t{0}, max_uAh);
@@ -370,6 +365,7 @@ void SbsBattery::updateStateAndPublish(uint16_t pack_mv, int32_t current_ma, int
 
     cache.voltage = Millivolts{pack_mv};
     cache.current = Milliamps{current_ma};
+    cache.shunt_voltage = Microvolts{shunt_uv};
     cache.soc = Percent{soc_pct};
     cache.temperature = Kelvin{static_cast<uint16_t>(temp_tenths + Thermistor::KELVIN_OFFSET_TENTHS)};
     cache.capacity = MilliAmpHours{static_cast<uint32_t>(accumulated_uAh / 1000LL)};
@@ -393,12 +389,59 @@ void SbsBattery::pollHardwareAndUpdateCache() {
     }
 
     const uint32_t pack_mv_32 = static_cast<uint32_t>(voltage_raw.value) + (static_cast<uint32_t>(voltage_raw.value) / 4U);
-    if (pack_mv_32 > BatteryLimits::MAX_VALID_VOLTAGE_MV || pack_mv_32 < BatteryLimits::MIN_VALID_VOLTAGE_MV) {
+    const BmsCache snapshot = getCacheSnapshot();
+    const bool was_connected = snapshot.valid && (snapshot.voltage.value >= BatteryLimits::MIN_VALID_VOLTAGE_MV);
+
+    // Disconnect detection logic
+    bool is_disconnected = (pack_mv_32 < BatteryLimits::MIN_VALID_VOLTAGE_MV);
+
+    if (was_connected) {
+        const int32_t v_drop = static_cast<int32_t>(snapshot.voltage.value) - static_cast<int32_t>(pack_mv_32);
+        if ((v_drop > BatteryLimits::MAX_VOLTAGE_DELTA_MV) && (pack_mv_32 < BatteryLimits::PACK_MIN_VOLTAGE_MV)) {
+            is_disconnected = true;
+        }
+    } else {
+        if (pack_mv_32 < BatteryLimits::PACK_MIN_VOLTAGE_MV) {
+            is_disconnected = true;
+        }
+    }
+
+    if (is_disconnected) {
+        if (k_mutex_lock(&cache_mutex, K_MSEC(BatteryLimits::MUTEX_TIMEOUT_MS)) == 0) {
+            cache.voltage = Millivolts{0};
+            cache.current = Milliamps{0};
+            cache.shunt_voltage = Microvolts{0};
+            cache.soc = Percent{0};
+            cache.valid = true;
+            cache.last_error = CommFault::NONE;
+            cache.timestamp_ms = k_uptime_get_32();
+
+            consecutive_comm_failures = 0U;
+            consecutive_mutex_failures = 0U;
+            last_valid_comm_time = cache.timestamp_ms;
+            k_mutex_unlock(&cache_mutex);
+        }
+        current_state.store(BatteryFSM::IDLE);
+        soc_initialized = false;
+        consecutive_jump_rejects = 0U;
+        resetFsmClassifier(); // clear stale direction bias so a fresh connection starts clean
+        feedWatchdog();
+        return;
+    }
+
+    if (pack_mv_32 > BatteryLimits::MAX_VALID_VOLTAGE_MV) {
         atomic_inc(&stats.validation_errors);
         publishError(CommFault::VALIDATION_ERROR);
         return;
     }
     const uint16_t pack_mv = static_cast<uint16_t>(pack_mv_32);
+
+    const result<int16_t> shunt_raw = fetchShuntVoltageRawWithRetry();
+    if (!shunt_raw.success) {
+        publishError(shunt_raw.error);
+        return;
+    }
+    const int32_t shunt_uv = (static_cast<int32_t>(shunt_raw.value) * 5) / 2;
 
     const result<int16_t> current_raw = fetchCurrentRawWithRetry();
     if (!current_raw.success) {
@@ -419,10 +462,7 @@ void SbsBattery::pollHardwareAndUpdateCache() {
         return;
     }
 
-    const BmsCache snapshot = getCacheSnapshot();
-
-    // FIX 2: Only perform jump detection if the cache actually has historical data!
-    if (snapshot.timestamp_ms != 0 && (snapshot.valid || snapshot.last_error == CommFault::VALIDATION_ERROR)) {
+    if (snapshot.timestamp_ms != 0 && (snapshot.valid || snapshot.last_error == CommFault::VALIDATION_ERROR) && was_connected) {
         const int32_t v_delta = absolute(static_cast<int32_t>(pack_mv) - static_cast<int32_t>(snapshot.voltage.value));
         const int32_t c_delta = absolute(current_ma - snapshot.current.value);
         const int32_t prev_temp_tenths_c = static_cast<int32_t>(snapshot.temperature.value) - Thermistor::KELVIN_OFFSET_TENTHS;
@@ -443,10 +483,9 @@ void SbsBattery::pollHardwareAndUpdateCache() {
     }
     consecutive_jump_rejects = 0U;
 
-    updateStateAndPublish(pack_mv, current_ma, temp_tenths.value);
+    updateStateAndPublish(pack_mv, current_ma, temp_tenths.value, shunt_uv);
     atomic_inc(&stats.successful_publishes);
     feedWatchdog();
-
 }
 
 void SbsBattery::publishError(CommFault fault) {
@@ -518,6 +557,11 @@ result<Milliamps> SbsBattery::getCurrent() const {
     return isCacheValid(snapshot) ? result<Milliamps>::Ok(snapshot.current) : result<Milliamps>::Err(cacheFailureReason(snapshot));
 }
 
+result<Microvolts> SbsBattery::getShuntVoltage() const {
+    const BmsCache snapshot = getCacheSnapshot();
+    return isCacheValid(snapshot) ? result<Microvolts>::Ok(snapshot.shunt_voltage) : result<Microvolts>::Err(cacheFailureReason(snapshot));
+}
+
 result<Percent> SbsBattery::getStateOfCharge() const {
     const BmsCache snapshot = getCacheSnapshot();
     return isCacheValid(snapshot) ? result<Percent>::Ok(snapshot.soc) : result<Percent>::Err(cacheFailureReason(snapshot));
@@ -535,50 +579,99 @@ result<MilliAmpHours> SbsBattery::getCapacity() const {
 
 void SbsBattery::processFSM() {
     const BmsCache snapshot = getCacheSnapshot();
-
     if (!isCacheValid(snapshot)) {
-        LOG_ERR("Battery cache unavailable. Error Code:%d", static_cast<int>(cacheFailureReason(snapshot)));
         return;
     }
 
-    const int32_t current_ma = snapshot.current.value;
+    if (snapshot.voltage.value < BatteryLimits::MIN_VALID_VOLTAGE_MV) {
+        if (current_state.load() != BatteryFSM::IDLE) {
+            current_state.store(BatteryFSM::IDLE);
+        }
+        resetFsmClassifier();
+        return; 
+    }
+
+    const int32_t shunt_uv = snapshot.shunt_voltage.value;
     const uint8_t soc_pct = snapshot.soc.value;
     const BatteryFSM current_fsm_state = current_state.load();
+    BatteryFSM next_fsm_state = current_fsm_state;
 
     if (current_fsm_state != BatteryFSM::CUTOFF) {
-        if (current_ma > 0) {
-            current_state.store(BatteryFSM::CHARGING);
-        } else if (current_ma < 0) {
-            current_state.store(BatteryFSM::DISCHARGING);
+        if (!g_fsm_ema_initialized) {
+            g_fsm_shunt_ema = static_cast<float>(shunt_uv);
+            g_fsm_ema_initialized = true;
         } else {
-            current_state.store(BatteryFSM::IDLE);
+            g_fsm_shunt_ema = (FSM_EMA_ALPHA * static_cast<float>(shunt_uv)) +
+                               ((1.0f - FSM_EMA_ALPHA) * g_fsm_shunt_ema);
+        }
+
+        const float pos_threshold = static_cast<float>(BatteryLimits::IDLE_SHUNT_UV_THRESHOLD);
+        const float neg_threshold = -pos_threshold;
+
+        if (current_fsm_state == BatteryFSM::CHARGING) {
+            if (g_fsm_shunt_ema < neg_threshold) {
+                next_fsm_state = BatteryFSM::CHARGING;
+            } else if (g_fsm_shunt_ema > (pos_threshold + static_cast<float>(FSM_HYSTERESIS_UV))) {
+                next_fsm_state = BatteryFSM::DISCHARGING;
+            } else {
+                next_fsm_state = BatteryFSM::IDLE;
+            }
+        } else if (current_fsm_state == BatteryFSM::DISCHARGING) {
+            if (g_fsm_shunt_ema > pos_threshold) {
+                next_fsm_state = BatteryFSM::DISCHARGING;
+            } else if (g_fsm_shunt_ema < (neg_threshold - static_cast<float>(FSM_HYSTERESIS_UV))) {
+                next_fsm_state = BatteryFSM::CHARGING;
+            } else {
+                next_fsm_state = BatteryFSM::IDLE;
+            }
+        } else { // IDLE
+            if (g_fsm_shunt_ema < neg_threshold) {
+                next_fsm_state = BatteryFSM::CHARGING;
+            } else if (g_fsm_shunt_ema > pos_threshold) {
+                next_fsm_state = BatteryFSM::DISCHARGING;
+            } else {
+                next_fsm_state = BatteryFSM::IDLE;
+            }
+        }
+
+        if (current_fsm_state != next_fsm_state) {
+            LOG_INF("Battery state changed (%d -> %d)", (int)current_fsm_state, (int)next_fsm_state);
+        } 
+        
+        current_state.store(next_fsm_state);
+        const BatteryFSM active_state = current_state.load();
+        if (active_state == BatteryFSM::CHARGING || active_state == BatteryFSM::CUTOFF) {
+            PowerManager::getInstance().reportActivity();
         }
     }
 
     if (soc_pct >= 100U) {
-    bool expected = false;
-    if (full_charge_logged.compare_exchange_strong(expected, true)) {
-        LOG_INF("BATTERY FULLY CHARGED. Logging event to NVS.");
-        const uint32_t event_timestamp = k_uptime_get_32();
-        if (!ConfigStore::getInstance().set(ConfigKey::FULL_CHARGE_LOG, event_timestamp)) {
-            LOG_WRN("Failed to persist full-charge event to NVS");
+        bool expected = false;
+        if (full_charge_logged.compare_exchange_strong(expected, true)) {
+            LOG_INF("BATTERY FULLY CHARGED. Logging event to NVS.");
+            const uint32_t event_timestamp = k_uptime_get_32();
+            (void)ConfigStore::getInstance().set(ConfigKey::FULL_CHARGE_LOG, event_timestamp);
         }
-    }
     } else if (soc_pct < 95U) {
         full_charge_logged.store(false);
     }
 
     if (soc_pct < BatteryLimits::CUTOFF_SOC_PCT) {
         if (current_fsm_state != BatteryFSM::CUTOFF) {
-            LOG_ERR("DISCHARGE GUARD TRIGGERED! SoC:%u%%. Halting System.", soc_pct);
-            if (sys_context != nullptr) sys_context->triggerFault("Battery Critically Low");
+            if (sys_context != nullptr) {
+                LOG_WRN("Battery Critically Low. Requesting SAFE_HALT state.");
+                sys_context->requestTransition(SystemState::SAFE_HALT);
+            }
             current_state.store(BatteryFSM::CUTOFF);
         }
     } else if (soc_pct > BatteryLimits::REENABLE_SOC_PCT) {
-        if (sys_context != nullptr && sys_context->getState() == SystemState::SAFE_HALT) {
-            LOG_INF("Battery recovered to %u%%. System safe to restart.", soc_pct);
-            sys_context->requestTransition(SystemState::INIT);
-            current_state.store((current_ma > 0) ? BatteryFSM::CHARGING : BatteryFSM::IDLE);
+        if (current_fsm_state == BatteryFSM::CUTOFF) {
+            if (sys_context != nullptr && sys_context->getState() == SystemState::SAFE_HALT) {
+                LOG_INF("Battery recovered to %u%%. System safe to restart.", soc_pct);
+                sys_context->requestTransition(SystemState::INIT);
+                current_state.store((shunt_uv < -BatteryLimits::IDLE_SHUNT_UV_THRESHOLD) ? BatteryFSM::CHARGING : BatteryFSM::IDLE);
+                resetFsmClassifier();
+            }
         }
     }
 }
@@ -599,6 +692,14 @@ CommStatistics SbsBattery::getStats() const {
 SbsBattery* smart_battery = nullptr;
 
 namespace {
+    bool isBatteryCharging() {
+        return (smart_battery != nullptr) && (smart_battery->getState() == BatteryFSM::CHARGING);
+    }
+
+    bool isBatteryInCutoff() {
+        return (smart_battery != nullptr) && (smart_battery->getState() == BatteryFSM::CUTOFF);
+    }
+
     static bool bms_objects_initialized = false;
 #ifndef IS_TEST_ENVIRONMENT
     static SbsBattery static_smart_battery(&i2c_manager, &sys_context, daly_watchdog_feed_hook);
@@ -612,8 +713,7 @@ namespace {
         void beforeSleep() override { atomic_set(&is_sleeping, 1); }
         void afterWakeup() override {
             atomic_set(&is_sleeping, 0);
-            if (smart_battery != nullptr) { smart_battery->notifySystemWakeup();
-}
+            if (smart_battery != nullptr) { smart_battery->notifySystemWakeup(); }
         }
         void sleepAborted() override { atomic_set(&is_sleeping, 0); }
         bool isSleeping() const noexcept { return atomic_get(&is_sleeping) != 0; }
@@ -655,75 +755,104 @@ void bms_comm_thread(void) {
     if (smart_battery == nullptr) {
         LOG_ERR("Smart battery instance is null.");
         k_sem_give(&bms_objects_ready_sem);
+        while(THREAD_LOOP_CONDITION) {
+            k_msleep(1000);
+            atomic_set(&g_bms_comm_alive, 1);
+        }
         return;
     }
 
     uint32_t init_attempts = 0U;
-    while (!smart_battery->init()) {
+
+    while (true) {
+        while (g_bmsPowerObserver.isSleeping() || sys_context.getState() == SystemState::SAFE_HALT) {
+            k_msleep(1000);
+            atomic_set(&g_bms_comm_alive, 1);
+        }
+
+        if (smart_battery->init()) {
+            break;
+        }
+        
         ++init_attempts;
-        LOG_ERR("BMS sensors (INA226 / thermistor) init failed (attempt %u/%u).",
-                init_attempts, BatteryLimits::MAX_INIT_RETRIES);
+        LOG_ERR("BMS sensors (INA226 / thermistor) init failed (attempt %u/%u).", init_attempts, BatteryLimits::MAX_INIT_RETRIES);
 
         if (init_attempts >= BatteryLimits::MAX_INIT_RETRIES) {
             LOG_ERR("BMS sensor init failed %u times -- escalating fault instead of retrying forever.", init_attempts);
-            sys_context.triggerFault("BMS Sensor Init Failure");
+            if (sys_context.getState() != SystemState::SAFE_HALT) {
+                sys_context.triggerFault("BMS Sensor Init Failure");
+            }
             k_sem_give(&bms_objects_ready_sem);
+            
+            while (THREAD_LOOP_CONDITION) {
+                k_msleep(1000);
+                atomic_set(&g_bms_comm_alive, 1);
+            }
             return;
         }
-
+        
         k_msleep(5000);
+        atomic_set(&g_bms_comm_alive, 1);
     }
 
     k_sem_give(&bms_objects_ready_sem);
     PowerManager::getInstance().registerObserver(&g_bmsPowerObserver);
     smart_battery->notifySystemWakeup(); 
     k_msleep(250);
+
     do {
-       if (!g_bmsPowerObserver.isSleeping()) {
-           smart_battery->pollHardwareAndUpdateCache();
+       while ((g_bmsPowerObserver.isSleeping() && !isBatteryCharging()) ||
+              (sys_context.getState() == SystemState::SAFE_HALT && !isBatteryInCutoff())) {
+           k_msleep(1000);
+           atomic_set(&g_bms_comm_alive, 1);
        }
+
+       smart_battery->pollHardwareAndUpdateCache();
+
+       auto v = smart_battery->getVoltage();
+       auto i = smart_battery->getCurrent();
+       auto soc = smart_battery->getStateOfCharge();
+       auto temp = smart_battery->getTemperature();
+       auto cap = smart_battery->getCapacity();
+
+       if (v.success && i.success && soc.success && temp.success && cap.success) {
+           int32_t temp_c_tenths = static_cast<int32_t>(temp.value.value) - Thermistor::KELVIN_OFFSET_TENTHS;
+           LOG_INF("BATTERY STATUS | V: %d mV | I: %d mA | SOC: %u %% | Temp: %d.%d C | Cap: %u mAh",
+                   (int)v.value.value, 
+                   (int)i.value.value, 
+                   (unsigned int)soc.value.value,
+                   temp_c_tenths / 10, absolute(temp_c_tenths % 10), 
+                   (unsigned int)cap.value.value);
+       } else {
+           LOG_WRN("Battery disconnected or sensor cache is currently invalid");
+       }
+
        k_msleep(1000);
+       
+       atomic_set(&g_bms_comm_alive, 1);
     } while(THREAD_LOOP_CONDITION);
 }
 
 void battery_monitor_thread(void) {
     k_sem_take(&bms_objects_ready_sem, K_FOREVER);
-    
-    k_msleep(500); 
+    k_msleep(500);
 
     do {
-        if (smart_battery != nullptr) {
-            if (!g_bmsPowerObserver.isSleeping()) {
-                smart_battery->processFSM();
-
-                const auto vol = smart_battery->getVoltage();
-                const auto curr = smart_battery->getCurrent(); 
-                const auto soc = smart_battery->getStateOfCharge();
-                const auto temp = smart_battery->getTemperature();
-                
-                if (vol.success && curr.success && soc.success && temp.success) {
-
-                    int32_t temp_c_tenths = 0 ;
-                    temp_c_tenths = static_cast<int32_t>(temp.value.value) - Thermistor::KELVIN_OFFSET_TENTHS;
-                    
-                    LOG_INF("BATTERY: Voltage = %u mV | Current = %d mA | SoC = %u%% | Temp = %d.%d C",
-                            vol.value.value,
-                            curr.value.value,
-                            soc.value.value,
-                            temp_c_tenths / 10, absolute(temp_c_tenths % 10));
-                }
-
-                if (smart_battery->getState() == BatteryFSM::DISCHARGING) {
-                    if (soc.success) {
-                        LOG_DBG("Battery Discharging: %u%% remaining", soc.value.value);
-                    }
-                }
-            }
+        while ((g_bmsPowerObserver.isSleeping() && !isBatteryCharging()) ||
+               (sys_context.getState() == SystemState::SAFE_HALT && !isBatteryInCutoff())) {
+            k_msleep(1000);
+            atomic_set(&g_batt_mon_alive, 1);
         }
+
+        if (smart_battery != nullptr) {
+            smart_battery->processFSM();
+        }
+        
         k_msleep(1000);
+        
+        atomic_set(&g_batt_mon_alive, 1);
     } while(THREAD_LOOP_CONDITION);
 }
 
 K_THREAD_DEFINE(bms_comm_tid, 1024, bms_comm_thread, NULL, NULL, NULL, BatteryLimits::BMS_THREAD_PRIO, 0, 0);
 K_THREAD_DEFINE(battery_tid, 1024, battery_monitor_thread, NULL, NULL, NULL, BatteryLimits::MONITOR_THREAD_PRIO, 0, 0);
-

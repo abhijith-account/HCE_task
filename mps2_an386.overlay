@@ -2,6 +2,10 @@
 /delete-node/ &storage_partition;
 
 / {
+    chosen {
+        zephyr,console = &uart0;
+    };
+    
     zephyr_user: zephyr,user {
         io-channels = <&adc_emul0 0>;
     };
@@ -29,6 +33,7 @@
         watchdog0 = &wdog0;
         rtc0 = &rtc_emul0;
         uart-hardware = &uart0;
+        i2c1 = &i2c_emul0;
     };
     
     rtc_emul0: rtc {
@@ -38,41 +43,40 @@
     };
     
     /* The Emulator Controller */
-    i2c1: fake_i2c@40001000 {
-        compatible = "zephyr,i2c-emul-controller";
-        reg = <0x40001000 0x1000>;
-        clock-frequency = <100000>;
+    i2c_emul0: i2c_emul@50010000 {
+    compatible = "zephyr,i2c-emul-controller";
+    reg = <0x50010000 0x1000>;
+    clock-frequency = <100000>;
+    status = "okay";
+
+    #address-cells = <1>;
+    #size-cells = <0>;
+
+    lps22hb: lps22hb@5c {
+        compatible = "st,lps22hb-press";
+        reg = <0x5c>;
         status = "okay";
-        #address-cells = <1>;
-        #size-cells = <0>;
+    };
 
-        /* --- Real Sensors (Drivers Compiled) --- */
-        lps22hb: lps22hb@5c {
-            compatible = "st,lps22hb-press";
-            reg = <0x5c>;
-            status = "okay";
-        };
-        
-        bme280: bme280@76 {
-            compatible = "bosch,bme280";
-            reg = <0x76>;
-            status = "okay";
-        };
-        
-        ina226: ina226@40 {
-            compatible = "ti,ina226";
-            reg = <0x40>;
-            rshunt-micro-ohms = <100000>;
-            current-lsb-microamps = <25>;
-            status = "okay";
-        };
+    bme280: bme280@76 {
+        compatible = "bosch,bme280";
+        reg = <0x76>;
+        status = "okay";
+    };
 
-        /* --- Dummy Devices (Disabled for QEMU) --- */
-        pav3015: pav3015@28 {
-            compatible = "vnd,i2c-device";
-            reg = <0x28>;
-            status = "disabled"; /* <--- DISABLE THIS */
-        };
+    ina226: ina226@40 {
+        compatible = "ti,ina226";
+        reg = <0x40>;
+        rshunt-micro-ohms = <100000>;
+        current-lsb-microamps = <25>;
+        status = "okay";
+    };
+
+    pav3015: pav3015@28 {
+        compatible = "vnd,i2c-device";
+        reg = <0x28>;
+        status = "disabled";
+    };
     };
 
     /* Simulated Flash Drive for NVS */

@@ -37,30 +37,22 @@ extern const struct adc_dt_spec thermistor_adc_chan;
 
 bool init();
 Reading<int16_t> readCelsius();
-
 }
 
 namespace INA226 {
 
 static constexpr uint16_t I2C_ADDR = 0x40U;
-
 static constexpr uint8_t REG_CONFIG      = 0x00U;
 static constexpr uint8_t REG_SHUNT_VOLT  = 0x01U;
 static constexpr uint8_t REG_BUS_VOLT    = 0x02U;
 static constexpr uint8_t REG_POWER       = 0x03U;
 static constexpr uint8_t REG_CURRENT     = 0x04U;
 static constexpr uint8_t REG_CALIBRATION = 0x05U;
-
 static constexpr uint16_t CONFIG_VALUE = 0x4527U;
-
 static constexpr uint32_t R_SHUNT_MILLIOHMS = 100U;
-
 static constexpr uint32_t MAX_MEASURABLE_CURRENT_UA = 81920000U / R_SHUNT_MILLIOHMS;
-
 static constexpr uint32_t CURRENT_LSB_UA = MAX_MEASURABLE_CURRENT_UA / 32768U;
-
-static constexpr uint16_t CALIBRATION_VALUE =
-    static_cast<uint16_t>(5120000ULL / (static_cast<uint64_t>(CURRENT_LSB_UA) * R_SHUNT_MILLIOHMS));
+static constexpr uint16_t CALIBRATION_VALUE =static_cast<uint16_t>(5120000ULL / (static_cast<uint64_t>(CURRENT_LSB_UA) * R_SHUNT_MILLIOHMS));
 
 class Driver {
 public:
@@ -68,11 +60,11 @@ public:
     bool init();
     Result<int16_t> readBusVoltageRaw();
     Result<int16_t> readCurrentRaw();
+    Result<int16_t> readShuntVoltageRaw(); 
 
 private:
     I2CManager* i2c;
 };
-
 }
 
 enum class CommFault : uint8_t {
@@ -95,6 +87,7 @@ struct result {
 
 struct Millivolts { uint16_t value = 0U; };
 struct Milliamps { int32_t value = 0; };
+struct Microvolts { int32_t value = 0; }; 
 struct Percent { uint8_t value = 0U; };
 struct Kelvin { uint16_t value = 0U; };
 struct MilliAmpHours { uint32_t value = 0U; };
@@ -126,14 +119,17 @@ struct BatteryLimits {
     static constexpr uint32_t NOMINAL_CAPACITY_MAH = 2000U;
     static constexpr uint32_t MAX_CHARGE_CURRENT_MA = 2000U;
     static constexpr uint32_t MAX_DISCHARGE_CURRENT_MA = 800U;
-    static constexpr int32_t REST_CURRENT_THRESHOLD_MA = 50;
+    static constexpr int32_t REST_CURRENT_THRESHOLD_MA = 50; 
+    
+    // Configurable idle threshold for shunt voltage in microvolts
+    static constexpr int32_t IDLE_SHUNT_UV_THRESHOLD = 150;
 
     static constexpr uint32_t MUTEX_TIMEOUT_MS = 10U;
     static constexpr int BMS_THREAD_PRIO = 10;
     static constexpr int MONITOR_THREAD_PRIO = 11;
 
     static constexpr uint16_t MAX_VALID_VOLTAGE_MV = 20000U;
-    static constexpr int32_t MAX_VALID_CURRENT_MA = 818;
+    static constexpr int32_t MAX_VALID_CURRENT_MA = 800;
 
     static constexpr uint16_t MAX_VOLTAGE_DELTA_MV = 2000U;
     static constexpr int32_t MAX_CURRENT_DELTA_MA = 8000;
@@ -151,6 +147,60 @@ struct BatteryLimits {
     static constexpr float KF_MEAS_NOISE_ACTIVE = 50.0f;
 };
 
+namespace CurveFitting {
+    struct OcvPoint { uint16_t mv{}; uint8_t soc_pct{}; };
+    struct NtcPoint { int32_t mv; int16_t temp_tenths; };
+
+    static constexpr OcvPoint OCV_LUT[] = {
+        { 8700, 0 },    { 9600, 5 },    { 10200, 10 },
+        { 10800, 25 },  { 11100, 40 },  { 11400, 60 },
+        { 11700, 75 },  { 12000, 85 },  { 12300, 95 },
+        { 12600, 100 }
+    };
+
+    static constexpr NtcPoint NTC_LUT[] = {
+        { 3220, -400 }, { 3187, -350 }, { 3143, -300 }, { 3086, -250 },
+        { 3014, -200 }, { 2925, -150 }, { 2816, -100 }, { 2689,  -50 },
+        { 2543,    0 }, { 2381,   50 }, { 2206,  100 }, { 2023,  150 },
+        { 1836,  200 }, { 1650,  250 }, { 1470,  300 }, { 1301,  350 },
+        { 1143,  400 }, { 1000,  450 }, {  871,  500 }, {  757,  550 },
+        {  657,  600 }, {  570,  650 }, {  494,  700 }, {  428,  750 },
+        {  372,  800 }, {  323,  850 }, {  282,  900 }, {  246,  950 },
+        {  215, 1000 }, {  189, 1050 }, {  166, 1100 }, {  146, 1150 },
+        {  129, 1200 }, {  114, 1250 }
+    };
+
+    template <size_t N>
+    uint8_t interpolateOcv(const OcvPoint (&lut)[N], uint16_t mv) {
+        if (mv <= lut[0].mv) { return lut[0].soc_pct;}
+
+        for (size_t i = 0; i < N - 1; ++i) {
+            if (mv <= lut[i+1].mv) {
+                uint32_t v_range = lut[i+1].mv - lut[i].mv;
+                uint32_t s_range = lut[i+1].soc_pct - lut[i].soc_pct;
+                uint32_t v_offset = mv - lut[i].mv;
+                return lut[i].soc_pct + static_cast<uint8_t>((v_offset * s_range) / v_range);
+            }
+        }
+        return lut[N-1].soc_pct;
+    }
+
+    template <size_t N>
+    int16_t interpolateNtc(const NtcPoint (&lut)[N], int32_t mv) {
+        if (mv >= lut[0].mv) { return lut[0].temp_tenths;}
+
+        for (size_t i = 0; i < N - 1; ++i) {
+            if (mv >= lut[i+1].mv) {
+                int32_t v_range = lut[i].mv - lut[i+1].mv;
+                int32_t t_range = lut[i+1].temp_tenths - lut[i].temp_tenths;
+                int32_t v_offset = lut[i].mv - mv;
+                return lut[i].temp_tenths + static_cast<int16_t>((v_offset * t_range) / v_range);
+            }
+        }
+        return lut[N-1].temp_tenths;
+    }
+}
+
 #ifdef INA226_TEST_BYPASS_STATIC_ASSERT
 static_assert(INA226::MAX_MEASURABLE_CURRENT_UA >= (BatteryLimits::MAX_DISCHARGE_CURRENT_MA * 1000U),
     "INA226 shunt cannot measure the pack's rated discharge current -- "
@@ -160,6 +210,7 @@ static_assert(INA226::MAX_MEASURABLE_CURRENT_UA >= (BatteryLimits::MAX_DISCHARGE
 struct BmsCache {
     Millivolts voltage{};
     Milliamps current{};
+    Microvolts shunt_voltage{};
     Percent soc{};
     Kelvin temperature{};
     MilliAmpHours capacity{};
@@ -179,6 +230,7 @@ public:
 
     result<Millivolts> getVoltage() const;
     result<Milliamps> getCurrent() const;
+    result<Microvolts> getShuntVoltage() const;
     result<Percent> getStateOfCharge() const;
     result<Kelvin> getTemperature() const;
     result<MilliAmpHours> getCapacity() const;
@@ -220,12 +272,13 @@ private:
 
     result<int16_t> fetchBusVoltageRawWithRetry();
     result<int16_t> fetchCurrentRawWithRetry();
+    result<int16_t> fetchShuntVoltageRawWithRetry();
     result<int16_t> fetchTemperatureTenthsWithRetry();
 
     uint8_t estimateSocFromVoltage(uint16_t pack_mv) const;
 
-    void seedOrResyncCoulombCounter(uint16_t pack_mv, int32_t current_ma, bool force_seed);
-    void updateStateAndPublish(uint16_t pack_mv, int32_t current_ma, int16_t temp_tenths);
+    void seedOrResyncCoulombCounter(uint16_t pack_mv, int32_t shunt_uv, bool force_seed);
+    void updateStateAndPublish(uint16_t pack_mv, int32_t current_ma, int16_t temp_tenths, int32_t shunt_uv);
 
     void feedWatchdog() const;
     void publishError(CommFault fault);
@@ -239,4 +292,3 @@ SbsBattery* getSmartBatteryInstance();
 #ifndef IS_TEST_ENVIRONMENT
 I2CManager* getI2cBusManagerInstance();
 #endif
-

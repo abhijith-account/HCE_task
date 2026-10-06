@@ -1,84 +1,92 @@
 #pragma once
+
 #include <zephyr/kernel.h>
-#include <zephyr/sys/atomic.h>
 #include <zephyr/device.h>
-#include <array>
-#include <atomic>
 #include <cstdint>
+#include <atomic>
+#include <array>
+#include <zephyr/sys/atomic.h>
 
-class DeviceContext;
-
+constexpr size_t MAX_OBSERVERS = 8;
+constexpr uint8_t PM_FAILURE_FAULT_THRESHOLD = 3;
 class PowerManager;
+class DeviceContext;
+extern bool s_real_hw_sleep_active;
+extern uint32_t s_elapsed_sleep_time_us;
+extern uint32_t s_current_sleep_interval_us;
 
-class IPowerState {
-public:
-    virtual bool enter(PowerManager& pm) = 0;
-    virtual IPowerState& execute(PowerManager& pm) = 0;
-    virtual void exit(PowerManager& pm) = 0;
-    virtual const char* getName() const = 0;
-protected:
-    ~IPowerState() = default;
+enum class StopWakeReason : uint8_t {
+    WAKE_NONE,
+    WAKE_RTC,
+    WAKE_ACTIVITY,
+    WAKE_UNKNOWN,
+    WAKE_ABORTED
 };
+
+extern atomic_t s_activity_pending;
+extern volatile StopWakeReason s_stop_wake_reason;
+extern struct k_sem pm_wake_sem;
+extern struct k_sem stop_wake_sem;
+void advance_rtc_time(struct rtc_time& time, uint32_t seconds_to_add);
+bool clear_rtc_alarm_a_pending();
+int set_rtc_alarm(const struct device* rtc_dev, uint32_t interval_us, void* user_data);
+void clear_rtc_alarm(const struct device* rtc_dev);
+extern const k_tid_t processor_tid;
+extern const k_tid_t producer_tid;
+extern const k_tid_t logger_tid;
+extern const k_tid_t battery_tid;
+extern const k_tid_t shell_tid;
+extern const k_tid_t bms_comm_tid;
+extern const k_tid_t hr_prod_tid;
+extern const k_tid_t disp_cons_tid;
+extern const k_tid_t mem_mon_tid;
+extern const k_tid_t trace_tid;
 
 class IPowerObserver {
 public:
+    virtual ~IPowerObserver() = default;
     virtual void beforeSleep() = 0;
     virtual void afterWakeup() = 0;
     virtual void sleepAborted() = 0;
-    virtual ~IPowerObserver() = default;
+};
+
+
+class IPowerState {
+public:
+    virtual ~IPowerState() = default;
+    
+    virtual bool enter(PowerManager& pm) = 0;
+    virtual IPowerState& execute(PowerManager& pm) = 0;
+    virtual void exit(PowerManager& pm) = 0;
+    
+    virtual const char* getName() const = 0;
 };
 
 class PowerManager {
-private:
-    IPowerState* current_state;
-
-    std::atomic<uint32_t> last_activity_time{0};
-    uint32_t last_sleep_time;
-    uint32_t expected_wake_time;
-
-    struct k_mutex state_mutex;
-    struct k_mutex observer_mutex;
-    atomic_t wake_pending;
-
-    const struct device* rtc_dev;
-    const struct device* i2c_dev;
-    const struct device* uart_dev;
-    const struct device* usb_dev;
-    const struct device* adc_dev;
-
-    static constexpr size_t MAX_OBSERVERS = 8;
-    std::array<IPowerObserver*, MAX_OBSERVERS> observers{};
-    size_t observer_count;
-
-    DeviceContext* fault_context;
-    uint32_t consecutive_pm_failures;
-    static constexpr uint32_t PM_FAILURE_FAULT_THRESHOLD = 3;
-
-    void transitionTo(IPowerState& next_state);
-
-    size_t captureObservers(std::array<IPowerObserver*, MAX_OBSERVERS>& out);
-
 public:
-    PowerManager();
-
-    PowerManager(const PowerManager&) = delete;
-    PowerManager& operator=(const PowerManager&) = delete;
     static PowerManager& getInstance();
 
-    bool init(const struct device* rtc, const struct device* i2c, const struct device* uart, const struct device* usb,const struct device* adc,DeviceContext* fault_ctx = nullptr);
-
-    void reportActivity();
-    void processFSM();
+    bool init(const struct device* rtc, const struct device* i2c, 
+              const struct device* uart, const struct device* usb, 
+              const struct device* adc, DeviceContext* fault_ctx);
 
     bool registerObserver(IPowerObserver* obs);
+    void reportActivity();
+    void reportPmFailure();
+    void processFSM();
+
+    // Notifiers for observers
     void notifyBeforeSleep();
     void notifyAfterWakeup();
     void notifySleepAborted();
 
-    void reportPmFailure();
-    void resetPmFailures() { consecutive_pm_failures = 0; }
-
+    // Getters and Setters used by concrete states
     uint32_t getLastActivityTime() const { return last_activity_time.load(); }
+    void clearWakePending() { atomic_set(&wake_pending, 0); }
+    
+    // Consumes the wake flag atomically to prevent race conditions during STOP mode wake
+    bool consumeWakePending(); 
+    
     const struct device* getRtcDev() const { return rtc_dev; }
     const struct device* getI2cDev() const { return i2c_dev; }
     const struct device* getUartDev() const { return uart_dev; }
@@ -86,52 +94,89 @@ public:
     const struct device* getAdcDev() const { return adc_dev; }
 
     void recordSleepTime() { last_sleep_time = k_uptime_get_32(); }
+    void setExpectedWakeTime(uint32_t time) { expected_wake_time = time; }
     uint32_t getSleepTime() const { return last_sleep_time; }
-
-    void setExpectedWakeTime(uint32_t time_ms) { expected_wake_time = time_ms; }
     uint32_t getExpectedWakeTime() const { return expected_wake_time; }
+    
+    void resetPmFailures() { consecutive_pm_failures = 0; }
 
-    static void rtc_alarm_handler(const struct device* dev, uint16_t chan_id, void* user_data);
+    // Static callback for RTC API
+    static void rtc_alarm_handler(const struct device* dev, uint16_t id, void* user_data);
 
 #ifdef IS_TEST_ENVIRONMENT
     void resetForTest();
 #endif
+
+    // Exposed for direct alarm manipulation in states
+    atomic_t wake_pending;
+
+private:
+    PowerManager();
+    ~PowerManager() = default;
+    PowerManager(const PowerManager&) = delete;
+    PowerManager& operator=(const PowerManager&) = delete;
+
+    void transitionTo(IPowerState& next_state);
+    size_t captureObservers(std::array<IPowerObserver*, MAX_OBSERVERS>& out);
+
+    IPowerState* current_state;
+    
+    uint32_t last_sleep_time;
+    uint32_t expected_wake_time;
+
+    const struct device* rtc_dev;
+    const struct device* i2c_dev;
+    const struct device* uart_dev;
+    const struct device* usb_dev;
+    const struct device* adc_dev;
+
+    size_t observer_count;
+    std::array<IPowerObserver*, MAX_OBSERVERS> observers;
+    
+    DeviceContext* fault_context;
+    uint32_t consecutive_pm_failures;
+
+    std::atomic<uint32_t> last_activity_time;
 };
+
 
 class ActiveState : public IPowerState {
 public:
-    constexpr ActiveState() = default;
+    static ActiveState& getInstance();
     bool enter(PowerManager& pm) override;
     IPowerState& execute(PowerManager& pm) override;
     void exit(PowerManager& pm) override;
-    const char* getName() const override { return "ACTIVE"; }
-    static ActiveState& getInstance();
+    const char* getName() const override { return "PM_STATE_ACTIVE"; }
+
+private:
+    ActiveState() = default;
 };
 
 class IdleState : public IPowerState {
 public:
-    constexpr IdleState() = default;
+    static IdleState& getInstance();
     bool enter(PowerManager& pm) override;
     IPowerState& execute(PowerManager& pm) override;
     void exit(PowerManager& pm) override;
-    const char* getName() const override { return "IDLE"; }
-    static IdleState& getInstance();
+    const char* getName() const override { return "PM_STATE_SUSPEND_TO_IDLE"; }
+
+private:
+    IdleState() = default;
 };
 
 class StopState : public IPowerState {
-private:
-    bool sleep_prepared = false;
-
 public:
-    constexpr StopState() : sleep_prepared(false) {}
+    static StopState& getInstance();
     bool enter(PowerManager& pm) override;
     IPowerState& execute(PowerManager& pm) override;
     void exit(PowerManager& pm) override;
-    const char* getName() const override { return "STOP"; }
-    static StopState& getInstance();
+    const char* getName() const override { return "PM_STATE_SUSPEND_TO_RAM"; }
 
 #ifdef IS_TEST_ENVIRONMENT
     void resetForTest() { sleep_prepared = false; }
 #endif
-};
 
+private:
+    StopState() = default;
+    bool sleep_prepared = false;
+};

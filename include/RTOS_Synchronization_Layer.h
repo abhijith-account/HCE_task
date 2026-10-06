@@ -29,7 +29,6 @@ class ZephyrWorkQueue {
   public:
       explicit ZephyrWorkQueue(void (*cb)());
       void schedule(k_timeout_t delay);
-
       void cancel();
 };
 
@@ -41,4 +40,3 @@ struct SharedHeartRateBuffer{
 };
 extern SharedHeartRateBuffer hr_buffer;
 extern ZephyrSemaphore display_sem;
-

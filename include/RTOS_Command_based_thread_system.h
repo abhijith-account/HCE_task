@@ -138,7 +138,6 @@ namespace PAV3015Math {
 
 class ICommand {
 public:
-    uint32_t timestamp_queued;
     uint32_t command_id;
 
     ICommand();
@@ -153,8 +152,6 @@ public:
 
     void operator delete(void* ptr) noexcept;
     void destroy() noexcept;
-
-    [[nodiscard]] uint32_t queueDelay() const noexcept;
 };
 
 class SensorReadCmd final : public ICommand {

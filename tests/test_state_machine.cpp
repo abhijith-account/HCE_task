@@ -14,6 +14,16 @@ static int mock_wdt_install_res = 0;
 static int mock_wdt_setup_res = 0;
 static int mock_wdt_feed_res = 0;
 
+atomic_t g_processor_alive = ATOMIC_INIT(0);
+atomic_t g_producer_alive = ATOMIC_INIT(0);
+atomic_t g_logger_alive = ATOMIC_INIT(0);
+atomic_t g_hr_prod_alive = ATOMIC_INIT(0);
+atomic_t g_disp_cons_alive = ATOMIC_INIT(0);
+atomic_t g_bms_comm_alive = ATOMIC_INIT(0);
+atomic_t g_batt_mon_alive = ATOMIC_INIT(0);
+atomic_t g_mem_mon_alive = ATOMIC_INIT(0);
+atomic_t g_shell_alive = ATOMIC_INIT(0);
+
 extern "C" {
     bool device_is_ready(const struct device *dev) {
         return mock_wdt_ready;
@@ -266,3 +276,43 @@ TEST_F(StateMachineTestSuite, IsLegalTransitionBranches)
                                        SystemState::INIT));
 }
 
+extern uint32_t virtual_uptime;
+extern DeviceContext sys_context; // Targets the global instance used by the hook
+
+TEST_F(StateMachineTestSuite, DalyWatchdogFeedHookComprehensive) {
+    // 1. Cover the FAULT early-return branch
+    sys_context.current_state = SystemState::INIT; // Reset global state
+    sys_context.requestTransition(SystemState::RUNNING);
+    sys_context.triggerFault("Hook Fault");
+    ASSERT_EQ(sys_context.getState(), SystemState::FAULT);
+    
+    daly_watchdog_feed_hook(); // Exits immediately at FAULT check
+
+    // 2. Cover the SAFE_HALT early-return branch
+    sys_context.requestTransition(SystemState::SAFE_HALT);
+    ASSERT_EQ(sys_context.getState(), SystemState::SAFE_HALT);
+    
+    daly_watchdog_feed_hook(); // Feeds and exits at SAFE_HALT check
+
+    // 3. Cover the False branch of thread liveness (time >= 1000, threads dead)
+    sys_context.requestTransition(SystemState::INIT); // Restore to normal state
+    virtual_uptime += 2000; // Advance time to bypass the < 1000ms early return
+    
+    g_producer_alive = false; // Ensure at least one thread evaluates to false
+    daly_watchdog_feed_hook(); // Reaches the LOG_DBG else-block
+
+    // 4. Cover the True branch of thread liveness (time >= 1000, threads alive)
+    virtual_uptime += 2000; // Advance time again for the next check
+    
+    g_producer_alive = true;
+    g_processor_alive = true;
+    g_logger_alive = true;
+    g_hr_prod_alive = true;
+    g_disp_cons_alive = true;
+    g_bms_comm_alive = true;
+    g_batt_mon_alive = true;
+    g_mem_mon_alive = true;
+    g_shell_alive = true;
+    
+    daly_watchdog_feed_hook(); // Reaches sys_context.feedWatchdog() inside the true block
+}

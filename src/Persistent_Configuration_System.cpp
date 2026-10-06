@@ -46,6 +46,12 @@ bool ConfigStore::init() {
     if (rc == -ENOMSG) {
         LOG_WRN("Flash storage is empty. Erasing and formatting FCB sectors...");
 
+        /* FIX: Prevent massive flash operations if the system is unstable/faulted */
+        if (sys_context.getState() == SystemState::FAULT) {
+            LOG_ERR("System FAULT. Aborting flash erase to prevent corruption.");
+            return false;
+        }
+
         // Feed watchdog before starting the erase sequence
         sys_context.feedWatchdog();
 
@@ -81,6 +87,9 @@ bool ConfigStore::init() {
 
 void ConfigStore::seedDefaultDeviceIds() {
     for (uint8_t slot = InfusionDeviceConfig::MinSlot; slot <= InfusionDeviceConfig::MaxSlot; ++slot){
+        /* FIX: Instantly abort seeding if system crashes */
+        if (sys_context.getState() == SystemState::FAULT) return;
+        
         sys_context.feedWatchdog();
         uint32_t existing = InfusionDeviceConfig::UnprovisionedId;
         if (!getDeviceId(slot, existing) || existing == InfusionDeviceConfig::UnprovisionedId){
@@ -96,6 +105,9 @@ void ConfigStore::seedDefaultDeviceIds() {
 
 void ConfigStore::seedDefaultAlarmThresholds() {
     for (uint8_t slot = InfusionDeviceConfig::MinSlot; slot <= InfusionDeviceConfig::MaxSlot; ++slot){
+        /* FIX: Instantly abort seeding if system crashes */
+        if (sys_context.getState() == SystemState::FAULT) return;
+        
         sys_context.feedWatchdog();
         uint8_t existing = 0;
         if (!getAlarmThreshold(slot, existing)){
@@ -124,7 +136,14 @@ bool ConfigStore::validateEndurance(ConfigKey key) {
     pm_policy_state_lock_get(PM_STATE_SUSPEND_TO_RAM, PM_ALL_SUBSTATES);
     uint16_t test_val = 0;
     bool success = true;
+    
     for (int i = 0; i < 1000; i++){
+        /* FIX: Abort the 1,000-cycle write loop immediately to save NVS if a fault occurs */
+        if (sys_context.getState() == SystemState::FAULT) {
+            LOG_ERR("System FAULT detected. Aborting endurance test.");
+            success = false;
+            break;
+        }
 
         sys_context.feedWatchdog();
         PowerManager::getInstance().reportActivity();
@@ -158,7 +177,8 @@ bool ConfigStore::validateEndurance(ConfigKey key) {
 }
 
 uint32_t ConfigStore::getStoredLogCount() const noexcept {
-    if (!initialized) {
+    /* FIX: Prevent flash reads while faulting */
+    if (!initialized || sys_context.getState() == SystemState::FAULT) {
         return 0;
     }
     
@@ -173,6 +193,9 @@ uint32_t ConfigStore::getStoredLogCount() const noexcept {
     auto* non_const_fcb = const_cast<struct fcb*>(&fcb_instance);
     
     while (fcb_getnext(non_const_fcb, &loc) == 0) {
+        /* FIX: Check state inside long lookup loops */
+        if (sys_context.getState() == SystemState::FAULT) return 0;
+
         if (flash_area_read(fcb_instance.fap, FCB_ENTRY_FA_DATA_OFF(loc), &header, sizeof(header)) == 0) {
             // Count entries that are specifically logs
             if (header.key == ConfigKey::FULL_CHARGE_LOG && header.length == sizeof(LogEntry)) {
@@ -184,7 +207,8 @@ uint32_t ConfigStore::getStoredLogCount() const noexcept {
 }
 
 bool ConfigStore::getLogEntry(uint32_t index, LogEntry& out_entry) const noexcept {
-    if (!initialized) {
+    /* FIX: Prevent flash reads while faulting */
+    if (!initialized || sys_context.getState() == SystemState::FAULT) {
         return false;
     }
     
@@ -197,6 +221,9 @@ bool ConfigStore::getLogEntry(uint32_t index, LogEntry& out_entry) const noexcep
     auto* non_const_fcb = const_cast<struct fcb*>(&fcb_instance);
     
     while (fcb_getnext(non_const_fcb, &loc) == 0) {
+        /* FIX: Check state inside long lookup loops */
+        if (sys_context.getState() == SystemState::FAULT) return false;
+
         if (flash_area_read(fcb_instance.fap, FCB_ENTRY_FA_DATA_OFF(loc), &header, sizeof(header)) == 0) {
             if (header.key == ConfigKey::FULL_CHARGE_LOG && header.length == sizeof(LogEntry)) {
                 if (current_index == index) {

@@ -7,11 +7,14 @@
 #include <zephyr/logging/log.h>
 #include <zephyr/sys/reboot.h>
 #include <zephyr/kernel.h>
+#include <zephyr/sys/atomic.h>
 #include <charconv>
 #include <cstring>
 #include <cstdarg>
 #include <cstdio>
 #include <utility>
+#include "Device_State_Machine+Watchdog.h"
+#include "Power_Management_System.h" 
 
 #ifdef IS_TEST_ENVIRONMENT
     extern bool run_thread_once;
@@ -45,6 +48,11 @@
 
 LOG_MODULE_REGISTER(USB_CLI, LOG_LEVEL_INF);
 
+/* NEW: Thread Health Monitoring Flag for the USB Shell */
+atomic_t g_shell_alive = ATOMIC_INIT(1);
+/* Global flag managed by the USB Callback in main.cpp */
+bool g_usb_connected = false;
+
 namespace {
 
     class ShellPowerObserver final : public IPowerObserver {
@@ -57,7 +65,15 @@ namespace {
         void sleepAborted() override { atomic_set(&is_sleeping, 0); }
         bool isSleeping() const noexcept { return atomic_get(&is_sleeping) != 0; }
     };
+    
     ShellPowerObserver g_shellPowerObserver;
+    atomic_t g_shellObserverRegistered = ATOMIC_INIT(0);
+
+    void ensure_shell_observer_registered() {
+        if (atomic_cas(&g_shellObserverRegistered, 0, 1)) {
+            PowerManager::getInstance().registerObserver(&g_shellPowerObserver);
+        }
+    }
 
     [[nodiscard]] bool parseIntToken(std::string_view token, int& out_value) noexcept {
         if (token.empty()) {
@@ -90,6 +106,10 @@ namespace {
     constexpr std::string_view kNotProvisionedMsg   = "Error: Device ID not provisioned.\r\n";
     constexpr std::string_view kThresholdFallbackMsg = "Error: Rate exceeds alarm threshold. Please reset the rate.\r\n";
     constexpr std::string_view kSetRateSuccessFallback = "Success: infusion rate updated.\r\n";
+    
+    // SAFE HALT INTERLOCK MESSAGE
+    constexpr std::string_view kSafeHaltRejectMsg   = "Error: Operational command rejected. System locked in SAFE_HALT/FAULT.\r\n";
+    
     constexpr std::string_view kRebootingMsg        = "Rebooting system... \r\n";
     constexpr std::string_view kLogDumpHeader       = "--- NVS System Log Dump ---\r\n";
     constexpr std::string_view kLogDumpBooted       = "System Booted\r\n";
@@ -134,37 +154,39 @@ bool UsbCdcFacade::init() {
 }
 
 bool UsbCdcFacade::isConnected() {
+    // 1. Check physical hardware state driven by the kernel callback
+    if (!g_usb_connected) {
+        if (dtr_ready) {
+            uart_irq_rx_disable(dev);
+            dtr_ready = false;
+        }
+        return false;
+    }
+
+    // 2. Hardware is attached. Check terminal software state.
     uint32_t dtr = 0;
-    const int ret = uart_line_ctrl_get(dev, UART_LINE_CTRL_DTR, &dtr);
-    #ifdef CONFIG_BOARD_MPS2_AN386
-    if (ret == -ENOTSUP || ret == -ENOSYS) {
-        line_ctrl_get_failed_logged = false;
-        if (!dtr_ready) {
-            LOG_INF("Virtual USB Terminal Connected (Mock UART mode)");
-            uart_irq_rx_enable(dev);
-            dtr_ready = true;
-        }
-        return true;
-    }
-    #endif
+    int ret = uart_line_ctrl_get(dev, UART_LINE_CTRL_DTR, &dtr);
     
-    if (ret != 0) {
-        if (!line_ctrl_get_failed_logged) {
-            LOG_ERR("uart_line_ctrl_get failed (err %d)", ret);
-            line_ctrl_get_failed_logged = true;
-        }
-        return dtr_ready;
+    bool terminal_connected = false;
+
+    if (ret == 0) {
+        terminal_connected = (dtr != 0);
+    } else if (ret == -ENOTSUP || ret == -ENOSYS) {
+        /* FIX: Ensure drivers/terminals that don't support DTR still function */
+        terminal_connected = true; 
     }
-    line_ctrl_get_failed_logged = false;
-    const bool currently_connected = (dtr != 0);
-    if (currently_connected && !dtr_ready) {
-        LOG_INF("USB Terminal Connected (DTR High)");
+
+    // Edge Detection for SERIAL TERMINAL ONLY (e.g. Closing PuTTY/Minicom)
+    if (terminal_connected && !dtr_ready) {
+        LOG_INF("USB Terminal Opened (DTR High)");
         uart_irq_rx_enable(dev);
-    } else if (!currently_connected && dtr_ready) {
-        LOG_WRN("USB Terminal Disconnected (DTR Low)");
+        dtr_ready = true;
+    } else if (!terminal_connected && dtr_ready) {
+        LOG_WRN("USB Terminal Closed (DTR Low)");
         uart_irq_rx_disable(dev);
+        dtr_ready = false;
     }
-    dtr_ready = currently_connected;
+    
     return dtr_ready;
 }
 
@@ -199,7 +221,16 @@ void UsbCdcFacade::uartInterruptHandler(const device* dev, void* user_data) {
                 }
                 continue;
             }
-            uart_poll_out(dev, c);
+            
+            /* FIX: Terminal Emulator Echo Mapping 
+             * Minicom sends '\r' on Enter. We MUST echo '\r\n' to force the cursor down a line. */
+            if (c == '\r' || c == '\n') {
+                uart_poll_out(dev, '\r');
+                uart_poll_out(dev, '\n');
+            } else {
+                uart_poll_out(dev, c);
+            }
+
             if (discard_rest_of_burst) {
                 self->dropped_bytes.fetch_add(1, std::memory_order_relaxed);
                 continue;
@@ -243,6 +274,12 @@ bool UsbCdcFacade::readLine(CommandBuffer& out_line) noexcept {
         if (c == CR || c == LF) {
             found_eol = true;
             temp_tail = (temp_tail + 1) % RX_RING_BUF_SIZE;
+            
+            /* FIX: CRLF Absorption. If the terminal sent \r\n, safely drop the \n 
+             * so we don't accidentally process a phantom empty command on the next loop. */
+            if (c == CR && temp_tail != head && rx_buffer[temp_tail] == LF) {
+                temp_tail = (temp_tail + 1) % RX_RING_BUF_SIZE;
+            }
             break;
         }
         if (i >= MAX_CMD_LEN - 1) {
@@ -276,26 +313,39 @@ const std::array<UsbShell::Command, UsbShell::CommandCount> UsbShell::kCommandTa
 }};
 
 void UsbShell::process() {
+    ensure_shell_observer_registered();
+
     if (!usb.init()) {
         LOG_ERR("USB initialization failed");
         return;
     }
 
-    PowerManager::getInstance().registerObserver(&g_shellPowerObserver);
-
     CommandBuffer cmd_buf;
     do {
-        if (!g_shellPowerObserver.isSleeping() && sys_ctx->getState() != SystemState::SAFE_HALT) {
-            if (usb.isConnected() && usb.readLine(cmd_buf)) {
-                PowerManager::getInstance().reportActivity();
-
-                if (cmd_buf[0] != '\0') {
-                    dispatchCommand(std::string_view(cmd_buf.data()));
-                    usb.transmit(PromptStr);
-                }
-            }
+        /* Cleanly yield CPU cycles during system deep sleep.
+         * Note: Does NOT freeze during SAFE_HALT, ensuring diagnostics are available. */
+        while (g_shellPowerObserver.isSleeping()) {
+            k_msleep(200);
+            atomic_set(&g_shell_alive, 1);
         }
+
+        if (usb.isConnected() && usb.readLine(cmd_buf)) {
+            PowerManager::getInstance().reportActivity();
+
+            // Execute the command if it wasn't just an empty Enter key
+            if (cmd_buf[0] != '\0') {
+                dispatchCommand(std::string_view(cmd_buf.data()));
+            }
+            
+            // FIX: Always print the prompt after returning, simulating a standard Linux terminal
+            usb.transmit(PromptStr);
+        }
+        
         k_msleep(ShellPollMs);
+
+        /* Flag health for global watchdog */
+        atomic_set(&g_shell_alive, 1);
+
     } while (THREAD_LOOP_CONDITION);
 }
 
@@ -311,7 +361,6 @@ void UsbShell::dispatchCommand(std::string_view cmd) {
                     return;
                 }
                 const char separator = cmd[entry.name.size()];
-                // EDITED: Enforce strict space separator for the initial command separation
                 if (separator == ' ') {
                     cmdSetRate(trim(cmd.substr(entry.name.size() + 1)));
                     return;
@@ -401,6 +450,13 @@ void UsbShell::cmdStatus([[maybe_unused]] std::string_view args) noexcept {
 }
 
 void UsbShell::cmdSetRate(std::string_view args) noexcept {
+    // SAFE HALT INTERLOCK: Reject operational commands that alter physical state
+    const SystemState current_state = sys_ctx->getState();
+    if (current_state == SystemState::SAFE_HALT || current_state == SystemState::FAULT) {
+        usb.transmit(kSafeHaltRejectMsg);
+        return;
+    }
+
     args = trim(args);
 
     const std::size_t separator_pos = args.find_first_of(" \t");
@@ -499,4 +555,5 @@ void UsbShell::cmdReboot([[maybe_unused]] std::string_view args) noexcept {
 void shell_thread(void) {
     diag_shell.process();
 }
+extern const k_tid_t shell_tid;
 K_THREAD_DEFINE(shell_tid, ShellStackSize, shell_thread, nullptr, nullptr, nullptr, ShellPriority, 0, 0);

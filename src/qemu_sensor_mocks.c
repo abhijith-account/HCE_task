@@ -53,7 +53,6 @@ static int ina226_transfer(const struct emul *target, struct i2c_msg *msgs, int 
                 }
             }
         } else {
-            /* Write transaction: set the active register pointer */
             if (msgs[i].len >= 1) {
                 data->current_reg = msgs[i].buf[0];
             }
@@ -70,11 +69,18 @@ static int init_ina226(const struct emul *target, const struct device *parent) {
     EMUL_DT_DEFINE(n, init_ina226, &data_ina226_##n, NULL, &api_ina226, NULL)
 DT_FOREACH_STATUS_OKAY(ti_ina226, MOCK_INA226);
 
-/* Generic auto-increment memory-mapped register emulation, used by both
- * BME280 and LPS22HB: first byte of a write sets the pointer, subsequent
- * bytes are stored sequentially; reads stream out sequentially from the
- * pointer. This matches both parts' actual bus behavior. */
 static int bme280_transfer(const struct emul *target, struct i2c_msg *msgs, int num_msgs, int addr) {
+    static int64_t first_access_time = 0;
+    
+    if (first_access_time == 0) {
+        first_access_time = k_uptime_get();
+    }
+
+    if (k_uptime_get() - first_access_time > 5000) {
+        LOG_ERR("BME280 emulator simulating disconnect!");
+        return -EIO; 
+    }
+    
     struct mock_sensor_data *data = (struct mock_sensor_data *)target->data;
 
     for (int i = 0; i < num_msgs; i++) {
@@ -100,28 +106,14 @@ static const struct i2c_emul_api api_bme280 = { .transfer = bme280_transfer };
 static int init_bme280(const struct emul *target, const struct device *parent) {
     struct mock_sensor_data *data = (struct mock_sensor_data *)target->data;
 
-    /* Zero-init. We no longer need the old 0x01 filler hack: every register
-     * the real Bosch compensation algorithm actually reads is explicitly
-     * populated below, so there's nothing left that can divide by zero. */
     for (int i = 0; i < 256; i++) {
         data->regs[i] = 0x00;
     }
 
     data->regs[0xD0] = 0x60; /* CHIP_ID */
 
-    /* STATUS (0xF3): bit3=measuring, bit0=im_update (NVM->image copy busy).
-     * Leaving this at the old filler value of 0x01 told the driver the NVM
-     * copy was permanently in progress; a driver that polls im_update before
-     * trusting the calibration registers would spin/timeout forever. Idle
-     * and calibration-ready is what the real part reports once powered up. */
     data->regs[0xF3] = 0x00;
 
-    /* --- Compensation trim registers, 0x88-0xA1 and 0xE1-0xE7 --- *
-     * These are the classic Bosch reference calibration coefficients,
-     * verified here to decompensate (via the real Bosch integer formulas)
-     * to ~25.08 C / ~1006.53 hPa / ~49.99 %RH against the raw ADC codes
-     * programmed below -- i.e. this is a self-consistent, physically
-     * plausible calibration+data pair, not placeholder bytes. */
     static const uint8_t calib_88_9F[24] = {
         0x70, 0x6B, /* 0x88/89 dig_T1 = 27504 (u16) */
         0x43, 0x67, /* 0x8A/8B dig_T2 = 26435 (s16) */
@@ -149,10 +141,6 @@ static int init_bme280(const struct emul *target, const struct device *parent) {
     data->regs[0xE6] = 0x00; /* dig_H5[11:4] */
     data->regs[0xE7] = 0x1E; /* dig_H6 = 30 (s8) */
 
-    /* --- Raw ADC output, 0xF7-0xFE ---
-     * adc_P = 415148 (20-bit), adc_T = 519888 (20-bit), adc_H = 26320 (16-bit).
-     * Combined with the trim data above these decompensate to the values
-     * noted in the block comment. */
     data->regs[0xF7] = 0x65; /* press_msb */
     data->regs[0xF8] = 0x5A; /* press_lsb */
     data->regs[0xF9] = 0xC0; /* press_xlsb (top nibble only, 20-bit mode) */
@@ -212,10 +200,6 @@ static int init_lps22hb(const struct emul *target, const struct device *parent) 
 
     data->regs[0x0F] = 0xB1; /* WHO_AM_I */
 
-    /* Pressure: 1013.25 hPa * 4096 LSB/hPa = 4150272 = 0x3F5400 (24-bit, LE).
-     * NOTE: the original bytes here (H=0x3E, L=0x80, XL=0x00) actually
-     * decoded to exactly 1000.0 hPa, not the 1013.25 hPa the comment
-     * claimed -- fixed below. */
     data->regs[0x28] = 0x00; /* PRESS_OUT_XL */
     data->regs[0x29] = 0x54; /* PRESS_OUT_L  */
     data->regs[0x2A] = 0x3F; /* PRESS_OUT_H  */
@@ -232,14 +216,6 @@ static int init_lps22hb(const struct emul *target, const struct device *parent) 
     EMUL_DT_DEFINE(n, init_lps22hb, &data_lps22hb_##n, NULL, &api_lps22hb, NULL)
 DT_FOREACH_STATUS_OKAY(st_lps22hb_press, MOCK_LPS22HB);
 
-/* 10K B3950 NTC thermistor, computed from the actual B-parameter equation
- * rather than a bare magic constant, so the emulated code is traceable to
- * physical parameters and can be re-derived for a different target
- * temperature or divider topology.
- *
- * Assumes the common topology: Vref -- R_fixed -- node -- R_ntc -- GND,
- * ADC sampling the divider node, with R_fixed == R0 (10k) -- a standard
- * pairing that centers the divider at the NTC's rated temperature. */
 static uint16_t b3950_temp_to_adc_raw(float temp_c) {
     static const float R0 = 10000.0f;      /* NTC nominal resistance at T0 */
     static const float B = 3950.0f;        /* B-constant */

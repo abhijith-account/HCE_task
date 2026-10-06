@@ -4,6 +4,7 @@
 #include "Fault_Tolerant_I2C_Communication_Layer.h"
 #include "Static_Memory+MISRA_Compliance_Layer.h"
 #include "Power_Management_System.h"
+#include "Device_State_Machine+Watchdog.h" 
 #include <zephyr/sys/atomic.h>
 #include <cerrno>
 #include <cstdlib>
@@ -11,6 +12,9 @@
 #include <cstdint>
 
 LOG_MODULE_REGISTER(I2C_HW, LOG_LEVEL_INF);
+
+/* Global context reference */
+extern DeviceContext sys_context;
 
 constexpr size_t MAX_CACHED_REGISTERS = 64U;
 constexpr uint8_t CACHE_RELIABILITY_MAX = 100U;
@@ -34,6 +38,9 @@ static bool cache_mutex_init = false;
 
 #ifndef IS_TEST_ENVIRONMENT
 const struct device *i2c_hardware = DEVICE_DT_GET(DT_NODELABEL(i2c1));
+#ifdef CONFIG_BOARD_MPS2_AN386
+const struct device *i2c_hardware = DEVICE_DT_GET(DT_ALIAS(i2c1));
+#endif
 #endif
 
 #ifndef IS_TEST_ENVIRONMENT
@@ -104,25 +111,32 @@ static bool get_cached_value(uint32_t key, uint64_t* out_val, uint32_t max_age_m
     ensure_mutex_initialized();
     k_mutex_lock(&cache_tracker_mutex, K_FOREVER);
     const int64_t now = k_uptime_get();
-
+    
     for (size_t i = 0; i < MAX_CACHED_REGISTERS; i++) {
        if ((active_entries[i] != nullptr) && (active_entries[i]->key == key)) {
           CacheEntry* const entry = active_entries[i];
 
+          // Check if data is stale - but don't print error logs while in SAFE_HALT
           if ((now - entry->timestamp) > max_age_ms) {
-              LOG_ERR("Fallback Rejected: Data Stale (>%d ms)", max_age_ms);
+              if (sys_context.getState() == SystemState::RUNNING) {
+                  LOG_ERR("Fallback Rejected: Data Stale (>%d ms)", max_age_ms);
+              }
               k_mutex_unlock(&cache_tracker_mutex);
               return false;
           }
 
           if (entry->reliability_score < CACHE_RELIABILITY_MIN_FOR_FALLBACK) {
-              LOG_ERR("Fallback Rejected: Reliability Score too low");
+              if (sys_context.getState() == SystemState::RUNNING) {
+                  LOG_ERR("Fallback Rejected: Reliability Score too low");
+              }
               k_mutex_unlock(&cache_tracker_mutex);
               return false;
           }
 
           if (!entry->is_calibrated) {
-              LOG_ERR("Fallback Rejected: Data is uncalibrated.");
+              if (sys_context.getState() == SystemState::RUNNING) {
+                  LOG_ERR("Fallback Rejected: Data is uncalibrated.");
+              }
               k_mutex_unlock(&cache_tracker_mutex);
               return false;
           }
@@ -200,16 +214,12 @@ I2CManager::I2CManager(const device* i2c_dev) : i2c_dev(i2c_dev) {}
 
 Result<uint8_t> I2CManager::readRegister(uint16_t sensor_addr, uint8_t reg_addr) {
     const uint32_t cache_key = (static_cast<uint32_t>(sensor_addr) << 8U) | static_cast<uint32_t>(reg_addr);
-
     ensure_power_observer_registered();
-    if (g_i2cPowerObserver.isSleeping()) {
-        uint64_t cached_val = 0U;
-        if (get_cached_value(cache_key, &cached_val, 3000U)) {
-            return Result<uint8_t>::Ok(static_cast<uint8_t>(cached_val & 0xFFU));
-        }
+    
+    // SAFE HALT: Complete lock out of physical bus. No polling.
+    if (g_i2cPowerObserver.isSleeping() || sys_context.getState() == SystemState::FAULT || sys_context.getState() == SystemState::SAFE_HALT) {
         return Result<uint8_t>::Err(I2CFault::DEVICE_NOT_READY);
     }
-
 
 #ifdef IS_TEST_ENVIRONMENT
     extern int g_i2c_force_errno;
@@ -247,7 +257,8 @@ Result<uint8_t> I2CManager::readRegister(uint16_t sensor_addr, uint8_t reg_addr)
 
 Result<bool> I2CManager::writeRegister(uint16_t sensor_addr, uint8_t reg_addr, uint8_t val) {
     ensure_power_observer_registered();
-    if (g_i2cPowerObserver.isSleeping()) {
+    
+    if (g_i2cPowerObserver.isSleeping() || sys_context.getState() == SystemState::FAULT || sys_context.getState() == SystemState::SAFE_HALT) {
         return Result<bool>::Err(I2CFault::DEVICE_NOT_READY);
     }
 
@@ -279,14 +290,9 @@ Result<bool> I2CManager::writeRegister(uint16_t sensor_addr, uint8_t reg_addr, u
 
 Result<uint16_t> I2CManager::readWord(uint16_t sensor_addr, uint8_t reg_addr) {
     uint32_t cache_key = (static_cast<uint32_t>(sensor_addr) << 8) | reg_addr;
-
     ensure_power_observer_registered();
-    if (g_i2cPowerObserver.isSleeping()) {
-
-        uint64_t cached_val = 0U;
-        if (get_cached_value(cache_key, &cached_val, 3000U)) {
-            return Result<uint16_t>::Ok(static_cast<uint16_t>(cached_val & 0xFFFFU));
-        }
+    
+    if (g_i2cPowerObserver.isSleeping() || sys_context.getState() == SystemState::FAULT || sys_context.getState() == SystemState::SAFE_HALT) {
         return Result<uint16_t>::Err(I2CFault::DEVICE_NOT_READY);
     }
 
@@ -336,13 +342,9 @@ Result<bool> I2CManager::writeWord(uint16_t sensor_addr, uint8_t reg_addr, uint1
 
 Result<uint32_t> I2CManager::read24Bit(uint16_t sensor_addr, uint8_t reg_addr) {
     uint32_t cache_key = (static_cast<uint32_t>(sensor_addr) << 8) | static_cast<uint32_t>(reg_addr);
-
     ensure_power_observer_registered();
-    if (g_i2cPowerObserver.isSleeping()) {
-        uint64_t cached_val = 0U;
-        if (get_cached_value(cache_key, &cached_val, 3000U)) {
-            return Result<uint32_t>::Ok(static_cast<uint32_t>(cached_val & 0xFFFFFFU));
-        }
+    
+    if (g_i2cPowerObserver.isSleeping() || sys_context.getState() == SystemState::FAULT || sys_context.getState() == SystemState::SAFE_HALT) {
         return Result<uint32_t>::Err(I2CFault::DEVICE_NOT_READY);
     }
 
@@ -381,16 +383,13 @@ Result<uint32_t> I2CManager::read24Bit(uint16_t sensor_addr, uint8_t reg_addr) {
 }
 
 Result<uint64_t> I2CManager::read64Bit(uint16_t sensor_addr, uint8_t reg_addr) {
-  uint32_t cache_key = (static_cast<uint32_t>(sensor_addr) << 8) | reg_addr;
-
+    uint32_t cache_key = (static_cast<uint32_t>(sensor_addr) << 8) | reg_addr;
     ensure_power_observer_registered();
-    if (g_i2cPowerObserver.isSleeping()) {
-        uint64_t cached_val = 0U;
-        if (get_cached_value(cache_key, &cached_val, 3000U)) {
-            return Result<uint64_t>::Ok(cached_val);
-        }
+    
+    if (g_i2cPowerObserver.isSleeping() || sys_context.getState() == SystemState::FAULT || sys_context.getState() == SystemState::SAFE_HALT) {
         return Result<uint64_t>::Err(I2CFault::DEVICE_NOT_READY);
     }
+    
 #ifdef IS_TEST_ENVIRONMENT
     extern int g_i2c_force_errno;
     if (g_i2c_force_errno != 0) {
@@ -499,4 +498,3 @@ void test_set_sample_count(uint32_t key, uint32_t count)
     k_mutex_unlock(&cache_tracker_mutex);
 }
 #endif
-

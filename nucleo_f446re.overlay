@@ -1,12 +1,18 @@
+#include <zephyr/dt-bindings/pinctrl/stm32-pinctrl.h>
+
 / {
     chosen {
         /* Route Zephyr system logs and console to the USB Virtual COM port */
         zephyr,console = &usart2;
         zephyr,shell-uart = &usart2;
+
+        /delete-property/ zephyr,lpm-timer;
+        /delete-property/ zephyr,cortex-m-idle-timer;
     };
 
     aliases {
         cdc-acm-uart0 = &cdc_acm_uart0;
+        rtc0 = &rtc;
     };
 
     zephyr_user: zephyr,user {
@@ -24,8 +30,39 @@
             compatible = "zephyr,power-state";
             power-state-name = "suspend-to-ram";
             min-residency-us = <100000>;
-            exit-latency-us = <100>;
+            exit-latency-us = <2000>;
         };
+    };
+};
+
+/* --- DEDICATED SLEEP PIN STATES ---
+ * NOTE: the STM32 pinctrl binding requires ONE pinmux value per node.
+ * Multi-pin groups are formed by listing several node phandles in
+ * pinctrl-N, not by stacking values inside a single node.
+ */
+&pinctrl {
+    /* FIX: Changed from AF7 to strictly ANALOG to prevent UART leakage */
+    usart2_tx_sleep: usart2_tx_sleep {
+        pinmux = <STM32_PINMUX('A', 2, ANALOG)>;
+    };
+    usart2_rx_sleep: usart2_rx_sleep {
+        pinmux = <STM32_PINMUX('A', 3, ANALOG)>;
+    };
+
+    /* FIX: Changed from AF4 to strictly ANALOG to prevent I2C pull-up leakage */
+    i2c1_scl_sleep: i2c1_scl_sleep {
+        pinmux = <STM32_PINMUX('B', 8, ANALOG)>;
+    };
+    i2c1_sda_sleep: i2c1_sda_sleep {
+        pinmux = <STM32_PINMUX('B', 9, ANALOG)>;
+    };
+
+    adc1_in0_sleep: adc1_in0_sleep {
+        pinmux = <STM32_PINMUX('A', 0, ANALOG)>;
+    };
+
+    usb_otg_fs_vbus_sleep: usb_otg_fs_vbus_sleep {
+        pinmux = <STM32_PINMUX('A', 9, ANALOG)>;
     };
 };
 
@@ -34,16 +71,20 @@
     status = "okay";
     current-speed = <115200>;
     pinctrl-0 = <&usart2_tx_pa2 &usart2_rx_pa3>;
-    pinctrl-names = "default";
+    pinctrl-1 = <&usart2_tx_sleep &usart2_rx_sleep>;
+    pinctrl-names = "default", "sleep";
 };
+
+/* Explicitly disable unused buses to prevent phantom PM warnings */
+&i2c2 { status = "disabled"; };
+&i2c3 { status = "disabled"; };
 
 &i2c1 {
     status = "okay";
     pinctrl-0 = <&i2c1_scl_pb8 &i2c1_sda_pb9>;
-    pinctrl-1 = <&i2c1_scl_pb8 &i2c1_sda_pb9>;
+    pinctrl-1 = <&i2c1_scl_sleep &i2c1_sda_sleep>;
     pinctrl-names = "default", "sleep";
     clock-frequency = <I2C_BITRATE_STANDARD>;
-    zephyr,pm-device-runtime-auto;
 
     lps22hb: lps22hb@5c {
         compatible = "st,lps22hb-press";
@@ -74,9 +115,10 @@
     #address-cells = <1>;
     #size-cells = <0>;
     pinctrl-0 = <&adc1_in0_pa0>;
-    pinctrl-names = "default";
+    pinctrl-1 = <&adc1_in0_sleep>;
+    pinctrl-names = "default", "sleep";
     st,adc-prescaler = <4>;
-    
+
     channel@0 {
         reg = <0>;
         zephyr,gain = "ADC_GAIN_1";
@@ -86,57 +128,53 @@
     };
 };
 
-&gpioa {
-    status = "okay";
-};
-
-&iwdg {
-    status = "okay";
-};
+&gpioa { status = "okay"; };
+&iwdg { status = "okay"; };
+&clk_lse { status = "okay"; };
 
 &rtc {
     status = "okay";
+    clocks = <&rcc STM32_CLOCK_BUS_APB1 0x10000000>,
+             <&rcc STM32_SRC_LSE RTC_SEL(1)>;
     wakeup-source;
 };
 
-/* Enable the External High-Speed Clock */
 &clk_hse {
-    clock-frequency = <DT_FREQ_M(8)>; 
+    clock-frequency = <DT_FREQ_M(8)>;
+    hse-bypass;
     status = "okay";
 };
 
-/* 1. Configure the Main PLL using HSE for a perfect 48 MHz USB Clock */
 &pll {
-    clocks = <&clk_hse>; /* Changed from clk_hsi to clk_hse */
-    div-m = <8>;         /* 8MHz / 8 = 1MHz VCO Input */
-    mul-n = <384>;       /* 1MHz * 384 = 384MHz VCO */
-    div-p = <4>;         /* 384MHz / 4 = 96MHz System Clock */
-    div-q = <8>;         /* 384MHz / 8 = 48MHz EXACTLY for USB! */
+    clocks = <&clk_hse>;
+    div-m = <8>;
+    mul-n = <384>;
+    div-p = <4>;
+    div-q = <8>;
     status = "okay";
 };
 
-/* 2. Apply the new PLL settings to the RCC (Reset and Clock Control) */
 &rcc {
     clocks = <&pll>;
     clock-frequency = <DT_FREQ_M(96)>;
     ahb-prescaler = <1>;
-    apb1-prescaler = <2>;
-    apb2-prescaler = <1>;
+    apb1-prescaler = <4>;
+    apb2-prescaler = <2>;
 };
 
 &usbotg_fs {
     status = "okay";
     pinctrl-0 = <&usb_otg_fs_dm_pa11 &usb_otg_fs_dp_pa12 &usb_otg_fs_vbus_pa9>;
-    pinctrl-names = "default";
-    
-    /* ADD THIS BACK HERE */
+    /* Only VBUS uses pinctrl sleep. DM/DP left out to allow C++ to force Output Low */
+    pinctrl-1 = <&usb_otg_fs_vbus_sleep>;
+    pinctrl-names = "default", "sleep";
+
     cdc_acm_uart0: cdc_acm_uart0 {
         compatible = "zephyr,cdc-acm-uart";
         label = "CDC_ACM_0";
     };
 };
 
-/* Nuke the default overlapping partitions */
 /delete-node/ &boot_partition;
 /delete-node/ &slot0_partition;
 /delete-node/ &slot1_partition;
@@ -149,13 +187,11 @@
         #address-cells = <1>;
         #size-cells = <1>;
 
-        /* Application space: Sectors 0-5 (256 KB MAX) */
         code_partition: partition@0 {
             label = "image-0";
             reg = <0x00000000 0x00040000>;
         };
 
-        /* Storage space: Sectors 6-7 (256 KB) */
         storage_partition: partition@40000 {
             label = "storage";
             reg = <0x00040000 0x00040000>;

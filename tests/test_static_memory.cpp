@@ -19,6 +19,7 @@ struct DummyPayload{
 #undef protected
 
 extern DeviceContext sys_context;
+extern const k_tid_t trace_tid = (k_tid_t)0x19;
 
 class StaticMemoryTestSuite:public::testing::Test{
     protected:
