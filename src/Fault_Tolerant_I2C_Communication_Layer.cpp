@@ -38,9 +38,10 @@ static struct k_mutex cache_tracker_mutex;
 static bool cache_mutex_init = false;
 
 #ifndef IS_TEST_ENVIRONMENT
-const struct device *i2c_hardware = DEVICE_DT_GET(DT_NODELABEL(i2c1));
 #ifdef CONFIG_BOARD_MPS2_AN386
 const struct device *i2c_hardware = DEVICE_DT_GET(DT_ALIAS(i2c1));
+#else
+const struct device *i2c_hardware = DEVICE_DT_GET(DT_NODELABEL(i2c1));
 #endif
 #endif
 
