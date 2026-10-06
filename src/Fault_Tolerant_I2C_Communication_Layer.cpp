@@ -1,7 +1,6 @@
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/device.h>
-#include <zephyr/devicetree.h>
 #include "Fault_Tolerant_I2C_Communication_Layer.h"
 #include "Static_Memory+MISRA_Compliance_Layer.h"
 #include "Power_Management_System.h"
