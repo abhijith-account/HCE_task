@@ -6,10 +6,11 @@
 #include <zephyr/logging/log.h>
 
 #ifdef IS_TEST_ENVIRONMENT
-    extern bool run_thread_once;
-    #define THREAD_LOOP_CONDITION (run_thread_once ? (run_thread_once = false, true) : false)
+extern int run_thread_iterations;
+#define THREAD_LOOP_CONDITION \
+    (run_thread_iterations > 0 ? (--run_thread_iterations, true) : false)
 #else
-    #define THREAD_LOOP_CONDITION true
+#define THREAD_LOOP_CONDITION true
 #endif
 
 LOG_MODULE_REGISTER(MEM_SYS, LOG_LEVEL_INF);

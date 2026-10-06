@@ -18,6 +18,8 @@ struct DummyPayload{
 #undef private
 #undef protected
 
+int run_thread_iterations;
+
 extern DeviceContext sys_context;
 extern const k_tid_t trace_tid = (k_tid_t)0x19;
 
@@ -107,15 +109,24 @@ TEST_F(StaticMemoryTestSuite,ExecutesMemoryMonitorThread){
     EXPECT_NO_FATAL_FAILURE(memory_monitor_thread());
 }
 
-TEST_F(StaticMemoryTestSuite, ThreadLoopConditionBranches){
-    run_thread_once=true;
+TEST_F(StaticMemoryTestSuite, ThreadLoopConditionBranches)
+{
+    sys_context.current_state = SystemState::RUNNING;
+
+    run_thread_iterations = 31;
 
     testing::internal::CaptureStdout();
     EXPECT_NO_FATAL_FAILURE(memory_monitor_thread());
+
     const auto raw_output = testing::internal::GetCapturedStdout();
     std::string_view output(raw_output);
 
-    EXPECT_TRUE(output.find("=== [System Health] Thread Stack Watermarks ===")!=std::string_view::npos);
+    EXPECT_TRUE(
+        output.find("=== [System Health] Thread Stack Watermarks ===")
+        != std::string_view::npos
+    );
+
+    sys_context.current_state = SystemState::INIT;
 }
 
 TEST_F(StaticMemoryTestSuite, ThreadSkipsLoggingOnSafeHalt) {
