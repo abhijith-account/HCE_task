@@ -110,6 +110,10 @@
     };
 };
 
+&adc_common {
+    st,adc-prescaler = <4>;
+};
+
 &adc1 {
     status = "okay";
     #address-cells = <1>;
@@ -117,7 +121,6 @@
     pinctrl-0 = <&adc1_in0_pa0>;
     pinctrl-1 = <&adc1_in0_sleep>;
     pinctrl-names = "default", "sleep";
-    st,adc-prescaler = <4>;
 
     channel@0 {
         reg = <0>;
