@@ -5,7 +5,7 @@
         /* Route Zephyr system logs and console to the USB Virtual COM port */
         zephyr,console = &usart2;
         zephyr,shell-uart = &usart2;
-
+        zephyr,code-partition = &code_partition;
         /delete-property/ zephyr,lpm-timer;
         /delete-property/ zephyr,cortex-m-idle-timer;
     };
