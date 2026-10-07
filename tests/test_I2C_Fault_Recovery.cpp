@@ -2,6 +2,7 @@
 #include "Fault_Tolerant_I2C_Communication_Layer.h"
 #include "Static_Memory+MISRA_Compliance_Layer.h"
 #include "Power_Management_System.h"
+#include "Device_State_Machine+Watchdog.h"
 #include <new>
 #include <string>
 #include <string_view>
@@ -13,7 +14,6 @@ extern uint32_t virtual_uptime;
 extern int g_i2c_force_errno;
 extern void test_update_cache(uint32_t key, uint64_t value, bool calibrated);
 extern bool test_get_cached_value(uint32_t key, uint64_t* out_val, uint32_t max_age_ms);
-extern void update_cache(uint32_t key, uint64_t value, bool calibrated);
 extern void test_set_reliability(uint32_t key, uint8_t score);
 extern "C" {
     int i2c_reg_read_byte(const struct device *dev, uint16_t dev_addr, uint8_t reg_addr, uint8_t *value){
@@ -42,15 +42,62 @@ extern void resetI2CCacheForTests() noexcept;
 extern void exhaustI2CCachePool();
 extern void resetI2CCachePool();
 extern void ensure_mutex_initialized();
+extern DeviceContext sys_context;   // defined by the firmware / test shim
+
+/* get_cached_value() only emits its "Fallback Rejected" logs while the system
+ * is RUNNING. DeviceContext has no setState(), so the helpers below probe for
+ * whichever state-changing method your DeviceContext actually provides
+ * (requestTransition() is the one the firmware itself uses)
+ * (checked at compile time, so this always builds).                         */
+namespace state_probe {
+    template <int N> struct Rank : Rank<N - 1> {};
+    template <> struct Rank<0> {};
+
+    template <class C> auto set(C& c, SystemState s, Rank<9>) -> decltype((void)c.requestTransition(s), bool{}) { (void)c.requestTransition(s); return true; }
+    template <class C> auto set(C& c, SystemState s, Rank<8>) -> decltype((void)c.setState(s), bool{})       { c.setState(s);       return true; }
+    template <class C> auto set(C& c, SystemState s, Rank<7>) -> decltype((void)c.transitionTo(s), bool{})   { c.transitionTo(s);   return true; }
+    template <class C> auto set(C& c, SystemState s, Rank<6>) -> decltype((void)c.changeState(s), bool{})    { c.changeState(s);    return true; }
+    template <class C> auto set(C& c, SystemState s, Rank<5>) -> decltype((void)c.setSystemState(s), bool{}) { c.setSystemState(s); return true; }
+    template <class C> auto set(C& c, SystemState s, Rank<4>) -> decltype((void)c.requestState(s), bool{})   { c.requestState(s);   return true; }
+    template <class C> auto set(C& c, SystemState s, Rank<3>) -> decltype((void)c.forceState(s), bool{})     { c.forceState(s);     return true; }
+    template <class C> auto set(C& c, SystemState s, Rank<2>) -> decltype((void)c.transition(s), bool{})     { c.transition(s);     return true; }
+    template <class C> auto set(C& c, SystemState s, Rank<1>) -> decltype((void)c.enterState(s), bool{})     { c.enterState(s);     return true; }
+    template <class C> bool set(C&, SystemState, Rank<0>) { return false; }   /* no setter found */
+}
+
+static bool trySetSystemState(SystemState s) {
+    return state_probe::set(sys_context, s, state_probe::Rank<9>{});
+}
+
+static void forceSystemRunning() {
+    (void)trySetSystemState(SystemState::RUNNING);
+}
+
+/* Used by the three tests that assert on "Fallback Rejected" log lines. */
+#define REQUIRE_SYSTEM_RUNNING()                                                        \
+    ASSERT_TRUE(sys_context.getState() == SystemState::RUNNING)                         \
+        << "sys_context is not RUNNING, so get_cached_value() suppresses its logs. "    \
+           "requestTransition(RUNNING) was not accepted from the current state; drive the state machine to RUNNING in forceSystemRunning()."
 
 class I2CFaultRecoveryTestSuite : public ::testing::Test {
   protected:
+      SystemState saved_state_{};
+
       void SetUp() override {
+          saved_state_ = sys_context.getState();
+          forceSystemRunning();
           g_i2c_force_errno = 0;
           mock_i2c_err_code = 0;
           for(int i=0; i<8; i++) mock_read_data[i] = 0;
           resetI2CCacheForTests();
           ensure_mutex_initialized();
+      }
+
+      void TearDown() override {
+          g_i2c_force_errno = 0;
+          mock_i2c_err_code = 0;
+          g_device_ready_override = true;
+          (void)trySetSystemState(saved_state_);
       }
 };
 
@@ -471,10 +518,11 @@ TEST_F(I2CFaultRecoveryTestSuite, CacheFullLogsError) {
     testing::internal::CaptureStdout();
     mgr.readRegister(1, 99);
     auto output = testing::internal::GetCapturedStdout();
-    EXPECT_NE(output.find("cache table full"), std::string_view::npos);
+    EXPECT_NE(output.find("cache table full"), std::string::npos);
 }
 
 TEST_F(I2CFaultRecoveryTestSuite, CacheExpired) {
+    REQUIRE_SYSTEM_RUNNING();
     I2CManager mgr(mock_dev);
     mock_read_data[0] = 15;
     mgr.readRegister(1,2);
@@ -491,6 +539,7 @@ TEST_F(I2CFaultRecoveryTestSuite, CacheExpired) {
 }
 
 TEST_F(I2CFaultRecoveryTestSuite, ReliabilityDecay) {
+    REQUIRE_SYSTEM_RUNNING();
     I2CManager mgr(mock_dev);
     mock_read_data[0] = 88;
     mgr.readRegister(1,2);
@@ -585,6 +634,7 @@ TEST_F(I2CFaultRecoveryTestSuite, CachePoolExhausted) {
 }
 
 TEST_F(I2CFaultRecoveryTestSuite, CacheUncalibratedRejection) {
+    REQUIRE_SYSTEM_RUNNING();
     uint32_t key = (1U << 8) | 2;
     test_update_cache(key, 123, false);
 
@@ -786,29 +836,51 @@ TEST_F(I2CFaultRecoveryTestSuite, PowerObserverAndSleepGating) {
     EXPECT_FALSE(mgr.read24Bit(1, 4).success);
     EXPECT_FALSE(mgr.read64Bit(1, 5).success);
 
+    // Seed the cache while the bus is asleep.
     test_update_cache((1U << 8) | 2U, 0xAA, true);
     test_update_cache((1U << 8) | 3U, 0xAABB, true);
     test_update_cache((1U << 8) | 4U, 0xAABBCC, true);
     test_update_cache((1U << 8) | 5U, 0x1122334455667788ULL, true);
 
+    // While sleeping, reads are rejected before the cache fallback is reached,
+    // even though valid cached data exists.
     auto r8 = mgr.readRegister(1, 2);
-    EXPECT_TRUE(r8.success);
-    EXPECT_EQ(r8.value, 0xAA);
+    EXPECT_FALSE(r8.success);
+    EXPECT_EQ(r8.error, I2CFault::DEVICE_NOT_READY);
 
     auto r16 = mgr.readWord(1, 3);
-    EXPECT_TRUE(r16.success);
-    EXPECT_EQ(r16.value, 0xAABB);
+    EXPECT_FALSE(r16.success);
+    EXPECT_EQ(r16.error, I2CFault::DEVICE_NOT_READY);
 
     auto r24 = mgr.read24Bit(1, 4);
-    EXPECT_TRUE(r24.success);
-    EXPECT_EQ(r24.value, 0xAABBCC);
+    EXPECT_FALSE(r24.success);
+    EXPECT_EQ(r24.error, I2CFault::DEVICE_NOT_READY);
 
     auto r64 = mgr.read64Bit(1, 5);
-    EXPECT_TRUE(r64.success);
-    EXPECT_EQ(r64.value, 0x1122334455667788ULL);
+    EXPECT_FALSE(r64.success);
+    EXPECT_EQ(r64.error, I2CFault::DEVICE_NOT_READY);
 
     PowerManager::getInstance().notifyAfterWakeup();
     EXPECT_TRUE(mgr.writeRegister(1, 2, 0xFF).success);
+
+    // The cache survived the sleep cycle: a bus error now falls back to it.
+    mock_i2c_err_code = -EIO;
+    auto c8 = mgr.readRegister(1, 2);
+    EXPECT_TRUE(c8.success);
+    EXPECT_EQ(c8.value, 0xAA);
+
+    auto c16 = mgr.readWord(1, 3);
+    EXPECT_TRUE(c16.success);
+    EXPECT_EQ(c16.value, 0xAABB);
+
+    auto c24 = mgr.read24Bit(1, 4);
+    EXPECT_TRUE(c24.success);
+    EXPECT_EQ(c24.value, 0xAABBCCU);
+
+    auto c64 = mgr.read64Bit(1, 5);
+    EXPECT_TRUE(c64.success);
+    EXPECT_EQ(c64.value, 0x1122334455667788ULL);
+    mock_i2c_err_code = 0;
 
     PowerManager::getInstance().notifyBeforeSleep();
     EXPECT_FALSE(mgr.writeRegister(1, 2, 0xFF).success);
@@ -816,4 +888,3 @@ TEST_F(I2CFaultRecoveryTestSuite, PowerObserverAndSleepGating) {
     PowerManager::getInstance().notifySleepAborted();
     EXPECT_TRUE(mgr.writeRegister(1, 2, 0xFF).success);
 }
-
