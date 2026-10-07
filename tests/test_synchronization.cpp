@@ -2,7 +2,10 @@
 #include <zephyr/kernel.h>
 #include <array>
 #include <atomic>
+#include <string>
 #include <string_view>
+#include <thread>
+#include <chrono>
 #include "RTOS_Synchronization_Layer.h"
 #include "Power_Management_System.h"
 #define private public
@@ -43,6 +46,8 @@ extern "C" {
     }
 }
 
+extern bool run_thread_once;
+
 static std::atomic<uint32_t> test_work_fire_time{0};
 static std::atomic<bool> test_work_executed{false};
 
@@ -53,7 +58,17 @@ void integration_test_work_callback(){
 
 class SyncTestSuite:public::testing::Test{
   protected:
+    SystemState saved_state_{SystemState::INIT};
+
+    void TearDown() override{
+      sys_context.current_state=saved_state_;
+    }
+
     void SetUp() override{
+      /* print_status() and the consumer log only act while the system is RUNNING */
+      saved_state_=sys_context.getState();
+      sys_context.current_state=SystemState::RUNNING;
+      run_thread_once=false;
       test_work_fire_time.store(0);
       test_work_executed.store(false);
       mock_sem_count=0;
@@ -118,9 +133,11 @@ bool run_thread_once=false;
 extern void display_consumer_thread(void);
 
 TEST_F(SyncTestSuite,ExecutesDisplayConsumerThread){
+        display_sem.give();   // one pending sample (buffer is zero-filled -> 0 bpm)
+        run_thread_once=true;
         testing::internal::CaptureStdout();
         EXPECT_NO_FATAL_FAILURE(display_consumer_thread());
-        const auto raw_output = testing::internal::GetCapturedStdout();
+        const std::string raw_output = testing::internal::GetCapturedStdout();
         std::string_view output(raw_output);
 
         EXPECT_TRUE(output.find("[INF] [Display Consumer] Rendered Heart Rate: 0 bpm")!=std::string_view::npos)<<"Expected consumer log missing! Actual: "<< output;
@@ -137,7 +154,7 @@ extern void print_status();
 TEST_F(SyncTestSuite,ProductionStatusReporting){
       testing::internal::CaptureStdout();
       EXPECT_NO_FATAL_FAILURE(print_status());
-      const auto raw_output = testing::internal::GetCapturedStdout();
+      const std::string raw_output = testing::internal::GetCapturedStdout();
       std::string_view output(raw_output);
 
       EXPECT_TRUE(output.find("[INF] --- [] 1-Second System Statistics Report ---")!=std::string_view::npos)<<"Expected status report log missing! Actual: "<< output;
@@ -169,31 +186,56 @@ TEST_F(SyncTestSuite,WorkQueueHandlesNullCallbackSafely){
 }
 
 TEST_F(SyncTestSuite, DeepSleepGatingSkipsWorkAndCancelsTimer) {
+    using namespace std::chrono_literals;
 
-    print_status();
+    print_status();   // registers the sync power observer
 
     PowerManager::getInstance().notifyBeforeSleep();
 
+    // 1. print_status() is gated while sleeping.
     testing::internal::CaptureStdout();
     print_status();
-    std::string_view out_status(testing::internal::GetCapturedStdout());
-    EXPECT_EQ(out_status.find("1-Second System Statistics Report"), std::string_view::npos);
+    const std::string raw_status = testing::internal::GetCapturedStdout();
+    EXPECT_EQ(raw_status.find("1-Second System Statistics Report"), std::string::npos);
 
+    // 2. The producer parks in its "while (isSleeping())" holding loop, which only
+    //    ends on wakeup. Run it on its own thread so the test can wake it.
     mock_sem_count = 0;
     run_thread_once = true;
-    heart_rate_producer_thread();
-    EXPECT_EQ(mock_sem_count, 0);
-
-    display_sem.give();
-    run_thread_once = true;
-    testing::internal::CaptureStdout();
-    display_consumer_thread();
-    std::string_view out_disp(testing::internal::GetCapturedStdout());
-    EXPECT_EQ(out_disp.find("Rendered Heart Rate:"), std::string_view::npos);
+    std::thread producer(heart_rate_producer_thread);
+    std::this_thread::sleep_for(50ms);
+    EXPECT_EQ(mock_sem_count, 0) << "Producer did work while the system was asleep";
 
     PowerManager::getInstance().notifyAfterWakeup();
+    producer.join();
+    // run_thread_once makes the do/while run its body twice (first pass + one
+    // extra pass), so two samples are produced once the thread is released.
+    EXPECT_EQ(mock_sem_count, 2) << "Producer should resume and run its two loop passes after wakeup";
 
+    // 3. Same for the consumer: a pending sample must not be consumed while asleep.
+    PowerManager::getInstance().notifyBeforeSleep();
+    mock_sem_count = 0;
+    display_sem.give();
+    run_thread_once = true;
+
+    testing::internal::CaptureStdout();
+    std::thread consumer(display_consumer_thread);
+    std::this_thread::sleep_for(50ms);
+    EXPECT_EQ(mock_sem_count, 1) << "Consumer took a sample while the system was asleep";
+
+    PowerManager::getInstance().notifyAfterWakeup();
+    consumer.join();
+    const std::string raw_disp = testing::internal::GetCapturedStdout();
+    EXPECT_EQ(mock_sem_count, 0);
+    EXPECT_NE(raw_disp.find("Rendered Heart Rate:"), std::string::npos);
+
+    // 4. Aborted sleep also clears the flag (print_status works again).
+    PowerManager::getInstance().notifyBeforeSleep();
     PowerManager::getInstance().notifySleepAborted();
+    testing::internal::CaptureStdout();
+    print_status();
+    const std::string raw_after = testing::internal::GetCapturedStdout();
+    EXPECT_NE(raw_after.find("1-Second System Statistics Report"), std::string::npos);
 }
 
 TEST_F(SyncTestSuite, SafeHaltStateSkipsThreadWork) {
@@ -202,8 +244,8 @@ TEST_F(SyncTestSuite, SafeHaltStateSkipsThreadWork) {
 
     testing::internal::CaptureStdout();
     print_status();
-    std::string_view out_status(testing::internal::GetCapturedStdout());
-    EXPECT_EQ(out_status.find("1-Second System Statistics Report"), std::string_view::npos);
+    const std::string out_status = testing::internal::GetCapturedStdout();
+    EXPECT_EQ(out_status.find("1-Second System Statistics Report"), std::string::npos);
 
     mock_sem_count = 0;
     run_thread_once = true;
@@ -214,10 +256,8 @@ TEST_F(SyncTestSuite, SafeHaltStateSkipsThreadWork) {
     run_thread_once = true;
     testing::internal::CaptureStdout();
     display_consumer_thread();
-    std::string_view out_disp(testing::internal::GetCapturedStdout());
-    EXPECT_EQ(out_disp.find("Rendered Heart Rate:"), std::string_view::npos);
-
-    sys_context.current_state = SystemState::INIT;
+    const std::string out_disp = testing::internal::GetCapturedStdout();
+    EXPECT_EQ(out_disp.find("Rendered Heart Rate:"), std::string::npos);
 }
 
 TEST_F(SyncTestSuite, RedundantObserverRegistrationBranch) {
@@ -226,4 +266,3 @@ TEST_F(SyncTestSuite, RedundantObserverRegistrationBranch) {
     print_status();
     SUCCEED();
 }
-

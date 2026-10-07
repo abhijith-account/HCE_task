@@ -78,7 +78,7 @@ TEST_F(StateMachineTestSuite, AllowsLegalTransitions) {
     EXPECT_TRUE(output_fault.find("System transitioned :") != std::string_view::npos) << "Expected transition INF log missing";
 }
 
-TEST_F(StateMachineTestSuite, FaultInjectionTriggersSafeHalt) {
+TEST_F(StateMachineTestSuite, FaultInjectionLatchesFault) {
     DeviceContext sys_context;
 
     sys_context.requestTransition(SystemState::RUNNING);
@@ -89,7 +89,9 @@ TEST_F(StateMachineTestSuite, FaultInjectionTriggersSafeHalt) {
     const auto raw_output = testing::internal::GetCapturedStdout();
     std::string_view output(raw_output);
 
-    EXPECT_EQ(sys_context.getState(), SystemState::SAFE_HALT) << "System failed to drop to SAFE_HALT after a critical fault!";
+    // triggerFault() latches FAULT (the WDT hook stops feeding in FAULT to force a
+    // hardware reset); SAFE_HALT is only reached via an explicit FAULT->SAFE_HALT request.
+    EXPECT_EQ(sys_context.getState(), SystemState::FAULT) << "triggerFault() did not latch the FAULT state!";
     EXPECT_TRUE(output.find("CRITICAL FAULT: Simulated I2C Bus Hard-Lock. Forcing SAFE_HALT.") != std::string_view::npos) << "Expected critical fault log missing! Actual output:  " << output;
 }
 
@@ -97,6 +99,10 @@ TEST_F(StateMachineTestSuite, RejectsIllegalTransitions) {
     DeviceContext sys_context_halted;
 
     sys_context_halted.triggerFault("Test Error");
+    ASSERT_EQ(sys_context_halted.getState(), SystemState::FAULT);
+
+    // FAULT -> SAFE_HALT is the only legal exit from FAULT.
+    ASSERT_TRUE(sys_context_halted.requestTransition(SystemState::SAFE_HALT));
     ASSERT_EQ(sys_context_halted.getState(), SystemState::SAFE_HALT);
 
     testing::internal::CaptureStdout();
