@@ -322,3 +322,55 @@ TEST_F(StateMachineTestSuite, DalyWatchdogFeedHookComprehensive) {
     
     daly_watchdog_feed_hook(); // Reaches sys_context.feedWatchdog() inside the true block
 }
+
+// ---------------------------------------------------------------------------
+// Line 204: `if (prod_ok && proc_ok && log_ok && hr_ok && disp_ok && bms_ok &&
+//                batt_ok && mem_ok && shell_ok)`
+// Every operand needs its own TRUE and FALSE outcome. Because of && short-circuit
+// evaluation, the FALSE side of operand N is only reached when operands 1..N-1
+// are true, so each flag is made the single failing one in turn.
+// ---------------------------------------------------------------------------
+TEST_F(StateMachineTestSuite, DalyWatchdogFeedHookEachLivenessFlagFalse) {
+    atomic_t* flags[] = {
+        &g_producer_alive,   // prod_ok
+        &g_processor_alive,  // proc_ok
+        &g_logger_alive,     // log_ok
+        &g_hr_prod_alive,    // hr_ok
+        &g_disp_cons_alive,  // disp_ok
+        &g_bms_comm_alive,   // bms_ok
+        &g_batt_mon_alive,   // batt_ok
+        &g_mem_mon_alive,    // mem_ok
+        &g_shell_alive       // shell_ok
+    };
+    constexpr size_t kNumFlags = sizeof(flags) / sizeof(flags[0]);
+
+    for (size_t failing = 0; failing < kNumFlags; ++failing) {
+        // Normal (non FAULT / SAFE_HALT) state so the health-check path is reached.
+        sys_context.current_state = SystemState::INIT;
+
+        // All threads alive except the one under test.
+        for (size_t i = 0; i < kNumFlags; ++i) {
+            atomic_set(flags[i], (i == failing) ? 0 : 1);
+        }
+
+        // Step past the 1000 ms rate limit so the liveness check actually runs.
+        virtual_uptime += 2000;
+
+        testing::internal::CaptureStdout();
+        EXPECT_NO_FATAL_FAILURE(daly_watchdog_feed_hook());
+        testing::internal::GetCapturedStdout();
+
+        // Every flag is consumed (CAS 1 -> 0) on each check.
+        for (size_t i = 0; i < kNumFlags; ++i) {
+            EXPECT_EQ(atomic_get(flags[i]), 0) << "flag " << i << " not cleared (failing=" << failing << ")";
+        }
+    }
+
+    // All nine alive -> TRUE side of the last operand and the feed path.
+    sys_context.current_state = SystemState::INIT;
+    for (size_t i = 0; i < kNumFlags; ++i) atomic_set(flags[i], 1);
+    virtual_uptime += 2000;
+    EXPECT_NO_FATAL_FAILURE(daly_watchdog_feed_hook());
+
+    for (size_t i = 0; i < kNumFlags; ++i) atomic_set(flags[i], 0);
+}
