@@ -4,6 +4,8 @@
 #include <cstdint>
 #include <string>
 #include <string_view>
+#include <thread>
+#include <chrono>
 #include "Static_Memory+MISRA_Compliance_Layer.h"
 
 struct DummyPayload{
@@ -23,9 +25,42 @@ int run_thread_iterations;
 extern DeviceContext sys_context;
 extern const k_tid_t trace_tid = (k_tid_t)0x19;
 
+/* ---------------------------------------------------------------------------
+ * k_thread_stack_space_get() interposer.
+ *
+ * Needed to reach the "stack info unavailable" branch of memory_monitor_thread().
+ * It relies on the linker option
+ *     target_link_options(run_static_memory_tests PRIVATE -Wl,--wrap=k_thread_stack_space_get)
+ * so that calls from Static_Memory+MISRA_Compliance_Layer.cpp land here. The real
+ * function is never called: every thread reports 128 free bytes except the one
+ * selected through g_stack_fail_tid, which reports -EINVAL.
+ * ------------------------------------------------------------------------- */
+static const void* g_stack_fail_tid = nullptr;
+
+extern "C" int __wrap_k_thread_stack_space_get(const void* thread, size_t* unused_ptr) {
+    if ((g_stack_fail_tid != nullptr) && (thread == g_stack_fail_tid)) {
+        return -EINVAL;
+    }
+    if (unused_ptr != nullptr) {
+        *unused_ptr = 128U;
+    }
+    return 0;
+}
+
 class StaticMemoryTestSuite:public::testing::Test{
     protected:
+        SystemState saved_state_{SystemState::INIT};
+
         void SetUp() override{
+            saved_state_ = sys_context.getState();
+            run_thread_iterations = 0;
+            g_stack_fail_tid = nullptr;
+        }
+
+        void TearDown() override{
+            run_thread_iterations = 0;
+            g_stack_fail_tid = nullptr;
+            sys_context.current_state = saved_state_;
         }
 };
 
@@ -146,3 +181,60 @@ TEST_F(StaticMemoryTestSuite, ThreadSkipsLoggingOnSafeHalt) {
     sys_context.current_state = SystemState::INIT;
 }
 
+
+/* Covers the "stack info unavailable" else-branch (line 118). */
+TEST_F(StaticMemoryTestSuite, StackInfoUnavailableIsLogged)
+{
+    sys_context.current_state = SystemState::RUNNING;
+    g_stack_fail_tid = reinterpret_cast<const void*>(trace_tid);
+
+    run_thread_iterations = 30;   // 31 passes -> the 30 s watermark report runs once
+
+    testing::internal::CaptureStdout();
+    EXPECT_NO_FATAL_FAILURE(memory_monitor_thread());
+    const std::string raw_output = testing::internal::GetCapturedStdout();
+
+    EXPECT_NE(raw_output.find("stack info unavailable (err -22)"), std::string::npos)
+        << "Failure branch not reached. Add -Wl,--wrap=k_thread_stack_space_get to the "
+           "link options of run_static_memory_tests. Actual output: " << raw_output;
+    EXPECT_NE(raw_output.find("unused"), std::string::npos)
+        << "Success branch for the other threads was not logged";
+}
+
+/* Covers MemoryPowerObserver::{beforeSleep,afterWakeup,sleepAborted} and the
+ * sleep "holding pattern" loop body (lines 68-80, 101-103). */
+TEST_F(StaticMemoryTestSuite, SleepHoldingLoopAndObserverCallbacks)
+{
+    using namespace std::chrono_literals;
+
+    sys_context.current_state = SystemState::INIT;
+
+    // Registers the observer; the sleeping loop condition is false here.
+    run_thread_iterations = 0;
+    memory_monitor_thread();
+
+    // beforeSleep(): the thread must park in the holding loop until woken.
+    PowerManager::getInstance().notifyBeforeSleep();
+    atomic_set(&g_mem_mon_alive, 0);   // only the holding loop (or end of pass) sets it again
+
+    run_thread_iterations = 0;
+    std::thread monitor(memory_monitor_thread);
+
+    const auto deadline = std::chrono::steady_clock::now() + 2s;
+    while ((atomic_get(&g_mem_mon_alive) == 0) && (std::chrono::steady_clock::now() < deadline)) {
+        std::this_thread::sleep_for(1ms);
+    }
+    EXPECT_NE(atomic_get(&g_mem_mon_alive), 0) << "Monitor never entered the sleep holding loop";
+
+    // afterWakeup(): releases the thread, which then finishes its single pass.
+    PowerManager::getInstance().notifyAfterWakeup();
+    monitor.join();
+
+    // sleepAborted()
+    PowerManager::getInstance().notifyBeforeSleep();
+    PowerManager::getInstance().notifySleepAborted();
+
+    // Observer is awake again: a normal pass must complete without parking.
+    run_thread_iterations = 0;
+    EXPECT_NO_FATAL_FAILURE(memory_monitor_thread());
+}

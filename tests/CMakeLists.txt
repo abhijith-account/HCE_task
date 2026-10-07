@@ -275,7 +275,7 @@ target_compile_options(run_battery_tests PRIVATE --coverage)
 target_link_options(run_battery_tests PRIVATE --coverage)
 
 target_compile_options(run_static_memory_tests PRIVATE --coverage)
-target_link_options(run_static_memory_tests PRIVATE --coverage)
+target_link_options(run_static_memory_tests PRIVATE --coverage -Wl,--wrap=k_thread_stack_space_get)
 
 target_compile_options(run_config_tests PRIVATE --coverage)
 target_link_options(run_config_tests PRIVATE --coverage)

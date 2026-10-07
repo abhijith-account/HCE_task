@@ -12,8 +12,11 @@
 #define private public
 #define protected public
 #include "Persistent_Configuration_System.h"
+#include "Device_State_Machine+Watchdog.h"
 #undef private
 #undef protected
+
+extern DeviceContext sys_context;
 
 // --- FCB / Flash Mock Environment ---
 static int mock_flash_area_open_err = 0;
@@ -26,6 +29,7 @@ static bool mock_flash_read_fail = false;
 static bool mock_flash_write_fail = false;
 static bool mock_fcb_getnext_fail = false;
 static bool mock_nvs_corrupt_data = false;
+static bool mock_trip_fault_on_getnext = false;   // flips sys_context to FAULT mid-traversal
 
 static std::map<off_t, uint8_t> mock_flash_memory;
 static std::vector<fcb_entry> mock_fcb_entries;
@@ -100,6 +104,9 @@ extern "C" {
         if (mock_fcb_read_idx < mock_fcb_entries.size()) {
             *loc = mock_fcb_entries[mock_fcb_read_idx++];
             loc->fe_sector = (void*)0x1234; // Prevent infinite re-init
+            if (mock_trip_fault_on_getnext) {
+                sys_context.current_state = SystemState::FAULT;
+            }
             return 0;
         }
         return -1;
@@ -126,8 +133,15 @@ protected:
         mock_flash_write_fail = false;
         mock_fcb_getnext_fail = false;
         mock_nvs_corrupt_data = false;
+        mock_trip_fault_on_getnext = false;
 
+        sys_context.current_state = SystemState::INIT;
         ConfigStore::getInstance().initialized = false;
+    }
+
+    void TearDown() override {
+        mock_trip_fault_on_getnext = false;
+        sys_context.current_state = SystemState::INIT;
     }
 };
 
@@ -514,4 +528,108 @@ TEST_F(ConfigStoreTestSuite, ValidateEnduranceFailsOnFcbGetNextError) {
 
     // Verify it fails exactly at the get() verification on cycle 0
     EXPECT_TRUE(output.find("[ERR] Endurance Test failed to verify at cycle 0") != std::string_view::npos);
+}
+
+// ---------------------------------------------------------------------------
+// FAULT-state guards
+// ---------------------------------------------------------------------------
+
+// init(): flash is empty (-ENOMSG) but the system is in FAULT -> refuse to erase.
+TEST_F(ConfigStoreTestSuite, InitAbortsFlashEraseWhenSystemFaulted) {
+    mock_fcb_init_err_first = -ENOMSG;
+    sys_context.current_state = SystemState::FAULT;
+
+    testing::internal::CaptureStdout();
+    EXPECT_FALSE(ConfigStore::getInstance().init());
+    const std::string raw_out = testing::internal::GetCapturedStdout();
+
+    EXPECT_NE(raw_out.find("[ERR] System FAULT. Aborting flash erase to prevent corruption."), std::string::npos);
+    EXPECT_FALSE(ConfigStore::getInstance().initialized);
+    EXPECT_EQ(fcb_init_call_count, 1) << "FCB must not be re-initialised after an aborted erase";
+}
+
+// seedDefaultDeviceIds()/seedDefaultAlarmThresholds(): bail out immediately in FAULT.
+TEST_F(ConfigStoreTestSuite, SeedingIsSkippedWhenSystemFaulted) {
+    ConfigStore& config = ConfigStore::getInstance();
+    sys_context.current_state = SystemState::FAULT;
+
+    testing::internal::CaptureStdout();
+    ASSERT_TRUE(config.init());   // mount succeeds (no -ENOMSG), seeding returns early
+    const std::string raw_out = testing::internal::GetCapturedStdout();
+
+    EXPECT_NE(raw_out.find("FCB Configuration Store Mounted Successfully."), std::string::npos);
+    EXPECT_EQ(raw_out.find("Provisioned slot"), std::string::npos);
+    EXPECT_EQ(raw_out.find("Seeded slot"), std::string::npos);
+    EXPECT_TRUE(mock_fcb_entries.empty()) << "Nothing may be written to flash while faulted";
+
+    uint32_t devId = 0;
+    uint8_t alarm = 0;
+    EXPECT_FALSE(config.getDeviceId(1, devId));
+    EXPECT_FALSE(config.getAlarmThreshold(1, alarm));
+}
+
+// validateEndurance(): FAULT detected inside the 1,000-cycle loop.
+TEST_F(ConfigStoreTestSuite, ValidateEnduranceAbortsWhenSystemFaults) {
+    ConfigStore& config = ConfigStore::getInstance();
+    ASSERT_TRUE(config.init());
+    const size_t entries_before = mock_fcb_entries.size();
+
+    sys_context.current_state = SystemState::FAULT;
+
+    testing::internal::CaptureStdout();
+    EXPECT_FALSE(config.validateEndurance(ConfigKey::FULL_CHARGE_LOG));
+    const std::string raw_out = testing::internal::GetCapturedStdout();
+
+    EXPECT_NE(raw_out.find("[ERR] System FAULT detected. Aborting endurance test."), std::string::npos);
+    EXPECT_EQ(raw_out.find("Endurance Test Progress"), std::string::npos);
+    EXPECT_EQ(mock_fcb_entries.size(), entries_before) << "No flash writes allowed after FAULT";
+}
+
+// getStoredLogCount()/getLogEntry(): early exit when initialized but FAULT.
+TEST_F(ConfigStoreTestSuite, LogFunctionsReturnEarlyWhenFaultedAtEntry) {
+    ConfigStore& config = ConfigStore::getInstance();
+    ASSERT_TRUE(config.init());
+
+    sys_context.current_state = SystemState::FAULT;
+
+    EXPECT_EQ(config.getStoredLogCount(), 0U);
+    ConfigStore::LogEntry entry{};
+    EXPECT_FALSE(config.getLogEntry(0, entry));
+}
+
+// Helper: append one valid FULL_CHARGE_LOG record to the mock flash.
+static void injectValidLogEntry() {
+    FcbRecordHeader header{};
+    header.key = ConfigKey::FULL_CHARGE_LOG;
+    header.length = sizeof(ConfigStore::LogEntry);
+    ConfigStore::LogEntry entry{};
+
+    fcb_entry loc{};
+    loc.fe_sector = (void*)1;
+    fcb_append(nullptr, sizeof(header) + sizeof(ConfigStore::LogEntry), &loc);
+    flash_area_write(nullptr, loc.fe_elem_off, &header, sizeof(header));
+    flash_area_write(nullptr, loc.fe_elem_off + sizeof(header), &entry, sizeof(ConfigStore::LogEntry));
+}
+
+// FAULT appearing *during* the traversal (checked inside the while loops).
+TEST_F(ConfigStoreTestSuite, LogCountAbortsWhenFaultOccursMidTraversal) {
+    ConfigStore& config = ConfigStore::getInstance();
+    ASSERT_TRUE(config.init());
+    injectValidLogEntry();
+    ASSERT_EQ(config.getStoredLogCount(), 1U);   // sanity: works while healthy
+
+    mock_trip_fault_on_getnext = true;           // FAULT is raised by the first fcb_getnext()
+    EXPECT_EQ(config.getStoredLogCount(), 0U);
+}
+
+TEST_F(ConfigStoreTestSuite, GetLogEntryAbortsWhenFaultOccursMidTraversal) {
+    ConfigStore& config = ConfigStore::getInstance();
+    ASSERT_TRUE(config.init());
+    injectValidLogEntry();
+
+    ConfigStore::LogEntry entry{};
+    ASSERT_TRUE(config.getLogEntry(0, entry));   // sanity: works while healthy
+
+    mock_trip_fault_on_getnext = true;
+    EXPECT_FALSE(config.getLogEntry(0, entry));
 }
