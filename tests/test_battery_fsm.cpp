@@ -2022,11 +2022,12 @@ TEST_F(SmartBatteryTestSuite, ProcessFSM_ActiveStateReload_ConcurrentCutoff) {
     std::thread racer([this, &stop]() {
         while (!stop.load(std::memory_order_relaxed)) {
             battery.current_state.store(BatteryFSM::CUTOFF);
+            battery.current_state.store(static_cast<BatteryFSM>(0xFF));  // matches none of the 4 enumerators
             battery.current_state.store(BatteryFSM::IDLE);
         }
     });
 
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(1500);
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(3000);
     while (std::chrono::steady_clock::now() < deadline) {
         for (int i = 0; i < 1000; ++i) battery.processFSM();
     }
