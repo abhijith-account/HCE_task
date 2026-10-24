@@ -561,7 +561,7 @@ TEST_F(SmartBatteryTestSuite, FSM_DeepCoverage) {
 
     battery.cache.voltage.value = 0; battery.processFSM(); battery.cache.voltage.value = 10000;
 
-    battery.cache.shunt_voltage.value = -50000; 
+    battery.cache.shunt_voltage.value = 50000; 
     battery.current_state.store(BatteryFSM::IDLE);
     battery.processFSM();
     EXPECT_EQ(battery.getState(), BatteryFSM::CHARGING);
@@ -575,7 +575,7 @@ TEST_F(SmartBatteryTestSuite, FSM_DeepCoverage) {
 
     battery.cache.voltage.value = 0; battery.processFSM(); battery.cache.voltage.value = 10000;
 
-    battery.cache.shunt_voltage.value = 50000;
+    battery.cache.shunt_voltage.value = -50000;
     battery.current_state.store(BatteryFSM::IDLE);
     battery.processFSM();
     EXPECT_EQ(battery.getState(), BatteryFSM::DISCHARGING);
@@ -879,7 +879,7 @@ TEST_F(SmartBatteryTestSuite, ProcessFSM_MidBandsAndChargingRecovery) {
     battery.cache.current.value = 100;
     battery.cache.soc.value = BatteryLimits::REENABLE_SOC_PCT + 1;
     battery.current_state.store(BatteryFSM::CUTOFF);
-    battery.cache.shunt_voltage.value = -50000;
+    battery.cache.shunt_voltage.value = 50000;
     sys_context.requestTransition(SystemState::SAFE_HALT);
     battery.processFSM();
     EXPECT_EQ(battery.getState(), BatteryFSM::CHARGING);
@@ -1669,7 +1669,7 @@ TEST_F(SmartBatteryTestSuite, ProcessFSM_FullChargeAndRecoveryBranches) {
     // 3. Recovery Ternary: CUTOFF -> CHARGING (shunt_uv < -IDLE_SHUNT_UV_THRESHOLD)
     battery.current_state.store(BatteryFSM::CUTOFF);
     battery.cache.soc.value = BatteryLimits::REENABLE_SOC_PCT + 5;
-    battery.cache.shunt_voltage.value = -50000;
+    battery.cache.shunt_voltage.value = 50000;
     sys_context.requestTransition(SystemState::SAFE_HALT);
 
     battery.processFSM();
@@ -1769,11 +1769,11 @@ TEST_F(SmartBatteryTestSuite, ProcessFSM_HysteresisTransitions) {
     };
     constexpr int32_t BIG = 100000;
 
-    EXPECT_EQ(run_case(BatteryFSM::CHARGING,     -BIG), BatteryFSM::CHARGING);
-    EXPECT_EQ(run_case(BatteryFSM::CHARGING,      BIG), BatteryFSM::DISCHARGING);
+    EXPECT_EQ(run_case(BatteryFSM::CHARGING,      BIG), BatteryFSM::CHARGING);
+    EXPECT_EQ(run_case(BatteryFSM::CHARGING,     -BIG), BatteryFSM::DISCHARGING);
     EXPECT_EQ(run_case(BatteryFSM::CHARGING,        0), BatteryFSM::IDLE);
-    EXPECT_EQ(run_case(BatteryFSM::DISCHARGING,   BIG), BatteryFSM::DISCHARGING);
-    EXPECT_EQ(run_case(BatteryFSM::DISCHARGING, -BIG), BatteryFSM::CHARGING);
+    EXPECT_EQ(run_case(BatteryFSM::DISCHARGING,  -BIG), BatteryFSM::DISCHARGING);
+    EXPECT_EQ(run_case(BatteryFSM::DISCHARGING,   BIG), BatteryFSM::CHARGING);
     EXPECT_EQ(run_case(BatteryFSM::DISCHARGING,     0), BatteryFSM::IDLE);
 }
 

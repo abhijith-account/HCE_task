@@ -30,17 +30,18 @@ namespace FsmClassifier {
       const float hysteresis = static_cast<float>(HYSTERESIS_UV);
 
       if (current == BatteryFSM::CHARGING) {
-          if (ema_uv < neg_threshold) {
+          if (ema_uv > pos_threshold) {
               return BatteryFSM::CHARGING;
-          } else if (ema_uv > (pos_threshold + hysteresis)) {
+          } else if (ema_uv < (neg_threshold - hysteresis)) {
               return BatteryFSM::DISCHARGING;
           } else {
               return BatteryFSM::IDLE;
           }
-      } else if (current == BatteryFSM::DISCHARGING) {
-          if (ema_uv > pos_threshold) {
+      } 
+      else if (current == BatteryFSM::DISCHARGING) {
+          if (ema_uv < neg_threshold) {
               return BatteryFSM::DISCHARGING;
-          } else if (ema_uv < (neg_threshold - hysteresis)) {
+          } else if (ema_uv > (pos_threshold + hysteresis)) {
               return BatteryFSM::CHARGING;
           } else {
               return BatteryFSM::IDLE;
@@ -48,9 +49,10 @@ namespace FsmClassifier {
       }
 
       // Current state is IDLE.
-      if (ema_uv < neg_threshold) {
+      if (ema_uv > pos_threshold) {
           return BatteryFSM::CHARGING;
-      } else if (ema_uv > pos_threshold) {
+      } 
+      else if (ema_uv < neg_threshold) {
           return BatteryFSM::DISCHARGING;
       }
 
