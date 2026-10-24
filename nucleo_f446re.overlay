@@ -3,8 +3,8 @@
 / {
     chosen {
         /* Route Zephyr system logs and console to the USB Virtual COM port */
-        zephyr,console = &usart2;
-        zephyr,shell-uart = &usart2;
+        zephyr,console = &usart3;
+        zephyr,shell-uart = &usart3;
         zephyr,code-partition = &code_partition;
         /delete-property/ zephyr,lpm-timer;
         /delete-property/ zephyr,cortex-m-idle-timer;
@@ -42,11 +42,11 @@
  */
 &pinctrl {
     /* FIX: Changed from AF7 to strictly ANALOG to prevent UART leakage */
-    usart2_tx_sleep: usart2_tx_sleep {
-        pinmux = <STM32_PINMUX('A', 2, ANALOG)>;
+    usart3_tx_sleep: usart3_tx_sleep {
+        pinmux = <STM32_PINMUX('C', 10, ANALOG)>;
     };
-    usart2_rx_sleep: usart2_rx_sleep {
-        pinmux = <STM32_PINMUX('A', 3, ANALOG)>;
+    usart3_rx_sleep: usart3_rx_sleep {
+        pinmux = <STM32_PINMUX('C', 11, ANALOG)>;
     };
 
     /* FIX: Changed from AF4 to strictly ANALOG to prevent I2C pull-up leakage */
@@ -67,11 +67,11 @@
 };
 
 /* Disable ST-Link UART for Standalone Mode */
-&usart2 {
+&usart3 {
     status = "okay";
     current-speed = <115200>;
-    pinctrl-0 = <&usart2_tx_pa2 &usart2_rx_pa3>;
-    pinctrl-1 = <&usart2_tx_sleep &usart2_rx_sleep>;
+    pinctrl-0 = <&usart3_tx_pc10 &usart3_rx_pc11>;
+    pinctrl-1 = <&usart3_tx_sleep &usart3_rx_sleep>;
     pinctrl-names = "default", "sleep";
 };
 
@@ -129,7 +129,9 @@
 };
 
 &gpioa { status = "okay"; };
+&gpioc { status = "okay"; };
 &iwdg { status = "okay"; };
+&usart2 { status = "disabled"; };
 &clk_lse { status = "okay"; };
 
 &rtc {
@@ -172,6 +174,8 @@
     cdc_acm_uart0: cdc_acm_uart0 {
         compatible = "zephyr,cdc-acm-uart";
         label = "CDC_ACM_0";
+        tx-fifo-size = <2048>;
+   	rx-fifo-size = <2048>; 
     };
 };
 

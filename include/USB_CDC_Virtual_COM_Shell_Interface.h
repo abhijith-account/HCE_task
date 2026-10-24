@@ -22,9 +22,11 @@ constexpr std::size_t SetRateErrMsgSize = 128;
 constexpr std::size_t JsonSafetyMargin  = 64;
 constexpr std::string_view PromptStr = "med-device:~$ ";
 
-constexpr std::size_t ShellStackSize   = 1024;
+constexpr std::size_t ShellStackSize   = 3072;
 constexpr int ShellPriority            = 13;
 constexpr std::uint32_t ShellPollMs    = 50;
+constexpr std::size_t   TxChunkBytes = 32;   // must be well below the CDC TX ring size
+constexpr std::uint32_t TxChunkGapMs = 2;
 
 constexpr char CR = '\r';
 constexpr char LF = '\n';

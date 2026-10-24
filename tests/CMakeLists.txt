@@ -5,6 +5,20 @@ set(CMAKE_CXX_STANDARD 20)
 
 # Find Google Test on your host system
 find_package(GTest REQUIRED)
+
+# Headers moved into subfolders
+include_directories(
+    ${CMAKE_CURRENT_SOURCE_DIR}/../include
+    ${CMAKE_CURRENT_SOURCE_DIR}/../include/Power_Management_System
+    ${CMAKE_CURRENT_SOURCE_DIR}/../include/RTOS_Command_based_thread_system
+    ${CMAKE_CURRENT_SOURCE_DIR}/../include/Smart_Battery_System
+)
+
+# Sources moved into subfolders: collect them into variables
+file(GLOB PMS_SRCS      ${CMAKE_CURRENT_SOURCE_DIR}/../src/Power_Management_System/*.cpp)
+file(GLOB BATT_SRCS     ${CMAKE_CURRENT_SOURCE_DIR}/../src/Smart_Battery_System/*.cpp)
+file(GLOB RTOS_CMD_SRCS ${CMAKE_CURRENT_SOURCE_DIR}/../src/RTOS_Command_based_thread_system/*.cpp)
+
 set(MOCK_DIR ${CMAKE_BINARY_DIR}/zephyr_mocks)
 file(MAKE_DIRECTORY ${MOCK_DIR}/zephyr/pm)
 file(MAKE_DIRECTORY ${MOCK_DIR}/zephyr/drivers)
@@ -95,7 +109,7 @@ file(WRITE ${MOCK_DIR}/zephyr/kernel.h "#pragma once\n#include <stdint.h>\n#incl
 
 file(WRITE ${MOCK_DIR}/zephyr/device.h "#pragma once\nstruct device {};\n#define DEVICE_DT_GET(...) nullptr\n#define DEVICE_DT_GET_ONE(...) nullptr\n#define DEVICE_DT_GET_OR_NULL(...) nullptr\n#define DT_NODELABEL(...) 0\n#define DT_REG_ADDR(...) 0\n#define DT_MTD_FROM_FIXED_PARTITION(...) 0\nextern \"C\" bool device_is_ready(const struct device *dev);\n")
 
-file(WRITE ${MOCK_DIR}/zephyr/logging/log.h "#pragma once\n#include <stdio.h>\n#define LOG_MODULE_REGISTER(...)\n#define LOG_INF(fmt, ...) { printf(\"[INF] \" fmt \"\\n\", ##__VA_ARGS__); fflush(stdout); }\n#define LOG_WRN(fmt, ...) { printf(\"[WRN] \" fmt \"\\n\", ##__VA_ARGS__); fflush(stdout); }\n#define LOG_ERR(fmt, ...) { printf(\"[ERR] \" fmt \"\\n\", ##__VA_ARGS__); fflush(stdout); }\n#define LOG_DBG(fmt, ...) { printf(\"[DBG] \" fmt \"\\n\", ##__VA_ARGS__); fflush(stdout); }\n")
+file(WRITE ${MOCK_DIR}/zephyr/logging/log.h "#pragma once\n#include <stdio.h>\n#define LOG_MODULE_REGISTER(...)\n#define LOG_MODULE_DECLARE(...)\n#define LOG_INF(fmt, ...) { printf(\"[INF] \" fmt \"\\n\", ##__VA_ARGS__); fflush(stdout); }\n#define LOG_WRN(fmt, ...) { printf(\"[WRN] \" fmt \"\\n\", ##__VA_ARGS__); fflush(stdout); }\n#define LOG_ERR(fmt, ...) { printf(\"[ERR] \" fmt \"\\n\", ##__VA_ARGS__); fflush(stdout); }\n#define LOG_DBG(fmt, ...) { printf(\"[DBG] \" fmt \"\\n\", ##__VA_ARGS__); fflush(stdout); }\n")
 file(WRITE ${MOCK_DIR}/zephyr/pm/pm.h "#pragma once\n#define PM_STATE_SUSPEND_TO_RAM 1\n#define PM_STATE_SUSPEND_TO_IDLE 2\n#define PM_ALL_SUBSTATES 0\n")
 file(WRITE ${MOCK_DIR}/zephyr/pm/policy.h "#pragma once\n#include <stdint.h>\n#include <zephyr/pm/pm.h>\nextern \"C\" void pm_policy_state_lock_get(uint8_t state, uint8_t substate_id);\nextern \"C\" void pm_policy_state_lock_put(uint8_t state, uint8_t substate_id);\n")
 file(WRITE ${MOCK_DIR}/zephyr/pm/device.h "#pragma once\nenum pm_device_action { PM_DEVICE_ACTION_SUSPEND, PM_DEVICE_ACTION_RESUME };\nextern \"C\" int pm_device_action_run(const struct device *dev, enum pm_device_action action);\n")
@@ -133,7 +147,7 @@ file(WRITE ${CMAKE_BINARY_DIR}/mock_globals.cpp "#include <zephyr/device.h>\n#in
 # 4. Define the executable
 add_executable(run_pm_tests 
     test_power_management.cpp 
-    ../src/Power_Management_System.cpp
+    ${PMS_SRCS}
     ../src/Device_State_Machine+Watchdog.cpp
     ${CMAKE_BINARY_DIR}/mock_globals.cpp
 )
@@ -141,20 +155,20 @@ add_executable(run_pm_tests
 add_executable(run_usb_shell_tests 
     test_usb_shell.cpp 
     ../src/USB_CDC_Virtual_COM_Shell_Interface.cpp
-    ../src/Power_Management_System.cpp
+    ${PMS_SRCS}
     ../src/Device_State_Machine+Watchdog.cpp
     ../src/Fault_Tolerant_I2C_Communication_Layer.cpp
     ../src/Persistent_Configuration_System.cpp
-    ../src/Smart_Battery_System.cpp
+    ${BATT_SRCS}
     ${CMAKE_BINARY_DIR}/mock_globals.cpp
 )
 
 add_executable(run_battery_tests
     test_battery_fsm.cpp
-    ../src/Smart_Battery_System.cpp
+    ${BATT_SRCS}
     ../src/Fault_Tolerant_I2C_Communication_Layer.cpp
     ../src/Device_State_Machine+Watchdog.cpp
-    ../src/Power_Management_System.cpp
+    ${PMS_SRCS}
     ../src/Persistent_Configuration_System.cpp
     ${CMAKE_BINARY_DIR}/mock_globals.cpp
 )
@@ -163,7 +177,7 @@ add_executable(run_static_memory_tests
     test_static_memory.cpp
     ../src/Static_Memory+MISRA_Compliance_Layer.cpp
     ../src/Device_State_Machine+Watchdog.cpp
-    ../src/Power_Management_System.cpp
+    ${PMS_SRCS}
     ${CMAKE_BINARY_DIR}/mock_globals.cpp
 )
 
@@ -171,14 +185,14 @@ add_executable(run_config_tests
      test_config_store.cpp
      ../src/Persistent_Configuration_System.cpp
      ../src/Device_State_Machine+Watchdog.cpp
-     ../src/Power_Management_System.cpp
+     ${PMS_SRCS}
      ${CMAKE_BINARY_DIR}/mock_globals.cpp
 )
 
 add_executable(run_i2c_faults_tests
       test_I2C_Fault_Recovery.cpp
       ../src/Fault_Tolerant_I2C_Communication_Layer.cpp
-      ../src/Power_Management_System.cpp
+      ${PMS_SRCS}
       ../src/Device_State_Machine+Watchdog.cpp
       ${CMAKE_BINARY_DIR}/mock_globals.cpp
 )
@@ -186,7 +200,7 @@ add_executable(run_i2c_faults_tests
 add_executable(run_state_machine_tests
        test_state_machine.cpp
        ../src/Device_State_Machine+Watchdog.cpp
-       ../src/Power_Management_System.cpp
+       ${PMS_SRCS}
        ${CMAKE_BINARY_DIR}/mock_globals.cpp
 )
 
@@ -194,15 +208,15 @@ add_executable(run_sync_tests
     test_synchronization.cpp
     ../src/RTOS_Synchronization_Layer.cpp
     ../src/Device_State_Machine+Watchdog.cpp
-    ../src/Power_Management_System.cpp
+    ${PMS_SRCS}
     ${CMAKE_BINARY_DIR}/mock_globals.cpp
 )
 
 add_executable(run_command_tests
     test_rtos_commands.cpp
-    ../src/RTOS_Command_based_thread_system.cpp
+    ${RTOS_CMD_SRCS}
     ../src/Device_State_Machine+Watchdog.cpp
-    ../src/Power_Management_System.cpp
+    ${PMS_SRCS}
     ../src/Fault_Tolerant_I2C_Communication_Layer.cpp
     ${CMAKE_BINARY_DIR}/mock_globals.cpp
 )

@@ -48,9 +48,8 @@
 
 LOG_MODULE_REGISTER(USB_CLI, LOG_LEVEL_INF);
 
-/* NEW: Thread Health Monitoring Flag for the USB Shell */
 atomic_t g_shell_alive = ATOMIC_INIT(1);
-/* Global flag managed by the USB Callback in main.cpp */
+
 bool g_usb_connected = false;
 
 namespace {
@@ -106,8 +105,7 @@ namespace {
     constexpr std::string_view kNotProvisionedMsg   = "Error: Device ID not provisioned.\r\n";
     constexpr std::string_view kThresholdFallbackMsg = "Error: Rate exceeds alarm threshold. Please reset the rate.\r\n";
     constexpr std::string_view kSetRateSuccessFallback = "Success: infusion rate updated.\r\n";
-    
-    // SAFE HALT INTERLOCK MESSAGE
+
     constexpr std::string_view kSafeHaltRejectMsg   = "Error: Operational command rejected. System locked in SAFE_HALT/FAULT.\r\n";
     
     constexpr std::string_view kRebootingMsg        = "Rebooting system... \r\n";
@@ -154,7 +152,6 @@ bool UsbCdcFacade::init() {
 }
 
 bool UsbCdcFacade::isConnected() {
-    // 1. Check physical hardware state driven by the kernel callback
     if (!g_usb_connected) {
         if (dtr_ready) {
             uart_irq_rx_disable(dev);
@@ -163,7 +160,6 @@ bool UsbCdcFacade::isConnected() {
         return false;
     }
 
-    // 2. Hardware is attached. Check terminal software state.
     uint32_t dtr = 0;
     int ret = uart_line_ctrl_get(dev, UART_LINE_CTRL_DTR, &dtr);
     
@@ -172,11 +168,9 @@ bool UsbCdcFacade::isConnected() {
     if (ret == 0) {
         terminal_connected = (dtr != 0);
     } else if (ret == -ENOTSUP || ret == -ENOSYS) {
-        /* FIX: Ensure drivers/terminals that don't support DTR still function */
         terminal_connected = true; 
     }
 
-    // Edge Detection for SERIAL TERMINAL ONLY (e.g. Closing PuTTY/Minicom)
     if (terminal_connected && !dtr_ready) {
         LOG_INF("USB Terminal Opened (DTR High)");
         uart_irq_rx_enable(dev);
@@ -194,8 +188,12 @@ void UsbCdcFacade::transmit(std::string_view data) noexcept {
     if (!isConnected()) {
         return;
     }
+    std::size_t sent = 0;
     for (char c : data) {
         uart_poll_out(dev, c);
+        if (++sent % TxChunkBytes == 0) {
+            k_msleep(TxChunkGapMs);   // let the CDC TX ring buffer drain before sending more
+        }
     }
 }
 
@@ -211,19 +209,15 @@ void UsbCdcFacade::uartInterruptHandler(const device* dev, void* user_data) {
                 const std::size_t tail = self->rx_tail.load(std::memory_order_acquire);
                 
                 if (head != tail) {
-                    // Visually erase the character on the terminal
                     uart_poll_out(dev, '\b');
                     uart_poll_out(dev, ' ');
                     uart_poll_out(dev, '\b');
                     
-                    // Step the ring buffer head pointer back by one
                     self->rx_head.store((head + RX_RING_BUF_SIZE - 1) % RX_RING_BUF_SIZE, std::memory_order_release);
                 }
                 continue;
             }
             
-            /* FIX: Terminal Emulator Echo Mapping 
-             * Minicom sends '\r' on Enter. We MUST echo '\r\n' to force the cursor down a line. */
             if (c == '\r' || c == '\n') {
                 uart_poll_out(dev, '\r');
                 uart_poll_out(dev, '\n');
@@ -275,8 +269,6 @@ bool UsbCdcFacade::readLine(CommandBuffer& out_line) noexcept {
             found_eol = true;
             temp_tail = (temp_tail + 1) % RX_RING_BUF_SIZE;
             
-            /* FIX: CRLF Absorption. If the terminal sent \r\n, safely drop the \n 
-             * so we don't accidentally process a phantom empty command on the next loop. */
             if (c == CR && temp_tail != head && rx_buffer[temp_tail] == LF) {
                 temp_tail = (temp_tail + 1) % RX_RING_BUF_SIZE;
             }
@@ -322,8 +314,6 @@ void UsbShell::process() {
 
     CommandBuffer cmd_buf;
     do {
-        /* Cleanly yield CPU cycles during system deep sleep.
-         * Note: Does NOT freeze during SAFE_HALT, ensuring diagnostics are available. */
         while (g_shellPowerObserver.isSleeping()) {
             k_msleep(200);
             atomic_set(&g_shell_alive, 1);
@@ -331,19 +321,16 @@ void UsbShell::process() {
 
         if (usb.isConnected() && usb.readLine(cmd_buf)) {
             PowerManager::getInstance().reportActivity();
-
-            // Execute the command if it wasn't just an empty Enter key
+\
             if (cmd_buf[0] != '\0') {
                 dispatchCommand(std::string_view(cmd_buf.data()));
             }
-            
-            // FIX: Always print the prompt after returning, simulating a standard Linux terminal
+
             usb.transmit(PromptStr);
         }
         
         k_msleep(ShellPollMs);
 
-        /* Flag health for global watchdog */
         atomic_set(&g_shell_alive, 1);
 
     } while (THREAD_LOOP_CONDITION);
@@ -446,11 +433,11 @@ void UsbShell::cmdStatus([[maybe_unused]] std::string_view args) noexcept {
     const StatusSnapshot snap = collectStatus();
     static StatusBuffer json_stack_buf;
     [[maybe_unused]] const std::size_t json_len = formatStatus(snap, json_stack_buf);
+    LOG_INF("status json: %u bytes, %u slots", (unsigned)json_len, (unsigned)snap.slot_count);
     usb.transmit(json_stack_buf.data());
 }
 
 void UsbShell::cmdSetRate(std::string_view args) noexcept {
-    // SAFE HALT INTERLOCK: Reject operational commands that alter physical state
     const SystemState current_state = sys_ctx->getState();
     if (current_state == SystemState::SAFE_HALT || current_state == SystemState::FAULT) {
         usb.transmit(kSafeHaltRejectMsg);

@@ -7,7 +7,7 @@
 #include <zephyr/drivers/uart.h>
 #include <cerrno>
 
-#include "RTOS_Command_based_thread_system.h"
+#include "RTOS_Command_Based_Thread_System.h"
 #include "RTOS_Synchronization_Layer.h"
 #include "Device_State_Machine+Watchdog.h"
 #include "Smart_Battery_System.h"
@@ -54,8 +54,8 @@ static void usb_status_cb(enum usb_dc_status_code cb_status, const uint8_t *para
 }
 #endif
 
-int main(void)
-{
+int main(void){
+    printk("BOOT\n");
     const struct device *console_dev  = nullptr;
     console_dev = DEVICE_DT_GET(DT_CHOSEN(zephyr_console));
     

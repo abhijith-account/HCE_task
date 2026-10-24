@@ -54,11 +54,11 @@ public:
 class IPowerState {
 public:
     virtual ~IPowerState() = default;
-    
+
     virtual bool enter(PowerManager& pm) = 0;
     virtual IPowerState& execute(PowerManager& pm) = 0;
     virtual void exit(PowerManager& pm) = 0;
-    
+
     virtual const char* getName() const = 0;
 };
 
@@ -66,8 +66,8 @@ class PowerManager {
 public:
     static PowerManager& getInstance();
 
-    bool init(const struct device* rtc, const struct device* i2c, 
-              const struct device* uart, const struct device* usb, 
+    bool init(const struct device* rtc, const struct device* i2c,
+              const struct device* uart, const struct device* usb,
               const struct device* adc, DeviceContext* fault_ctx);
 
     bool registerObserver(IPowerObserver* obs);
@@ -83,10 +83,10 @@ public:
     // Getters and Setters used by concrete states
     uint32_t getLastActivityTime() const { return last_activity_time.load(); }
     void clearWakePending() { atomic_set(&wake_pending, 0); }
-    
+
     // Consumes the wake flag atomically to prevent race conditions during STOP mode wake
-    bool consumeWakePending(); 
-    
+    bool consumeWakePending();
+
     const struct device* getRtcDev() const { return rtc_dev; }
     const struct device* getI2cDev() const { return i2c_dev; }
     const struct device* getUartDev() const { return uart_dev; }
@@ -97,7 +97,7 @@ public:
     void setExpectedWakeTime(uint32_t time) { expected_wake_time = time; }
     uint32_t getSleepTime() const { return last_sleep_time; }
     uint32_t getExpectedWakeTime() const { return expected_wake_time; }
-    
+
     void resetPmFailures() { consecutive_pm_failures = 0; }
 
     // Static callback for RTC API
@@ -120,7 +120,7 @@ private:
     size_t captureObservers(std::array<IPowerObserver*, MAX_OBSERVERS>& out);
 
     IPowerState* current_state;
-    
+
     uint32_t last_sleep_time;
     uint32_t expected_wake_time;
 
@@ -132,7 +132,7 @@ private:
 
     size_t observer_count;
     std::array<IPowerObserver*, MAX_OBSERVERS> observers;
-    
+
     DeviceContext* fault_context;
     uint32_t consecutive_pm_failures;
 

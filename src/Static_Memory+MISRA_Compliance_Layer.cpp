@@ -16,16 +16,8 @@ extern int run_thread_iterations;
 LOG_MODULE_REGISTER(MEM_SYS, LOG_LEVEL_INF);
 extern DeviceContext sys_context;
 
-/* Thread Health Monitoring Flag for Memory Monitor */
 atomic_t g_mem_mon_alive = ATOMIC_INIT(1);
 
-/* Known application threads, referenced by their K_THREAD_DEFINE-generated
- * k_tid_t symbols. We deliberately do NOT walk the kernel's internal thread
- * list (via thread_analyzer_print() or k_thread_foreach*()) at runtime:
- * that walk was observed to enter an infinite loop after the main() thread
- * terminated and its list node became stale, permanently hanging this
- * thread while flooding the log with a single repeated entry. Querying
- * each statically-known thread directly is bounded and cannot loop. */
 extern const k_tid_t processor_tid;
 extern const k_tid_t producer_tid;
 extern const k_tid_t logger_tid;
@@ -58,7 +50,6 @@ namespace {
         { &trace_tid,     "trace_tid"}
     };
 
-    /* --- Power Observer for Memory Monitor --- */
     class MemoryPowerObserver final : public IPowerObserver {
     private:
         atomic_t is_sleeping{};
@@ -97,16 +88,13 @@ void memory_monitor_thread(void){
     uint32_t seconds_elapsed = 0;
 
     do {
-        /* Explicitly yield CPU cycles if the power observer flags sleep mode */
         while (g_memoryPowerObserver.isSleeping()) {
             k_msleep(200);
             atomic_set(&g_mem_mon_alive, 1); // Keep WDT alive during sleep holding pattern
         }
 
-        /* Strictly enforce RUNNING state instead of just avoiding SAFE_HALT */
         if (sys_context.getState() == SystemState::RUNNING) {
 
-            /* Only trigger the analyzer every 30 seconds */
             if (seconds_elapsed >= 30) {
                 LOG_INF("=== [System Health] Thread Stack Watermarks ===");
                 for (const auto &mt : kMonitoredThreads) {
@@ -121,12 +109,10 @@ void memory_monitor_thread(void){
                 seconds_elapsed = 0;
             }
         }
-        
-        /* Sleep for 1 second so we can wake up and feed the Watchdog */
+
         k_msleep(1000);
         seconds_elapsed++;
-        
-        /* Flag health for global watchdog */
+
         atomic_set(&g_mem_mon_alive, 1);
         
     } while(THREAD_LOOP_CONDITION);

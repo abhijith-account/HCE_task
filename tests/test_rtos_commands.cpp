@@ -17,7 +17,7 @@
 
 #define private public
 #define protected public
-#include "RTOS_Command_based_thread_system.h"
+#include "RTOS_Command_Based_Thread_System.h"
 #undef private
 #undef protected
 

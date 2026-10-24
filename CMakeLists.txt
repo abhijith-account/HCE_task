@@ -5,17 +5,27 @@ project(medical_firmware)
 
 zephyr_cc_option(-Wno-deprecated-declarations -Wno-deprecated)
 
-target_include_directories(app PRIVATE include)
+target_include_directories(app PRIVATE
+    include
+    include/Power_Management_System
+    include/RTOS_Command_based_thread_system
+    include/Smart_Battery_System
+)
+
+# Sources moved into subfolders
+file(GLOB PMS_SRCS      CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/src/Power_Management_System/*.cpp)
+file(GLOB BATT_SRCS     CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/src/Smart_Battery_System/*.cpp)
+file(GLOB RTOS_CMD_SRCS CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/src/RTOS_Command_based_thread_system/*.cpp)
 
 target_sources(app PRIVATE
     src/main.cpp
-    src/RTOS_Command_based_thread_system.cpp
+    ${RTOS_CMD_SRCS}
     src/RTOS_Synchronization_Layer.cpp
     src/Device_State_Machine+Watchdog.cpp
     src/Fault_Tolerant_I2C_Communication_Layer.cpp
     src/Persistent_Configuration_System.cpp
-    src/Power_Management_System.cpp
-    src/Smart_Battery_System.cpp
+    ${PMS_SRCS}
+    ${BATT_SRCS}
     src/Static_Memory+MISRA_Compliance_Layer.cpp
     src/USB_CDC_Virtual_COM_Shell_Interface.cpp
 )

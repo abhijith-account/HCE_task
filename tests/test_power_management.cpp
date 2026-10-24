@@ -930,6 +930,11 @@ TEST_F(PowerManagementTestSuite, StopExitCoverage) {
     s_real_hw_sleep_active = true;
     s_stop_wake_reason = StopWakeReason::WAKE_ABORTED;
     stop.exit(pm); 
+    
+    stop.sleep_prepared = true;
+    s_real_hw_sleep_active = true;
+    s_stop_wake_reason = StopWakeReason::WAKE_UNKNOWN;
+    stop.exit(pm);
 }
 
 TEST_F(PowerManagementTestSuite, ActiveExecuteCoverage) {
@@ -1299,20 +1304,6 @@ TEST_F(PowerManagementTestSuite, ThreadRoutineIdleStateTimeoutExpired) {
     IdleState::getInstance().exit(pm);
 }
 
-// ---------------------------------------------------------------------------
-// power_monitor_thread(): NOT in idle state, active timeout already elapsed
-// (`active_elapsed >= ACTIVE_TIMEOUT_MS` -> wait_timeout = K_MSEC(10)).
-//
-// How it is reached deterministically:
-//  - hook_uptime_bump_on_active_enter advances time by ACTIVE_TIMEOUT_MS right
-//    after last_activity_time is stored, so the first processFSM() wants to go
-//    Active -> Idle.
-//  - g_force_idle_enter_fail makes IdleState::enter() bail out before it sets
-//    s_in_idle_state, and the cascaded fallback fails too, so the FSM halts
-//    (current_state == nullptr) and s_in_idle_state stays false.
-//  - The thread therefore takes the `else` (active) path with
-//    active_elapsed == 30000 >= ACTIVE_TIMEOUT_MS.
-// ---------------------------------------------------------------------------
 TEST_F(PowerManagementTestSuite, ThreadRoutineActiveStateTimeoutExpired) {
     PowerManager& pm = PowerManager::getInstance();
 
@@ -1331,6 +1322,23 @@ TEST_F(PowerManagementTestSuite, ThreadRoutineActiveStateTimeoutExpired) {
     EXPECT_GE(k_uptime_get_32() - pm.getLastActivityTime(), 30000u);
 
     g_force_idle_enter_fail = false;
+    drain_pm_wake_sem();
+}
+// power_monitor_thread(): `if (s_real_hw_sleep_active)` -> wait_timeout = K_NO_WAIT
+TEST_F(PowerManagementTestSuite, ThreadRoutineHwSleepActiveNoWait) {
+    PowerManager& pm = PowerManager::getInstance();
+
+    virtual_uptime = 0;
+    run_thread_once = false;          // exactly one loop iteration
+    s_real_hw_sleep_active = true;    // init() -> Active does not clear it; Active::execute() doesn't either
+    k_sem_give(&pm_wake_sem);         // never block in k_sem_take()
+
+    power_monitor_thread();
+
+    EXPECT_NE(pm.current_state, nullptr);
+
+    // cleanup so later tests don't see a stale flag
+    s_real_hw_sleep_active = false;
     drain_pm_wake_sem();
 }
 
