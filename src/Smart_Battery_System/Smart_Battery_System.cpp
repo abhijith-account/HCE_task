@@ -469,8 +469,8 @@ void SbsBattery::processFSM() {
         bool expected = false;
         if (full_charge_logged.compare_exchange_strong(expected, true)) {
             LOG_INF("BATTERY FULLY CHARGED. Logging event to NVS.");
-            const uint32_t event_timestamp = k_uptime_get_32();
-            (void)ConfigStore::getInstance().set(ConfigKey::FULL_CHARGE_LOG, event_timestamp);
+            const ConfigStore::LogEntry entry{k_uptime_get_32(), 0x01U, static_cast<int32_t>(soc_pct)};
+            (void)ConfigStore::getInstance().set(ConfigKey::FULL_CHARGE_LOG, entry);
         }
     } else if (soc_pct < 95U) {
         full_charge_logged.store(false);
