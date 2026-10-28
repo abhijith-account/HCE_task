@@ -1,20 +1,12 @@
-// Power_StopState.cpp
-// Concrete IPowerState for the deep-sleep state (STOP mode on real hardware,
-// timer-simulated sleep on MPS2/QEMU). Uses the helpers from Power_Hardware.cpp / Power_RTC.cpp.
-
 #include "Power_Internal.h"
 
 LOG_MODULE_DECLARE(PWR_SYS, LOG_LEVEL_INF);
 
 using namespace pm_internal;
 
-// ============================================================================
-// Timer callbacks that signal a wake-up (MPS2 stop timer / simulated RTC timer)
-// ============================================================================
 #ifdef CONFIG_BOARD_MPS2_AN386
 
-static void simulated_stop_timer_handler(struct k_timer *timer_id)
-{
+static void simulated_stop_timer_handler(struct k_timer *timer_id){
     ARG_UNUSED(timer_id);
 
     auto& pm = PowerManager::getInstance();
@@ -26,8 +18,7 @@ static void simulated_stop_timer_handler(struct k_timer *timer_id)
 }
 #else
 
-static void simulated_rtc_timer_handler(struct k_timer *timer_id)
-{
+static void simulated_rtc_timer_handler(struct k_timer *timer_id){
     ARG_UNUSED(timer_id);
     auto& pm = PowerManager::getInstance();
     atomic_set(&pm.wake_pending, 1);
@@ -36,9 +27,6 @@ static void simulated_rtc_timer_handler(struct k_timer *timer_id)
 }
 #endif
 
-// ============================================================================
-// StopState bookkeeping: register snapshots and wake diagnostics
-// ============================================================================
 namespace {
 #ifndef CONFIG_BOARD_MPS2_AN386
 uint32_t s_last_full_wake_cycles = 0;
@@ -114,11 +102,7 @@ static void log_gpio_plan()
                 af |= (1U << pin);
             }
         }
-        LOG_INF("STOP GPIO%c: out=0x%04x lvl=0x%04x | af=0x%04x lvl=0x%04x | od=0x%04x",
-                'A' + i,
-                (unsigned)out, (unsigned)(ports[i]->ODR & out),
-                (unsigned)af,  (unsigned)(ports[i]->IDR & af),
-                (unsigned)(ports[i]->OTYPER & (out | af)));
+        LOG_INF("STOP GPIO%c: out=0x%04x lvl=0x%04x | af=0x%04x lvl=0x%04x | od=0x%04x",'A' + i,(unsigned)out, (unsigned)(ports[i]->ODR & out),(unsigned)af,  (unsigned)(ports[i]->IDR & af),(unsigned)(ports[i]->OTYPER & (out | af)));
     }
 
     RCC->AHB1ENR = prev_ahb1enr;
@@ -132,9 +116,7 @@ StopState& StopState::getInstance() {
 }
 
 bool StopState::enter(PowerManager& pm) {
-    LOG_WRN("Preparing for Deep Sleep (PM_STATE_SUSPEND_TO_RAM): %u s total, wake every %u s",
-            (unsigned)(STOP_TOTAL_TIME_US / 1000000U),
-            (unsigned)(STOP_WAKE_INTERVAL_US / 1000000U));
+    LOG_WRN("Preparing for Deep Sleep (PM_STATE_SUSPEND_TO_RAM): %u s total, wake every %u s",(unsigned)(STOP_TOTAL_TIME_US / 1000000U),(unsigned)(STOP_WAKE_INTERVAL_US / 1000000U));
 
     s_stop_wake_reason = StopWakeReason::WAKE_NONE;
     atomic_set(&s_activity_pending, 0);
@@ -160,14 +142,9 @@ bool StopState::enter(PowerManager& pm) {
 #endif
 
 #ifndef CONFIG_BOARD_MPS2_AN386
-    // A debug session keeps HCLK/FCLK running in "STOP" (RM0390 33.16.1), so the part only does SLEEP
-    // (~0.9 mA at this clock, DS10693 Table 26) and no PWR setting can change that. Say so BEFORE the
-    // UART goes away. DHCSR.C_DEBUGEN is set by the debugger and is only cleared by a power-on reset
-    // (not by the reset button), so an ended session can still leave it set until the board is power-cycled.
+
     if ((CoreDebug->DHCSR & CoreDebug_DHCSR_C_DEBUGEN_Msk) != 0U) {
-        LOG_WRN("DEBUGGER ATTACHED (DHCSR=0x%08x, DBGMCU_CR=0x%08x): STOP will run as SLEEP, ~0.9 mA. "
-                "End the debug session and power-cycle the board with SWD disconnected to measure STOP.",
-                (unsigned)CoreDebug->DHCSR, (unsigned)DBGMCU->CR);
+        LOG_WRN("DEBUGGER ATTACHED (DHCSR=0x%08x, DBGMCU_CR=0x%08x): STOP will run as SLEEP, ~0.9 mA. ""End the debug session and power-cycle the board with SWD disconnected to measure STOP.",(unsigned)CoreDebug->DHCSR, (unsigned)DBGMCU->CR);
     }
 #endif
 
@@ -238,8 +215,6 @@ bool StopState::enter(PowerManager& pm) {
     usb_dc_detach();
 #endif
 
-    // 1. Suspend devices via PM actions FIRST. Their suspend hooks (and i2c_recover_bus()) re-apply
-    //    pinctrl states, so the GPIO policy below must be the LAST thing that touches the pins.
     if (pm.getAdcDev()) {
         int rc = pm_device_action_run(pm.getAdcDev(), PM_DEVICE_ACTION_SUSPEND);
         if (rc != 0 && rc != -EALREADY) {
@@ -380,8 +355,6 @@ IPowerState& StopState::execute(PowerManager& pm) {
 
         sys_context.feedWatchdog();
 
-        // Re-assert STOP power bits; keep PWREN + PWRLPEN + FLITFLPEN enabled so the PWR & Flash
-        // state machines can sequence Stop entry on WFI!
         stop_reassert_power();
         RCC->APB1ENR   = RCC_APB1ENR_PWREN;
         RCC->APB2ENR   = 0U;
@@ -415,13 +388,10 @@ IPowerState& StopState::execute(PowerManager& pm) {
         __DSB();
         __ISB();
 
-        // What the core sees right at the WFI: SLEEPDEEP must still be set, and DHCSR.C_DEBUGEN (bit 0)
-        // set means a debugger session is active.
         s_probe_scr       = SCB->SCR;
         s_probe_dhcsr     = CoreDebug->DHCSR;
         s_probe_dbgmcu_cr = DBGMCU->CR;
-        // STOP entry with PRIMASK=1 around WFI so s_wfi_pwr_csr and s_wfi_icsr
-        // are captured immediately on the first instruction after wake, before the RTC ISR runs.
+
         (void)stop_enter_wfi(s_wfi_pwr_csr, s_wfi_icsr);
 
         __HAL_RCC_PWR_CLK_ENABLE();
@@ -455,10 +425,6 @@ IPowerState& StopState::execute(PowerManager& pm) {
                 return ActiveState::getInstance();
             }
 
-            // Run the mid-STOP housekeeping (IWDG feed + RTC alarm re-arm) at 1 MHz instead of 4 MHz.
-            // Most of it is spent waiting on the RTC's own 32 kHz clock (ALRAWF etc.), which takes the same
-            // wall time at any HCLK, so a slower core burns less run current for the same work.
-            // The regulator is confirmed at Scale 3 first; 0 wait states are valid at 1 MHz.
             __HAL_PWR_VOLTAGESCALING_CONFIG(PWR_REGULATOR_VOLTAGE_SCALE3);
             {
                 uint32_t vos_timeout = 100000;
@@ -469,8 +435,7 @@ IPowerState& StopState::execute(PowerManager& pm) {
                        RCC_CFGR_HPRE_DIV16 | RCC_CFGR_PPRE1_DIV1 | RCC_CFGR_PPRE2_DIV1);
             __HAL_FLASH_SET_LATENCY(FLASH_LATENCY_0);
 #ifdef CONFIG_SYS_CLOCK_TICKS_PER_SEC
-            // Keep SysTick's reload matched to the 1 MHz HCLK so kernel timeouts inside the RTC driver
-            // keep wall-clock accuracy. clock_restore_from_idle() puts the full-speed reload back on exit.
+
             {
                 const uint32_t svc_load = (1000000U / CONFIG_SYS_CLOCK_TICKS_PER_SEC);
                 if (svc_load > 1U) {
@@ -546,15 +511,11 @@ void StopState::exit(PowerManager& pm) {
             break;
     }
 
-    if (s_stop_wake_reason == StopWakeReason::WAKE_RTC ||
-        s_stop_wake_reason == StopWakeReason::WAKE_ACTIVITY) {
+    if (s_stop_wake_reason == StopWakeReason::WAKE_RTC || s_stop_wake_reason == StopWakeReason::WAKE_ACTIVITY) {
         pm.resetPmFailures();
     }
 
-    LOG_INF("Exiting PM_STATE_SUSPEND_TO_RAM -> %s (wake: %s, ~%u ms in STOP)",
-            s_transition_target_name,
-            stop_wake_reason_str(s_stop_wake_reason),
-            (unsigned)(s_elapsed_sleep_time_us / 1000U));
+    LOG_INF("Exiting PM_STATE_SUSPEND_TO_RAM -> %s (wake: %s, ~%u ms in STOP)",s_transition_target_name,stop_wake_reason_str(s_stop_wake_reason),(unsigned)(s_elapsed_sleep_time_us / 1000U));
 
     s_stop_wake_reason = StopWakeReason::WAKE_NONE;
 
@@ -582,8 +543,7 @@ void StopState::exit(PowerManager& pm) {
         pm.notifyAfterWakeup();
         resume_background_threads();
 
-        LOG_INF("Exiting PM_STATE_SUSPEND_TO_RAM -> %s (simulated STOP, no RTC)",
-                s_transition_target_name);
+        LOG_INF("Exiting PM_STATE_SUSPEND_TO_RAM -> %s (simulated STOP, no RTC)",s_transition_target_name);
 
         pm_policy_state_lock_put(PM_STATE_SUSPEND_TO_IDLE, PM_ALL_SUBSTATES);
         return;
@@ -663,41 +623,21 @@ void StopState::exit(PowerManager& pm) {
             break;
     }
 
-    LOG_INF("WFI wake: ICSR=0x%08x PWR_CSR=0x%08x PWR_CR=0x%08x "
-            "NVIC_ISPR0=0x%08x NVIC_IABR0=0x%08x",
-            s_wfi_icsr,
-            s_wfi_pwr_csr,
-            s_wfi_pwr_cr,
-            s_wfi_nvic_pending0,
-            s_wfi_nvic_active0);
+    LOG_INF("WFI wake: ICSR=0x%08x PWR_CSR=0x%08x PWR_CR=0x%08x ""NVIC_ISPR0=0x%08x NVIC_IABR0=0x%08x",s_wfi_icsr,s_wfi_pwr_csr,s_wfi_pwr_cr,s_wfi_nvic_pending0,s_wfi_nvic_active0);
 
-    LOG_INF("Pre-WFI pending (last iter): EXTI_PR=0x%08x NVIC_ISPR0=0x%08x",
-            s_pre_wfi_exti_pr,
-            s_pre_wfi_nvic_pending0);
-    LOG_INF("Pre-WFI RCC_CR=0x%08x RCC_CFGR=0x%08x",
-            s_pre_wfi_rcc_cr, s_pre_wfi_rcc_cfgr);
-    LOG_INF("Pre-WFI PWR_CR=0x%08x PWR_CSR=0x%08x (VOS3 expected; PDDS/LPDS/FPDS/UDEN all 0)",
-            s_pre_wfi_pwr_cr, s_pre_wfi_pwr_csr);
-    LOG_INF("DBGMCU_CR: right after the firmware cleared it = 0x%08x, earlier probe before WFI = 0x%08x%s",
-            (unsigned)s_stop_dbgmcu_after_write, (unsigned)s_probe_dbgmcu_cr,
-            (s_stop_dbgmcu_after_write == 0U && s_probe_dbgmcu_cr != 0U)
-                ? "  <-- a debug probe is re-asserting it" :
-            (s_stop_dbgmcu_after_write != 0U) ? "  <-- the write is NOT taking effect" : "");
+    LOG_INF("Pre-WFI pending (last iter): EXTI_PR=0x%08x NVIC_ISPR0=0x%08x",s_pre_wfi_exti_pr,s_pre_wfi_nvic_pending0);
+    LOG_INF("Pre-WFI RCC_CR=0x%08x RCC_CFGR=0x%08x", s_pre_wfi_rcc_cr, s_pre_wfi_rcc_cfgr);
+    LOG_INF("Pre-WFI PWR_CR=0x%08x PWR_CSR=0x%08x (VOS3 expected; PDDS/LPDS/FPDS/UDEN all 0)", s_pre_wfi_pwr_cr, s_pre_wfi_pwr_csr);
+    LOG_INF("DBGMCU_CR: right after the firmware cleared it = 0x%08x, earlier probe before WFI = 0x%08x%s",(unsigned)s_stop_dbgmcu_after_write, (unsigned)s_probe_dbgmcu_cr,(s_stop_dbgmcu_after_write == 0U && s_probe_dbgmcu_cr != 0U) ? "  <-- a debug probe is re-asserting it" : (s_stop_dbgmcu_after_write != 0U) ? "  <-- the write is NOT taking effect" : "");
 
-    LOG_INF("Last RTC ALRAF clear: %u/100000 rem, Cycles: %u",
-            s_last_alraf_timeout, s_last_alraf_cycles);
+    LOG_INF("Last RTC ALRAF clear: %u/100000 rem, Cycles: %u",s_last_alraf_timeout, s_last_alraf_cycles);
 
     for (int i = 0; i < 8; ++i) {
         if (s_stop_od_af_mask[i]) {
-            LOG_INF("STOP OD lines GPIO%c: od_af=0x%04x low=0x%04x%s", 'A' + i,
-                    (unsigned)s_stop_od_af_mask[i], (unsigned)s_stop_od_low_mask[i],
-                    s_stop_od_low_mask[i] ? "  <-- STUCK LOW" : "");
+            LOG_INF("STOP OD lines GPIO%c: od_af=0x%04x low=0x%04x%s", 'A' + i,(unsigned)s_stop_od_af_mask[i], (unsigned)s_stop_od_low_mask[i],s_stop_od_low_mask[i] ? "  <-- STUCK LOW" : "");
         }
     }
 
-    // What gpio_save_and_set_all_analog() really wrote. Unlike the pre-suspend "STOP GPIOx" plan, this
-    // is taken after the I2C/ADC/UART suspend hooks and the I2C bus recovery ran. Ports that are fully
-    // Analog are not listed. in = input (floating unless pu/pd), out = driven, pu/pd = weak pulls.
     for (int i = 0; i < 8; ++i) {
         const uint32_t m = s_stop_applied_moder[i];
         const uint32_t p = s_stop_applied_pupdr[i];
@@ -713,32 +653,23 @@ void StopState::exit(PowerManager& pm) {
             if (mode != 0x3U && pull == 0x1U) { pu |= (1U << pin); }
             if (mode != 0x3U && pull == 0x2U) { pd |= (1U << pin); }
         }
-        LOG_INF("STOP APPLIED GPIO%c: out=0x%04x in=0x%04x pu=0x%04x pd=0x%04x (pre-policy MODER=0x%08x)",
-                'A' + i, (unsigned)out, (unsigned)in, (unsigned)pu, (unsigned)pd,
-                (unsigned)s_stop_gpio_snap.moder[i]);
+        LOG_INF("STOP APPLIED GPIO%c: out=0x%04x in=0x%04x pu=0x%04x pd=0x%04x (pre-policy MODER=0x%08x)",'A' + i, (unsigned)out, (unsigned)in, (unsigned)pu, (unsigned)pd,(unsigned)s_stop_gpio_snap.moder[i]);
     }
 
-    LOG_INF("STOP diag: SCR=0x%08x (SLEEPDEEP=%u) DHCSR=0x%08x (C_DEBUGEN=%u) DBGMCU_CR=0x%08x",
-            (unsigned)s_probe_scr, (unsigned)((s_probe_scr >> 2) & 1U),
-            (unsigned)s_probe_dhcsr, (unsigned)(s_probe_dhcsr & 1U),
-            (unsigned)s_probe_dbgmcu_cr);
+    LOG_INF("STOP diag: SCR=0x%08x (SLEEPDEEP=%u) DHCSR=0x%08x (C_DEBUGEN=%u) DBGMCU_CR=0x%08x",(unsigned)s_probe_scr, (unsigned)((s_probe_scr >> 2) & 1U),(unsigned)s_probe_dhcsr, (unsigned)(s_probe_dhcsr & 1U),(unsigned)s_probe_dbgmcu_cr);
     if ((s_probe_dhcsr & 1U) != 0U) {
-        LOG_WRN("STOP was NOT a real STOP: a debugger was attached (C_DEBUGEN=1). "
-                "Power-cycle with SWD disconnected, then re-measure.");
+        LOG_WRN("STOP was NOT a real STOP: a debugger was attached (C_DEBUGEN=1). ""Power-cycle with SWD disconnected, then re-measure.");
     }
 
-    LOG_INF("Full mid-STOP service: %u cycles (~%u us @1MHz)",
-        s_last_full_wake_cycles, s_last_full_wake_cycles / 4U);
+    LOG_INF("Full mid-STOP service: %u cycles (~%u us @1MHz)",s_last_full_wake_cycles, s_last_full_wake_cycles / 4U);
     
-    LOG_INF("STOP total WFI wake count: %u",
-        (unsigned)s_wfi_wake_count);
+    LOG_INF("STOP total WFI wake count: %u", (unsigned)s_wfi_wake_count);
 
     s_wfi_wake_count = 0;
 
     pm.notifyAfterWakeup();
 
-    if (s_stop_wake_reason == StopWakeReason::WAKE_RTC ||
-        s_stop_wake_reason == StopWakeReason::WAKE_ACTIVITY) {
+    if (s_stop_wake_reason == StopWakeReason::WAKE_RTC || s_stop_wake_reason == StopWakeReason::WAKE_ACTIVITY) {
         pm.resetPmFailures();
     }
 
@@ -750,10 +681,7 @@ void StopState::exit(PowerManager& pm) {
 
     s_real_hw_sleep_active = false;
 
-    LOG_INF("Exiting PM_STATE_SUSPEND_TO_RAM -> %s (wake: %s, ~%u ms in STOP)",
-            s_transition_target_name,
-            stop_wake_reason_str(s_stop_wake_reason),
-            (unsigned)(s_elapsed_sleep_time_us / 1000U));
+    LOG_INF("Exiting PM_STATE_SUSPEND_TO_RAM -> %s (wake: %s, ~%u ms in STOP)",s_transition_target_name,stop_wake_reason_str(s_stop_wake_reason),(unsigned)(s_elapsed_sleep_time_us / 1000U));
 
     pm_policy_state_lock_put(PM_STATE_SUSPEND_TO_IDLE, PM_ALL_SUBSTATES);
 #endif

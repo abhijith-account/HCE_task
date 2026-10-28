@@ -1,17 +1,9 @@
-// Power_Hardware.cpp
-// Low-level helpers used by the power states: USB, GPIO/ADC, bus-clock gating, the clock tree,
-// background-thread suspension, and the MPS2 device-PM wrappers.
-// Declarations are in Power_Internal.h. Most of this compiles to no-ops on MPS2/QEMU.
-
 #include "Power_Internal.h"
 
 LOG_MODULE_DECLARE(PWR_SYS, LOG_LEVEL_INF);
 
 namespace pm_internal {
 
-// ============================================================================
-// USB: power down / restore (real hardware only)
-// ============================================================================
 #ifndef CONFIG_BOARD_MPS2_AN386
 
 static uint32_t s_usb_prev_gccfg = 0;
@@ -25,19 +17,15 @@ void usb_disable_hardware_and_release_pins() {
     s_usb_prev_gccfg = USB_OTG_FS->GCCFG;
     PM_USB_DEVICE->DCTL |= USB_OTG_DCTL_SDIS;    // soft-disconnect: DP pull-up off
 
-    // 0 = Transceiver powered DOWN (PWRDWN is active-high "transceiver on"). MUST be 0 in STOP.
-    // Clear GCCFG and GOTGCTL VBUS overrides BEFORE stopping PHY/HCLK in PCGCCTL.
     USB_OTG_FS->GCCFG = 0U;
     USB_OTG_FS->GOTGCTL = 0U;
     __DSB();
 
     PM_USB_PCGCCTL |= 0x3U;                      // STOPPCLK | GATEHCLK: stop PHY + HCLK inside the core
 
-    // Force a dummy read so the bus matrix completes the write before the clock dies.
     volatile uint32_t dummy = USB_OTG_FS->GCCFG;
     (void)dummy;
 
-    // Reset the USB OTG FS block completely so no PHY/pull-up state can stay latched
     __HAL_RCC_USB_OTG_FS_FORCE_RESET();
     __DSB();
     __HAL_RCC_USB_OTG_FS_RELEASE_RESET();
@@ -66,10 +54,6 @@ void usb_restore_pins_and_reenable() {
 }
 
 #endif
-
-// ============================================================================
-// GPIO and ADC: save state and power down / restore (real hardware only)
-// ============================================================================
 #ifndef CONFIG_BOARD_MPS2_AN386
 GPIO_TypeDef* const GPIO_PORTS[8] = {GPIOA, GPIOB, GPIOC, GPIOD, GPIOE, GPIOF, GPIOG, GPIOH};
 
@@ -113,8 +97,6 @@ void gpio_save_and_set_all_analog(GpioSnapshot &snap, uint32_t &prev_ahb1enr) {
         snap.ospeedr[port] = gpio->OSPEEDR;
         snap.odr[port]     = gpio->ODR;
 
-        // Record which open-drain AF lines (I2C) read LOW right now. Must happen before the pins
-        // are switched to Analog (IDR reads 0 in Analog mode).
         {
             uint32_t od_af = 0U;
             for (int pin = 0; pin < 16; ++pin) {
@@ -132,9 +114,6 @@ void gpio_save_and_set_all_analog(GpioSnapshot &snap, uint32_t &prev_ahb1enr) {
         uint32_t new_pupdr = 0U;
 
         for (int pin = 0; pin < 16; ++pin) {
-            // Debug port is off in STOP: SWDIO/SWCLK/JTDI (PA13/14/15) and SWO/NJTRST (PB3/PB4)
-            // reset to AF with the probe's pulls. Holding them as push-pull outputs only drives
-            // against whatever the probe/header presents, so park them Analog, no pull.
             if ((port == 0 && (pin == 13 || pin == 14 || pin == 15)) ||
                 (port == 1 && (pin == 3 || pin == 4))) {
                 new_moder |= (0x3U << (pin * 2));
@@ -170,8 +149,6 @@ void gpio_save_and_set_all_analog(GpioSnapshot &snap, uint32_t &prev_ahb1enr) {
                 const bool drive_it   = (STOP_AF_DRIVE_PIN_MASK[port] & (1U << pin)) != 0U;
 
                 if (open_drain || drive_it) {
-                    // I2C-style open-drain lines (release high, external pull-up) and pins the
-                    // board explicitly needs actively driven: hold the sampled level as an output.
                     if (current_level) {
                         gpio->ODR |= (1U << pin);
                     } else {
@@ -181,12 +158,6 @@ void gpio_save_and_set_all_analog(GpioSnapshot &snap, uint32_t &prev_ahb1enr) {
                     new_moder |=  (0x1U << (pin * 2));
                     new_pupdr |= (held_pin_pull(gpio, pin, current_level, snap.pupdr[port]) << (pin * 2));
                 } else {
-                    // Push-pull AF pin (UART TX/RX, SPI, ...). IDR on an AF pin is the PIN level,
-                    // which for an RX/MISO-type pin is the EXTERNAL device's output. Turning that
-                    // into a push-pull output fights the device (mA-class contention) the moment it
-                    // changes state. Use a plain input with a weak pull toward the current level:
-                    // the external CMOS input still sees the same idle level, contention is bounded
-                    // to the ~40k pull, and nothing floats.
                     new_moder &= ~(0x3U << (pin * 2));                         // 00 = input
                     new_pupdr |= ((current_level ? 0x1U : 0x2U) << (pin * 2)); // 01 up / 10 down
                 }
@@ -294,17 +265,11 @@ void adc_restore_after_wake(const AdcSnapshot &snap) {
     __DSB();
 }
 
-// ============================================================================
-// PWR block: STOP on the main regulator (normal mode, flash stays on in Stop, ~234 uA typ,
-// DS10693 Table 27), PVD off, backup regulator off, and SYSCFG CMP_PD off.
-// ============================================================================
 static uint32_t s_prev_pwr_csr = 0;
 static uint32_t s_prev_syscfg_cmpcr = 0;
 
 uint32_t s_stop_dbgmcu_after_write = 0;   // DBGMCU_CR read back right after stop_dbg_disable() wrote it
 
-// PWR_CR bits that must be 0 for "main regulator, normal mode, flash on in Stop": Standby select, low-power
-// regulator, flash power-down and every low-voltage / under-drive option (the latter vary by device header).
 static constexpr uint32_t STOP_REG_BITS = PWR_CR_PDDS | PWR_CR_LPDS | PWR_CR_FPDS
 #ifdef PWR_CR_LPUDS
     | PWR_CR_LPUDS
@@ -357,23 +322,17 @@ void stop_configure_power(uint32_t &prev_pwr_cr) {
     apply_stop_pwr_bits();
 }
 
-// Called immediately before every WFI so nothing done between enter() and the WFI
-// (or after a mid-STOP service wake) can leave the main regulator / flash powered.
 void stop_reassert_power() {
     __HAL_RCC_PWR_CLK_ENABLE();
     __DSB();
     apply_stop_pwr_bits();
 }
 
-// Debug block off in Sleep/Stop/Standby (all three DBGMCU low-power bits cleared). DBGMCU_CR is read back
-// straight after the write and stored in s_stop_dbgmcu_after_write so the wake log can tell "write did not
-// take effect" from "a probe set it again afterwards".
 void stop_dbg_disable() {
     HAL_DBGMCU_DisableDBGSleepMode();
     HAL_DBGMCU_DisableDBGStopMode();
     HAL_DBGMCU_DisableDBGStandbyMode();
-    // Write + read back, retry a few times: a probe write landing between our write and the WFI would
-    // otherwise be lost. Also drops the trace-pin enables.
+
     for (int attempt = 0; attempt < 8; ++attempt) {
         DBGMCU->CR = 0U;
         __DSB();
@@ -388,8 +347,6 @@ void stop_dbg_disable() {
     s_stop_dbgmcu_after_write = DBGMCU->CR;
 }
 
-// STOP entry, executes the WFI with PRIMASK=1 (PM0214 Section 2.5.2) so the CPU wakes inline and
-// captures PWR->CSR and SCB->ICSR before vectoring into the RTC ISR.
 HAL_StatusTypeDef stop_enter_wfi(uint32_t &out_pwr_csr_on_wake, uint32_t &out_icsr_on_wake) {
     __HAL_RCC_PWR_CLK_ENABLE();
     __DSB();
@@ -399,18 +356,13 @@ HAL_StatusTypeDef stop_enter_wfi(uint32_t &out_pwr_csr_on_wake, uint32_t &out_ic
     SET_BIT(PWR->CR, PWR_CR_CWUF | PWR_CR_CSBF);   // clear wake-up / standby flags
     __DSB();
 
-    // Mask interrupts (PRIMASK=1) per PM0214 Section 2.5.2 so the pending RTC Alarm IRQ
-    // wakes the processor from WFI without jumping into the ISR before we sample PWR->CSR.
     uint32_t primask = __get_PRIMASK();
     __disable_irq();
 
     SET_BIT(SCB->SCR, SCB_SCR_SLEEPDEEP_Msk);
     __DSB();
     __ISB();
-    // Last write before sleeping: DBGMCU_CR.DBG_STOP/DBG_SLEEP/DBG_STANDBY keep HCLK/FCLK running in
-    // "STOP" (~0.9 mA instead of ~0.2 mA). Done here, with IRQs masked, so nothing in the firmware can
-    // set it again between this line and the WFI. (A debugger with DHCSR.C_DEBUGEN=1 still wins: that
-    // bit can only be cleared by the probe or a power-on reset.)
+
     stop_dbg_disable();
     __ISB();
     __WFI();
@@ -488,9 +440,6 @@ void stop_restore_power(uint32_t prev_pwr_cr) {
 }
 #endif
 
-// ============================================================================
-// Peripheral bus-clock gating
-// ============================================================================
 [[maybe_unused]] void periph_clocks_save_and_gate(PeripheralClockSnapshot &snap, uint32_t apb1_keep_mask, uint32_t apb2_keep_mask) {
 #ifndef CONFIG_BOARD_MPS2_AN386
     snap.apb1enr   = RCC->APB1ENR;
@@ -516,9 +465,6 @@ void stop_restore_power(uint32_t prev_pwr_cr) {
 #endif
 }
 
-// ============================================================================
-// System clock tree: save, downscale for idle, restore
-// ============================================================================
 void clock_save_state(ClockSnapshot &snap) {
 #ifndef CONFIG_BOARD_MPS2_AN386
     __HAL_RCC_PWR_CLK_ENABLE();
@@ -541,8 +487,7 @@ void clock_downscale_for_idle(ClockSnapshot &snap, [[maybe_unused]] uint32_t hcl
     clock_save_state(snap);
 
 #ifndef CONFIG_BOARD_MPS2_AN386
-    const uint32_t hpre = (hclk_div == 1U) ? RCC_CFGR_HPRE_DIV1 :
-                          (hclk_div == 2U) ? RCC_CFGR_HPRE_DIV2 : RCC_CFGR_HPRE_DIV4;
+    const uint32_t hpre = (hclk_div == 1U) ? RCC_CFGR_HPRE_DIV1 : (hclk_div == 2U) ? RCC_CFGR_HPRE_DIV2 : RCC_CFGR_HPRE_DIV4;
     [[maybe_unused]] const uint32_t hclk_hz = 16000000U / ((hclk_div == 1U || hclk_div == 2U) ? hclk_div : 4U);
     __HAL_RCC_HSI_ENABLE();
     uint32_t timeout = 100000;
@@ -556,8 +501,6 @@ void clock_downscale_for_idle(ClockSnapshot &snap, [[maybe_unused]] uint32_t hcl
     timeout = 100000;
     while (__HAL_RCC_GET_SYSCLK_SOURCE() != RCC_SYSCLKSOURCE_STATUS_HSI && --timeout) {}
 
-    // Recalculate SysTick->LOAD for the new HCLK (16 MHz HSI / hclk_div)
-    // so Zephyr's k_uptime_get_32() ticks at true wall-clock speed during IdleState
 #ifdef CONFIG_SYS_CLOCK_TICKS_PER_SEC
     uint32_t new_load = (hclk_hz / CONFIG_SYS_CLOCK_TICKS_PER_SEC) - 1U;
     if (new_load > 0U) {
@@ -577,11 +520,7 @@ void clock_downscale_for_idle(ClockSnapshot &snap, [[maybe_unused]] uint32_t hcl
         while (__HAL_RCC_GET_FLAG(RCC_FLAG_PLLRDY) && --pll_off_timeout) {}
     }
 #ifdef PWR_CR_ODEN
-    // Over-drive is only valid with the PLL at full speed. Leave it cleanly now (SYSCLK = HSI):
-    // reset ODEN + ODSWEN together and wait for ODRDY/ODSWRDY to drop (RM0390 PWR, "Exiting from
-    // Over-drive mode", sequence 1). Otherwise the regulator stays in Over-drive for the whole Idle state.
-    // (Hardware also clears ODEN/ODSWEN on every Stop entry, so the snapshot taken above is what
-    // clock_restore_from_idle() uses to switch it back on.)
+
     if ((PWR->CR & (PWR_CR_ODEN | PWR_CR_ODSWEN)) != 0U) {
         CLEAR_BIT(PWR->CR, PWR_CR_ODEN | PWR_CR_ODSWEN);
         uint32_t od_off_timeout = 100000;
@@ -612,9 +551,7 @@ bool clock_restore_from_idle(const ClockSnapshot &snap)
     __DSB();
 
     MODIFY_REG(PWR->CR, PWR_CR_VOS, snap.pwr_vos);
-    MODIFY_REG(RCC->CFGR,
-               RCC_CFGR_HPRE | RCC_CFGR_PPRE1 | RCC_CFGR_PPRE2,
-               snap.cfgr & (RCC_CFGR_HPRE | RCC_CFGR_PPRE1 | RCC_CFGR_PPRE2));
+    MODIFY_REG(RCC->CFGR,RCC_CFGR_HPRE | RCC_CFGR_PPRE1 | RCC_CFGR_PPRE2, snap.cfgr & (RCC_CFGR_HPRE | RCC_CFGR_PPRE1 | RCC_CFGR_PPRE2));
     FLASH->ACR = snap.flash_acr;
 
     if (snap.cr & RCC_CR_HSEBYP) {
@@ -653,10 +590,7 @@ bool clock_restore_from_idle(const ClockSnapshot &snap)
         }
 
 #ifdef PWR_CR_ODEN
-        // The system was running in Over-drive before the downscale (e.g. 180 MHz). Stop entry and
-        // clock_downscale_for_idle() both drop it, and nothing else turns it back on, so the PLL would
-        // otherwise be switched in above the non-Over-drive limit. RM0390: set ODEN, wait ODRDY,
-        // set ODSWEN, wait ODSWRDY, then switch SYSCLK to the PLL (SYSCLK is still HSI here).
+
         if ((snap.pwr_od & PWR_CR_ODEN) != 0U) {
             SET_BIT(PWR->CR, PWR_CR_ODEN);
             uint32_t od_timeout = 1000000;
@@ -713,9 +647,6 @@ bool clock_restore_from_idle(const ClockSnapshot &snap)
 #endif
 }
 
-// ============================================================================
-// Background thread suspension around sleep
-// ============================================================================
 void suspend_background_threads() {
     k_thread_suspend(processor_tid);
     k_thread_suspend(producer_tid);
@@ -746,9 +677,6 @@ void resume_background_threads() {
 
 using namespace pm_internal;
 
-// ============================================================================
-// USB reconnect after wake (delayable work item)
-// ============================================================================
 namespace {
 void usb_reconnect_work_handler(struct k_work *work) {
     ARG_UNUSED(work);
@@ -769,9 +697,6 @@ void usb_reconnect_work_handler(struct k_work *work) {
 
 K_WORK_DELAYABLE_DEFINE(usb_reconnect_work, usb_reconnect_work_handler);
 
-// ============================================================================
-// MPS2/QEMU only: device PM calls that tolerate missing drivers
-// ============================================================================
 #ifdef CONFIG_BOARD_MPS2_AN386
 
 bool pm_device_suspend_tolerant(const struct device* dev, const char* name) {
