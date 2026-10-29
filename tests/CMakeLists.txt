@@ -18,7 +18,40 @@ include_directories(
 file(GLOB PMS_SRCS      ${CMAKE_CURRENT_SOURCE_DIR}/../src/Power_Management_System/*.cpp)
 file(GLOB BATT_SRCS     ${CMAKE_CURRENT_SOURCE_DIR}/../src/Smart_Battery_System/*.cpp)
 file(GLOB RTOS_CMD_SRCS ${CMAKE_CURRENT_SOURCE_DIR}/../src/RTOS_Command_based_thread_system/*.cpp)
-
+# Split gtest sources. List order = link order = order of tests across files, so keep the mocks file first.
+set(PM_TEST_SRCS
+    power/test_power_mocks.cpp
+    power/test_Power_Management_System.cpp
+    power/test_Power_ActiveIdleStates.cpp
+    power/test_Power_StopState.cpp
+    power/test_Power_Integration.cpp
+    power/test_Power_Hardware.cpp
+    power/test_Power_Singleton.cpp
+)
+set(BATT_TEST_SRCS
+    battery/test_battery_mocks.cpp
+    battery/test_Smart_Battery_System.cpp
+    battery/test_Smart_Battery_Fetch.cpp
+    battery/test_Smart_Battery_Poll.cpp
+    battery/test_Smart_Battery_Soc.cpp
+    battery/test_Smart_Battery_FSM.cpp
+    battery/test_Sensor_Drivers.cpp
+    battery/test_Bms_Comm_Thread.cpp
+    battery/test_Battery_Monitor_Thread.cpp
+    battery/test_Battery_Runtime.cpp
+)
+set(RTOS_CMD_TEST_SRCS
+    rtos/test_rtos_mocks.cpp
+    rtos/test_Command_Core.cpp
+    rtos/test_System_Objects.cpp
+    rtos/test_Sensor_Read_Cmd.cpp
+    rtos/test_Compute_Cmd.cpp
+    rtos/test_Sensor_Math.cpp
+    rtos/test_Print_Commands.cpp
+    rtos/test_Producer_Thread.cpp
+    rtos/test_Consumer_Threads.cpp
+    rtos/test_Thread_Trace.cpp
+)
 set(MOCK_DIR ${CMAKE_BINARY_DIR}/zephyr_mocks)
 file(MAKE_DIRECTORY ${MOCK_DIR}/zephyr/pm)
 file(MAKE_DIRECTORY ${MOCK_DIR}/zephyr/drivers)
@@ -146,7 +179,7 @@ file(WRITE ${MOCK_DIR}/zephyr/spinlock.h "#pragma once\nstruct k_spinlock {};\nt
 file(WRITE ${CMAKE_BINARY_DIR}/mock_globals.cpp "#include <zephyr/device.h>\n#include <stdint.h>\n#include <string.h>\n#include <zephyr/kernel.h>\n#include <zephyr/pm/pm.h>\n#include <zephyr/pm/device.h>\n#include <zephyr/drivers/watchdog.h>\n#include <zephyr/drivers/counter.h>\n#include <zephyr/drivers/uart.h>\n#include <zephyr/drivers/i2c.h>\n#include <zephyr/storage/flash_map.h>\n#include <zephyr/fs/fcb.h>\n#include <zephyr/sys/atomic.h>\n#include <zephyr/drivers/rtc.h>\n\n__attribute__((weak)) bool run_thread_once = false;\n\n__attribute__((weak)) const device* i2c_hardware = nullptr;\n\n__attribute__((weak)) bool atomic_cas(atomic_t *target, atomic_val_t old_value, atomic_val_t new_value) { return target->compare_exchange_strong(old_value, new_value); }\n\nuint32_t virtual_uptime = 0;\n\nvoid (*g_sim_timer_cb)(struct k_timer*) = nullptr;\n\nint g_mutex_lock_force_errno = 0;\nint g_mutex_lock_call_counter = 0;\nint g_mutex_lock_fail_on_call_n = 0;\nvoid* g_mutex_lock_target_ptr = nullptr;\nint g_mutex_lock_target_call_counter = 0;\nint g_mutex_lock_target_fail_on_call_n = 0;\n\nbool g_adc_ready_mock = true;\n\nint g_adc_read_force_errno = 0;\n\n// Fault-injection controls for host-side I2C tests. Default state matches the\n// original always-succeed mock behavior exactly.\nint g_i2c_force_errno = 0;            // 0 = success; set to a negative errno (e.g. -ETIMEDOUT, -EBUSY, -EAGAIN, -ENODEV) to force EVERY I2C call to fail\nbool g_device_ready_override = true;  // controls device_is_ready() return value\n\n// Per-call-index fault injection, for covering long straight-line chains of\n// sequential I2C reads (e.g. calibration loaders) where each individual read\n// needs its own isolated failure to exercise every branch. g_i2c_call_counter\n// increments on every mocked I2C transaction (read byte / burst read / write\n// byte); when it reaches g_i2c_fail_on_call_n, that single call fails with\n// g_i2c_fail_on_call_errno and every other call around it still succeeds.\n// Disabled by default (0), and independent of g_i2c_force_errno -- g_i2c_force_errno\n// still takes priority (blanket failure) if both are set.\nint g_i2c_call_counter = 0;\nint g_i2c_fail_on_call_n = 0;\nint g_adc_sequence_init_dt_errno = 0;\nint g_i2c_fail_on_call_errno = -5;    // -EIO by default\nextern __attribute__((weak)) const k_tid_t processor_tid = (k_tid_t)0x10;\nextern __attribute__((weak)) const k_tid_t producer_tid  = (k_tid_t)0x11;\nextern __attribute__((weak)) const k_tid_t logger_tid    = (k_tid_t)0x12;\nextern __attribute__((weak)) const k_tid_t battery_tid   = (k_tid_t)0x13;\nextern __attribute__((weak)) const k_tid_t shell_tid     = (k_tid_t)0x14;\nextern __attribute__((weak)) const k_tid_t bms_comm_tid  = (k_tid_t)0x15;\nextern __attribute__((weak)) const k_tid_t hr_prod_tid   = (k_tid_t)0x16;\nextern __attribute__((weak)) const k_tid_t disp_cons_tid = (k_tid_t)0x17;\nextern  __attribute__((weak)) const k_tid_t mem_mon_tid   = (k_tid_t)0x18;\nextern __attribute__((weak)) const k_tid_t trace_tid   = (k_tid_t)0x19;\n__attribute__((weak)) atomic_t g_producer_alive = ATOMIC_INIT(1);\n__attribute__((weak)) atomic_t g_processor_alive = ATOMIC_INIT(1);\n__attribute__((weak)) atomic_t g_logger_alive = ATOMIC_INIT(1);\n__attribute__((weak)) atomic_t g_hr_prod_alive = ATOMIC_INIT(1);\n__attribute__((weak)) atomic_t g_disp_cons_alive = ATOMIC_INIT(1);\n__attribute__((weak)) atomic_t g_bms_comm_alive = ATOMIC_INIT(1);\n__attribute__((weak)) atomic_t g_batt_mon_alive = ATOMIC_INIT(1);\n__attribute__((weak)) atomic_t g_mem_mon_alive = ATOMIC_INIT(1);\n__attribute__((weak)) atomic_t g_shell_alive = ATOMIC_INIT(1);\nextern \"C\" {\n__attribute__((weak)) bool k_is_in_isr(void) { return false; }\n__attribute__((weak)) int k_work_submit(struct k_work *work) { return 0; }\n__attribute__((weak)) bool device_is_ready(const struct device *dev) { return g_device_ready_override; }\n__attribute__((weak)) int wdt_install_timeout(const struct device *dev, const struct wdt_timeout_cfg *cfg) { return 0; }\n__attribute__((weak)) int wdt_setup(const struct device *dev, uint8_t options) { return 0; }\n__attribute__((weak)) int wdt_feed(const struct device *dev, int channel_id) { return 0; }\n__attribute__((weak)) void pm_policy_state_lock_get(uint8_t state, uint8_t substate_id) {}\n__attribute__((weak)) void pm_policy_state_lock_put(uint8_t state, uint8_t substate_id) {}\n__attribute__((weak)) int pm_device_action_run(const struct device *dev, enum pm_device_action action) { return 0; }\n__attribute__((weak)) uint32_t counter_us_to_ticks(const struct device *dev, uint64_t us) { return 0; }\n__attribute__((weak)) int counter_set_channel_alarm(const struct device *dev, uint8_t chan_id, const struct counter_alarm_cfg *alarm_cfg) { return 0; }\n__attribute__((weak)) int counter_start(const struct device *dev) { return 0; }\n__attribute__((weak)) int counter_cancel_channel_alarm(const struct device *dev, uint8_t chan_id) { return 0; }\n__attribute__((weak)) int k_thread_stack_space_get(const void *thread, size_t *unused_ptr) { if (unused_ptr) { *unused_ptr = 0; } return 0; }\n__attribute__((weak)) int k_work_cancel_delayable(struct k_work_delayable *dwork) { return 0; }\n__attribute__((weak)) void k_work_init_delayable(struct k_work_delayable *dwork, void (*callback)(struct k_work *)) { dwork->work.handler = callback; }\n__attribute__((weak)) int k_work_schedule(struct k_work_delayable *dwork, k_timeout_t delay) { return 0; }\n__attribute__((weak)) k_tid_t k_current_get(void) { return 0; }\n__attribute__((weak)) int uart_irq_update(const struct device *dev) { return 1; }\n__attribute__((weak)) int uart_err_check(const struct device *dev) { return 0; }\n__attribute__((weak)) int uart_irq_tx_ready(const struct device *dev) { return 1; }\n__attribute__((weak)) int uart_fifo_fill(const struct device *dev, const uint8_t *tx_data, const int size) { return size; }\n__attribute__((weak)) void uart_irq_tx_enable(const struct device *dev) {}\n__attribute__((weak)) void uart_irq_tx_disable(const struct device *dev) {}\n__attribute__((weak)) void uart_irq_rx_disable(const struct device *dev) {}\n__attribute__((weak)) int i2c_read(const struct device *dev, uint8_t *buf, uint32_t num_bytes, uint16_t addr) { return 0; }\n__attribute__((weak)) int i2c_write(const struct device *dev, const uint8_t *buf, uint32_t num_bytes, uint16_t addr) { return 0; }\n__attribute__((weak)) int i2c_write_read(const struct device *dev, uint16_t addr, const void *write_buf, size_t num_write, void *read_buf, size_t num_read) { return 0; }\n__attribute__((weak)) int i2c_reg_read_byte(const struct device *dev, uint16_t dev_addr, uint8_t reg_addr, uint8_t *value) { ++g_i2c_call_counter; if (g_i2c_force_errno != 0) { return g_i2c_force_errno; } if (g_i2c_fail_on_call_n != 0 && g_i2c_call_counter == g_i2c_fail_on_call_n) { return g_i2c_fail_on_call_errno; } if (value) { *value = 0; } return 0; }\n__attribute__((weak)) int i2c_reg_write_byte(const struct device *dev, uint16_t dev_addr, uint8_t reg_addr, uint8_t value) { ++g_i2c_call_counter; if (g_i2c_force_errno != 0) { return g_i2c_force_errno; } if (g_i2c_fail_on_call_n != 0 && g_i2c_call_counter == g_i2c_fail_on_call_n) { return g_i2c_fail_on_call_errno; } return 0; }\n__attribute__((weak)) int i2c_burst_read(const struct device *dev, uint16_t dev_addr, uint8_t start_addr, uint8_t *buf, uint32_t num_bytes) { ++g_i2c_call_counter; if (g_i2c_force_errno != 0) { return g_i2c_force_errno; } if (g_i2c_fail_on_call_n != 0 && g_i2c_call_counter == g_i2c_fail_on_call_n) { return g_i2c_fail_on_call_errno; } if (buf && num_bytes > 0) { memset(buf, 0, num_bytes); } return 0; }\n__attribute__((weak)) int k_sem_init(struct k_sem *sem, unsigned int initial, unsigned int limit) { sem->count = initial; sem->limit = limit; return 0; }\n__attribute__((weak)) void k_sem_give(struct k_sem *sem) { if (sem->count < sem->limit) { sem->count++; } }\n__attribute__((weak)) int k_sem_take(struct k_sem *sem, k_timeout_t timeout) { if (sem->count > 0) { sem->count--; return 0; } return -EBUSY; }\n__attribute__((weak)) int adc_read(const struct device *dev, const struct adc_sequence *sequence) { return g_adc_read_force_errno; }\n__attribute__((weak)) int adc_raw_to_millivolts_dt(const struct adc_dt_spec *spec, int32_t *val) { if (val) *val = 2500; return 0; }\n__attribute__((weak)) int fcb_init(int f_area_id, struct fcb *fcb) { return 0; }\n__attribute__((weak)) int fcb_getnext(struct fcb *fcb, struct fcb_entry *loc) { return -1; }\n__attribute__((weak)) int fcb_append(struct fcb *fcb, uint16_t len, struct fcb_entry *loc) { return 0; }\n__attribute__((weak)) int fcb_append_finish(struct fcb *fcb, struct fcb_entry *append_loc) { return 0; }\n__attribute__((weak)) int flash_area_open(uint8_t id, const struct flash_area **fa) { static struct flash_area dummy= {0, 4096}; *fa = &dummy; return 0; }\n__attribute__((weak)) int rtc_set_time(const struct device *dev, const struct rtc_time *timeptr) { return 0; }\n__attribute__((weak)) void flash_area_close(const struct flash_area *fa) {}\n__attribute__((weak)) int flash_area_read(const struct flash_area *fa, off_t off, void *dst, size_t len) { return 0; }\n__attribute__((weak)) int flash_area_write(const struct flash_area *fa, off_t off, const void *src, size_t len) { return 0; }\n__attribute__((weak)) int rtc_get_time(const struct device *dev, struct rtc_time *timeptr) { return 0; }\n__attribute__((weak)) int rtc_alarm_set_time(const struct device *dev, uint16_t id, uint16_t mask, const struct rtc_time *timeptr) { return 0; }\n__attribute__((weak)) int rtc_alarm_set_callback(const struct device *dev, uint16_t id, void (*callback)(const struct device *, uint16_t, void *), void *user_data) { return 0; }\n__attribute__((weak)) int flash_area_erase(const struct flash_area *fa, off_t off, size_t len) { return 0; }\n__attribute__((weak)) int flash_area_get_sectors(int fa_id, uint32_t *count, struct flash_sector *sectors) { *count = 2; return 0; }\n__attribute__((weak)) int fcb_rotate(struct fcb *fcb) { return 0; }\n}\n")
 # 4. Define the executable
 add_executable(run_pm_tests 
-    test_power_management.cpp 
+    ${PM_TEST_SRCS} 
     ${PMS_SRCS}
     ../src/Device_State_Machine+Watchdog.cpp
     ${CMAKE_BINARY_DIR}/mock_globals.cpp
@@ -164,7 +197,7 @@ add_executable(run_usb_shell_tests
 )
 
 add_executable(run_battery_tests
-    test_battery_fsm.cpp
+    ${BATT_TEST_SRCS}
     ${BATT_SRCS}
     ../src/Fault_Tolerant_I2C_Communication_Layer.cpp
     ../src/Device_State_Machine+Watchdog.cpp
@@ -213,7 +246,7 @@ add_executable(run_sync_tests
 )
 
 add_executable(run_command_tests
-    test_rtos_commands.cpp
+    ${RTOS_CMD_TEST_SRCS}
     ${RTOS_CMD_SRCS}
     ../src/Device_State_Machine+Watchdog.cpp
     ${PMS_SRCS}
