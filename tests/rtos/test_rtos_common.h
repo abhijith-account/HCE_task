@@ -88,6 +88,7 @@ inline void drainAndDestroy(k_msgq* q) {
 class RTOSCommandsTestSuite : public ::testing::Test {
 protected:
     void SetUp() override {
+    sys_context = DeviceContext();
     drainAndDestroy(PROCESSOR_Q);
     drainAndDestroy(LOGGER_Q);
     g_queueStats = QueueStats{};

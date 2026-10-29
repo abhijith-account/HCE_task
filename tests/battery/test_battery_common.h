@@ -59,12 +59,14 @@ void custom_watchdog_hook(void);
 // ---- production entry points exercised directly by the tests (Battery_Runtime.cpp) ----
 extern void bms_comm_thread(void);
 extern void battery_monitor_thread(void);
+extern void resetI2CCacheForTests();
 
 class SmartBatteryTestSuite : public ::testing::Test {
 protected:
     SbsBattery battery{&i2c_manager, &sys_context};
 
-    void SetUp() override {
+    void SetUp() override {   
+        resetI2CCacheForTests();
         sys_context = DeviceContext();
         sys_context.requestTransition(SystemState::RUNNING);
 
