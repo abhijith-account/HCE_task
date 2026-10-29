@@ -8,7 +8,10 @@ TEST_F(SmartBatteryTestSuite, BatteryMonitorThread_SkipsProcessWhileSleeping) {
     extern SbsBattery* smart_battery;
     auto backup = smart_battery;
     smart_battery = &battery;
-
+    
+    test_iterations_remaining = 0;      // <-- add
+    bms_comm_thread();  
+    
     PowerManager::getInstance().notifyBeforeSleep();
     
     std::thread waker([]() {
@@ -174,6 +177,9 @@ TEST_F(SmartBatteryTestSuite, BatteryMonitorThread_SleepingButCharging) {
     extern SbsBattery* smart_battery;
     auto backup = smart_battery;
     smart_battery = &battery;
+    
+    test_iterations_remaining = 0;      // <-- add
+    bms_comm_thread();  
 
     PowerManager::getInstance().notifyBeforeSleep();
     battery.current_state.store(BatteryFSM::CHARGING); 

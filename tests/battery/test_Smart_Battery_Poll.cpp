@@ -353,3 +353,20 @@ TEST_F(SmartBatteryTestSuite, PollHardware_CurrentOutOfRange_ValidationError) {
         EXPECT_EQ(battery.cache.last_error, CommFault::VALIDATION_ERROR) << "raw current 0x" << std::hex << raw;
     }
 }
+
+TEST_F(SmartBatteryTestSuite, PollHardware_ThermistorFailure_PublishesThermistorFault) {
+    extern void resetI2CCacheForTests();
+    resetI2CCacheForTests();             // no stale last-known-good fallback: the I2C reads succeed on their own
+
+    g_i2c_mock_v_val = 10000;            // healthy 12500 mV pack
+    g_i2c_mock_i_val = 0;
+    g_adc_ready_mock = false;            // Thermistor::readCelsius() fails on every attempt
+
+    battery.pollHardwareAndUpdateCache();
+
+    EXPECT_FALSE(battery.cache.valid);
+    EXPECT_EQ(battery.cache.last_error, CommFault::THERMISTOR_FAULT);
+    EXPECT_EQ(battery.getStats().thermistor_faults, 1U);
+    EXPECT_EQ(battery.getStats().retries, 4U);            // MAX_RETRIES (3) + 1 attempts, one on_retry per failed attempt
+    EXPECT_EQ(battery.getStats().successful_publishes, 0U);
+}
