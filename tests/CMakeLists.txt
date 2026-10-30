@@ -52,7 +52,7 @@ set(RTOS_CMD_TEST_SRCS
     rtos/test_Consumer_Threads.cpp
     rtos/test_Thread_Trace.cpp
 )
-# Zephyr stubs are checked into the repo (tests/mocks/), so a fresh checkout (CI) has them.
+
 set(MOCK_DIR ${CMAKE_CURRENT_SOURCE_DIR}/mocks/include)
 set(MOCK_GLOBALS_SRC ${CMAKE_CURRENT_SOURCE_DIR}/mocks/mock_globals.cpp)
 
