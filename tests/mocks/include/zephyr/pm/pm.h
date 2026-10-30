@@ -1,0 +1,4 @@
+#pragma once
+#define PM_STATE_SUSPEND_TO_RAM 1
+#define PM_STATE_SUSPEND_TO_IDLE 2
+#define PM_ALL_SUBSTATES 0
