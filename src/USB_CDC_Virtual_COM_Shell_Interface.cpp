@@ -368,9 +368,7 @@ void UsbShell::dispatchCommand(std::string_view cmd) {
 }
 
 UsbShell::StatusSnapshot UsbShell::collectStatus() const {
-    static_assert(InfusionDeviceConfig::MaxSlot - InfusionDeviceConfig::MinSlot + 1
-                      <= StatusSnapshot::MaxTrackedSlots,
-                  "device slot range exceeds StatusSnapshot::MaxTrackedSlots");
+    static_assert(InfusionDeviceConfig::MaxSlot - InfusionDeviceConfig::MinSlot + 1<= StatusSnapshot::MaxTrackedSlots,"device slot range exceeds StatusSnapshot::MaxTrackedSlots");
     StatusSnapshot snap{};
     snap.state_val = static_cast<int>(sys_ctx->getState());
     const auto soc_res = battery->getStateOfCharge();
@@ -392,8 +390,7 @@ UsbShell::StatusSnapshot UsbShell::collectStatus() const {
 }
 
 std::size_t UsbShell::formatStatus(const StatusSnapshot& snap, StatusBuffer& out_buf) {
-    int offset = SNPRINTF(out_buf.data(), out_buf.size(),
-        "{\"sys_state\":%d,\"battery_soc\":%u,\"devices\":[", snap.state_val, snap.battery_soc);
+    int offset = SNPRINTF(out_buf.data(), out_buf.size(),"{\"sys_state\":%d,\"battery_soc\":%u,\"devices\":[", snap.state_val, snap.battery_soc);
     if (offset < 0) {
         return 0;
     }
@@ -408,9 +405,7 @@ std::size_t UsbShell::formatStatus(const StatusSnapshot& snap, StatusBuffer& out
         }
         const auto& slot = snap.slots[i];
         
-        const int written = SNPRINTF(out_buf.data() + offset, out_buf.size() - offset,
-            "%s{\"device_id\":%u,\"rate\":%u,\"alarm_threshold\":%u}",
-            (i == 0) ? "" : ",", slot.device_id, slot.rate, slot.alarm_threshold);
+        const int written = SNPRINTF(out_buf.data() + offset, out_buf.size() - offset,"%s{\"device_id\":%u,\"rate\":%u,\"alarm_threshold\":%u}",(i == 0) ? "" : ",", slot.device_id, slot.rate, slot.alarm_threshold);
             
         if (written <= 0 || static_cast<std::size_t>(written) >= out_buf.size() - offset) {
             LOG_WRN("Status JSON truncated after %u of %u device entries", i, snap.slot_count);
@@ -479,15 +474,12 @@ void UsbShell::cmdSetRate(std::string_view args) noexcept {
     const bool haveThreshold = cfg.getAlarmThreshold(slot, threshold);
     if (haveThreshold && rate > threshold) {
         std::array<char, SetRateErrMsgSize> msg;
-        transmitFormatted(msg, kThresholdFallbackMsg,
-            "Error: Rate %u exceeds alarm threshold (%u) for device %d. Please reset the rate.\r\n",
-            rate, threshold, device_id_in);
+        transmitFormatted(msg, kThresholdFallbackMsg,"Error: Rate %u exceeds alarm threshold (%u) for device %d. Please reset the rate.\r\n",rate, threshold, device_id_in);
         return;
     }
     if (cfg.setInfusionRate(slot, rate)) {
         std::array<char, SetRateMsgSize> msg;
-        transmitFormatted(msg, kSetRateSuccessFallback,
-            "Success: Device %d infusion rate set to %u%%\r\n", device_id_in, rate);
+        transmitFormatted(msg, kSetRateSuccessFallback,"Success: Device %d infusion rate set to %u%%\r\n", device_id_in, rate);
     } else {
         usb.transmit(kPersistFailMsg);
     }

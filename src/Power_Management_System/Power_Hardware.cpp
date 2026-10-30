@@ -39,7 +39,6 @@ void usb_restore_pins_and_reenable() {
     __HAL_RCC_USB_OTG_FS_CLK_ENABLE();
     __DSB();
 
-    // 1 = Transceiver Active (ON). We must re-enable it before the stack resumes.
     PM_USB_PCGCCTL &= ~0x3U;                     // ungate the core before touching it
     SET_BIT(USB_OTG_FS->GCCFG, s_usb_prev_gccfg | USB_OTG_GCCFG_PWRDWN);
 
@@ -109,26 +108,22 @@ void gpio_save_and_set_all_analog(GpioSnapshot &snap, uint32_t &prev_ahb1enr) {
             s_stop_od_low_mask[port] = static_cast<uint16_t>(od_af & ~gpio->IDR);
         }
 
-        // Default every pin on the port to Analog (11) with No Pull (00)
         uint32_t new_moder = 0xFFFFFFFFU;
         uint32_t new_pupdr = 0U;
 
         for (int pin = 0; pin < 16; ++pin) {
-            if ((port == 0 && (pin == 13 || pin == 14 || pin == 15)) ||
-                (port == 1 && (pin == 3 || pin == 4))) {
+            if ((port == 0 && (pin == 13 || pin == 14 || pin == 15)) || (port == 1 && (pin == 3 || pin == 4))) {
                 new_moder |= (0x3U << (pin * 2));
                 new_pupdr &= ~(0x3U << (pin * 2));
                 continue;
             }
 
-            // Preserve PC14/PC15 (LSE 32.768 kHz crystal pins) in Analog with no pull
             if (port == 2 && (pin == 14 || pin == 15)) {
                 new_moder |= (0x3U << (pin * 2));
                 new_pupdr &= ~(0x3U << (pin * 2));
                 continue;
             }
 
-            // Force USB pins (PA9 VBUS, PA10 ID, PA11 DM, PA12 DP) and UART2 (PA2, PA3) to Analog
             if (port == 0 && ((pin >= 9 && pin <= 12) || pin == 2 || pin == 3)) {
                 new_moder |= (0x3U << (pin * 2));
                 new_pupdr &= ~(0x3U << (pin * 2));
@@ -291,7 +286,6 @@ static constexpr uint32_t STOP_REG_BITS = PWR_CR_PDDS | PWR_CR_LPDS | PWR_CR_FPD
 static void apply_stop_pwr_bits() {
     stop_dbg_disable();
 
-    // Lowest regulator voltage scale (Scale 3: VOS = 0b01), PVD and Over-drive off, regulator bits cleared
     MODIFY_REG(PWR->CR, PWR_CR_VOS, PWR_CR_VOS_0);
     uint32_t clear_mask = STOP_REG_BITS | PWR_CR_PVDE;
 #ifdef PWR_CR_ODEN
@@ -311,10 +305,8 @@ void stop_configure_power(uint32_t &prev_pwr_cr) {
     s_prev_pwr_csr = PWR->CSR;
     s_prev_syscfg_cmpcr = SYSCFG->CMPCR;
 
-    // Power down the I/O Compensation Cell (draws ~150-200 uA if enabled)
     CLEAR_BIT(SYSCFG->CMPCR, SYSCFG_CMPCR_CMP_PD);
 
-    // Disable Backup Regulator (BRE) if it was enabled (saves ~150 uA in STOP)
     SET_BIT(PWR->CR, PWR_CR_DBP);
     __DSB();
     CLEAR_BIT(PWR->CSR, PWR_CSR_BRE);
@@ -340,7 +332,6 @@ void stop_dbg_disable() {
             break;
         }
     }
-    // TRCENA keeps the DWT/ITM/trace block clocked; nothing needs it in STOP.
     DWT->CTRL        = 0U;
     CoreDebug->DEMCR = 0U;
     __DSB();
@@ -368,7 +359,6 @@ HAL_StatusTypeDef stop_enter_wfi(uint32_t &out_pwr_csr_on_wake, uint32_t &out_ic
     __WFI();
     __ISB();
 
-    // Sample PWR->CSR and SCB->ICSR immediately upon wake
     out_pwr_csr_on_wake = PWR->CSR;
     out_icsr_on_wake    = SCB->ICSR;
 
@@ -493,9 +483,7 @@ void clock_downscale_for_idle(ClockSnapshot &snap, [[maybe_unused]] uint32_t hcl
     uint32_t timeout = 100000;
     while (!__HAL_RCC_GET_FLAG(RCC_FLAG_HSIRDY) && --timeout) {}
 
-    MODIFY_REG(RCC->CFGR,
-               RCC_CFGR_HPRE | RCC_CFGR_PPRE1 | RCC_CFGR_PPRE2,
-               hpre | RCC_CFGR_PPRE1_DIV1 | RCC_CFGR_PPRE2_DIV1);
+    MODIFY_REG(RCC->CFGR,RCC_CFGR_HPRE | RCC_CFGR_PPRE1 | RCC_CFGR_PPRE2,hpre | RCC_CFGR_PPRE1_DIV1 | RCC_CFGR_PPRE2_DIV1);
 
     __HAL_RCC_SYSCLK_CONFIG(RCC_SYSCLKSOURCE_HSI);
     timeout = 100000;
@@ -509,11 +497,9 @@ void clock_downscale_for_idle(ClockSnapshot &snap, [[maybe_unused]] uint32_t hcl
     }
 #endif
 
-    // Disable Flash prefetch, instruction cache, and data cache while downscaled/sleeping
     FLASH->ACR &= ~(FLASH_ACR_PRFTEN | FLASH_ACR_ICEN | FLASH_ACR_DCEN);
     __HAL_FLASH_SET_LATENCY(FLASH_LATENCY_0);
 
-    // VOS can only be modified while the PLL is OFF (RM0390 PWR_CR), so disable it first.
     __HAL_RCC_PLL_DISABLE();
     {
         uint32_t pll_off_timeout = 100000;
@@ -562,8 +548,7 @@ bool clock_restore_from_idle(const ClockSnapshot &snap)
         SET_BIT(RCC->CR, RCC_CR_HSEON);
 
         uint32_t timeout = 1000000;
-        while (!__HAL_RCC_GET_FLAG(RCC_FLAG_HSERDY) && --timeout) {
-        }
+        while (!__HAL_RCC_GET_FLAG(RCC_FLAG_HSERDY) && --timeout) {}
 
         if (timeout == 0) {
             return false;
@@ -574,16 +559,14 @@ bool clock_restore_from_idle(const ClockSnapshot &snap)
         __HAL_RCC_PLL_ENABLE();
 
         uint32_t timeout = 1000000;
-        while (!__HAL_RCC_GET_FLAG(RCC_FLAG_PLLRDY) && --timeout) {
-        }
+        while (!__HAL_RCC_GET_FLAG(RCC_FLAG_PLLRDY) && --timeout) {}
 
         if (timeout == 0) {
             return false;
         }
 
         uint32_t vos_timeout = 1000000;
-        while (!(PWR->CSR & PWR_CSR_VOSRDY) && --vos_timeout) {
-        }
+        while (!(PWR->CSR & PWR_CSR_VOSRDY) && --vos_timeout) {}
 
         if (vos_timeout == 0) {
             return false;
@@ -594,16 +577,14 @@ bool clock_restore_from_idle(const ClockSnapshot &snap)
         if ((snap.pwr_od & PWR_CR_ODEN) != 0U) {
             SET_BIT(PWR->CR, PWR_CR_ODEN);
             uint32_t od_timeout = 1000000;
-            while (!(PWR->CSR & PWR_CSR_ODRDY) && --od_timeout) {
-            }
+            while (!(PWR->CSR & PWR_CSR_ODRDY) && --od_timeout) {}
             if (od_timeout == 0) {
                 return false;
             }
             if ((snap.pwr_od & PWR_CR_ODSWEN) != 0U) {
                 SET_BIT(PWR->CR, PWR_CR_ODSWEN);
                 od_timeout = 1000000;
-                while (!(PWR->CSR & PWR_CSR_ODSWRDY) && --od_timeout) {
-                }
+                while (!(PWR->CSR & PWR_CSR_ODSWRDY) && --od_timeout) {}
                 if (od_timeout == 0) {
                     return false;
                 }
@@ -628,14 +609,12 @@ bool clock_restore_from_idle(const ClockSnapshot &snap)
     uint32_t expected_sws = sw << 2;
 
     uint32_t timeout2 = 1000000;
-    while (__HAL_RCC_GET_SYSCLK_SOURCE() != expected_sws && --timeout2) {
-    }
+    while (__HAL_RCC_GET_SYSCLK_SOURCE() != expected_sws && --timeout2) {}
 
     if (timeout2 == 0) {
         return false;
     }
 
-    // Restore original full-speed SysTick reload value
     if (snap.systick_load > 0U) {
         SysTick->LOAD = snap.systick_load;
         SysTick->VAL  = 0U;
