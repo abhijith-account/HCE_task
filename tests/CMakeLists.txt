@@ -52,6 +52,24 @@ set(RTOS_CMD_TEST_SRCS
     rtos/test_Consumer_Threads.cpp
     rtos/test_Thread_Trace.cpp
 )
+set(CONFIG_TEST_SRCS
+    config/test_config_mocks.cpp
+    config/test_Config_Fcb_Core.cpp
+    config/test_Config_Slots_Endurance.cpp
+    config/test_Config_Event_Logs.cpp
+)
+set(I2C_TEST_SRCS
+    i2c/test_i2c_mocks.cpp
+    i2c/test_I2C_Transactions.cpp
+    i2c/test_I2C_Recovery_Strategies.cpp
+    i2c/test_I2C_Fallback_Cache.cpp
+)
+set(USB_SHELL_TEST_SRCS
+    usb_shell/test_usb_shell_mocks.cpp
+    usb_shell/test_Usb_Cdc_Facade.cpp
+    usb_shell/test_Shell_Commands.cpp
+    usb_shell/test_Shell_Thread_Power.cpp
+)
 
 set(MOCK_DIR ${CMAKE_CURRENT_SOURCE_DIR}/mocks/include)
 set(MOCK_GLOBALS_SRC ${CMAKE_CURRENT_SOURCE_DIR}/mocks/mock_globals.cpp)
@@ -65,7 +83,7 @@ add_executable(run_pm_tests
 )
 
 add_executable(run_usb_shell_tests 
-    test_usb_shell.cpp 
+    ${USB_SHELL_TEST_SRCS}
     ../src/USB_CDC_Virtual_COM_Shell_Interface.cpp
     ${PMS_SRCS}
     ../src/Device_State_Machine+Watchdog.cpp
@@ -94,7 +112,7 @@ add_executable(run_static_memory_tests
 )
 
 add_executable(run_config_tests
-     test_config_store.cpp
+     ${CONFIG_TEST_SRCS}
      ../src/Persistent_Configuration_System.cpp
      ../src/Device_State_Machine+Watchdog.cpp
      ${PMS_SRCS}
@@ -102,7 +120,7 @@ add_executable(run_config_tests
 )
 
 add_executable(run_i2c_faults_tests
-      test_I2C_Fault_Recovery.cpp
+      ${I2C_TEST_SRCS}
       ../src/Fault_Tolerant_I2C_Communication_Layer.cpp
       ${PMS_SRCS}
       ../src/Device_State_Machine+Watchdog.cpp
