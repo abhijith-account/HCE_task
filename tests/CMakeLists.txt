@@ -18,6 +18,9 @@ include_directories(
 file(GLOB PMS_SRCS      ${CMAKE_CURRENT_SOURCE_DIR}/../src/Power_Management_System/*.cpp)
 file(GLOB BATT_SRCS     ${CMAKE_CURRENT_SOURCE_DIR}/../src/Smart_Battery_System/*.cpp)
 file(GLOB RTOS_CMD_SRCS ${CMAKE_CURRENT_SOURCE_DIR}/../src/RTOS_Command_based_thread_system/*.cpp)
+file(GLOB USB_CDC_SHELL_SRCS  ${CMAKE_CURRENT_SOURCE_DIR}/../src/USB_CDC_SHELL/*.cpp)
+file(GLOB FAULT_TOLERANT_I2C_SRCS  ${CMAKE_CURRENT_SOURCE_DIR}/../src/Fault_Tolerant_I2C/*.cpp)
+
 # Split gtest sources. List order = link order = order of tests across files, so keep the mocks file first.
 set(PM_TEST_SRCS
     power/test_power_mocks.cpp
@@ -69,6 +72,7 @@ set(USB_SHELL_TEST_SRCS
     usb_shell/test_Usb_Cdc_Facade.cpp
     usb_shell/test_Shell_Commands.cpp
     usb_shell/test_Shell_Thread_Power.cpp
+    usb_shell/test_usb_shell_common.h
 )
 
 set(MOCK_DIR ${CMAKE_CURRENT_SOURCE_DIR}/mocks/include)
@@ -84,10 +88,10 @@ add_executable(run_pm_tests
 
 add_executable(run_usb_shell_tests 
     ${USB_SHELL_TEST_SRCS}
-    ../src/USB_CDC_Virtual_COM_Shell_Interface.cpp
+    ${USB_CDC_SHELL_SRCS}
     ${PMS_SRCS}
     ../src/Device_State_Machine+Watchdog.cpp
-    ../src/Fault_Tolerant_I2C_Communication_Layer.cpp
+    ${FAULT_TOLERANT_I2C_SRCS}
     ../src/Persistent_Configuration_System.cpp
     ${BATT_SRCS}
     ${MOCK_GLOBALS_SRC}
@@ -96,7 +100,7 @@ add_executable(run_usb_shell_tests
 add_executable(run_battery_tests
     ${BATT_TEST_SRCS}
     ${BATT_SRCS}
-    ../src/Fault_Tolerant_I2C_Communication_Layer.cpp
+    ${FAULT_TOLERANT_I2C_SRCS}
     ../src/Device_State_Machine+Watchdog.cpp
     ${PMS_SRCS}
     ../src/Persistent_Configuration_System.cpp
@@ -121,7 +125,7 @@ add_executable(run_config_tests
 
 add_executable(run_i2c_faults_tests
       ${I2C_TEST_SRCS}
-      ../src/Fault_Tolerant_I2C_Communication_Layer.cpp
+      ${FAULT_TOLERANT_I2C_SRCS}
       ${PMS_SRCS}
       ../src/Device_State_Machine+Watchdog.cpp
       ${MOCK_GLOBALS_SRC}
@@ -147,7 +151,7 @@ add_executable(run_command_tests
     ${RTOS_CMD_SRCS}
     ../src/Device_State_Machine+Watchdog.cpp
     ${PMS_SRCS}
-    ../src/Fault_Tolerant_I2C_Communication_Layer.cpp
+    ${FAULT_TOLERANT_I2C_SRCS}
     ${MOCK_GLOBALS_SRC}
 )
 

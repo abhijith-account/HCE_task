@@ -1,3 +1,8 @@
+// Usb_Shell_Commands.cpp
+// UsbShell command layer: the command table, dispatchCommand() (trim, prefix/argument matching), and the handlers
+// cmdStatus / cmdSetRate / cmdLogDump / cmdReboot with collectStatus() and the JSON status formatter (formatStatus()).
+// The main loop, power gating and the thread are in Usb_Shell_Runtime.cpp; the transport is in Usb_Cdc_Facade.cpp.
+
 #include "USB_CDC_Virtual_COM_Shell_Interface.h"
 #include <zephyr/device.h>
 #include <zephyr/drivers/uart.h>
@@ -16,14 +21,8 @@
 #include "Device_State_Machine+Watchdog.h"
 #include "Power_Management_System.h" 
 
+// snprintf indirection: the host tests inject formatting failures / truncation through testable_snprintf().
 #ifdef IS_TEST_ENVIRONMENT
-    extern bool run_thread_once;
-    static inline bool evaluate_and_clear_loop() noexcept {
-        bool current = run_thread_once;
-        run_thread_once = false;
-        return current;
-    }
-    #define THREAD_LOOP_CONDITION evaluate_and_clear_loop()
     extern int mock_snprintf_call_count;
     extern int mock_snprintf_fail_on_call;
     extern int mock_snprintf_truncate_on_call;
@@ -42,37 +41,12 @@
     }
     #define SNPRINTF testable_snprintf
 #else
-    #define THREAD_LOOP_CONDITION true
     #define SNPRINTF snprintf
 #endif
 
-LOG_MODULE_REGISTER(USB_CLI, LOG_LEVEL_INF);
-
-atomic_t g_shell_alive = ATOMIC_INIT(1);
-
-bool g_usb_connected = false;
+LOG_MODULE_DECLARE(USB_CLI, LOG_LEVEL_INF);
 
 namespace {
-
-    class ShellPowerObserver final : public IPowerObserver {
-    private:
-        atomic_t is_sleeping{};
-    public:
-        ShellPowerObserver() { atomic_set(&is_sleeping, 0); }
-        void beforeSleep() override { atomic_set(&is_sleeping, 1); }
-        void afterWakeup() override { atomic_set(&is_sleeping, 0); }
-        void sleepAborted() override { atomic_set(&is_sleeping, 0); }
-        bool isSleeping() const noexcept { return atomic_get(&is_sleeping) != 0; }
-    };
-    
-    ShellPowerObserver g_shellPowerObserver;
-    atomic_t g_shellObserverRegistered = ATOMIC_INIT(0);
-
-    void ensure_shell_observer_registered() {
-        if (atomic_cas(&g_shellObserverRegistered, 0, 1)) {
-            PowerManager::getInstance().registerObserver(&g_shellPowerObserver);
-        }
-    }
 
     [[nodiscard]] bool parseIntToken(std::string_view token, int& out_value) noexcept {
         if (token.empty()) {
@@ -124,177 +98,6 @@ std::string_view test_trim(std::string_view s) noexcept {
 }
 #endif
 
-UsbCdcFacade::UsbCdcFacade() noexcept {
-    dev = DEVICE_DT_GET(DT_ALIAS(cdc_acm_uart0));
-    __ASSERT(dev != nullptr, "CDC ACM device missing from devicetree");
-}
-
-extern DeviceContext sys_context;
-UsbShell diag_shell(&sys_context, getSmartBatteryInstance());
-
-bool UsbCdcFacade::init() {
-    if (initialized) {
-        return true;
-    }
-    if (!device_is_ready(dev)) {
-        LOG_ERR("Failed to enable USB device");
-        return false;
-    }
-    const int ret = uart_irq_callback_user_data_set(dev, uartInterruptHandler, this);
-    if (ret != 0) {
-        LOG_ERR("Failed to set UART IRQ callback (err %d)", ret);
-        return false;
-    }
-    
-    initialized = true;
-    LOG_INF("USB CDC Facade Initialized");
-    return true;
-}
-
-bool UsbCdcFacade::isConnected() {
-    if (!g_usb_connected) {
-        if (dtr_ready) {
-            uart_irq_rx_disable(dev);
-            dtr_ready = false;
-        }
-        return false;
-    }
-
-    uint32_t dtr = 0;
-    int ret = uart_line_ctrl_get(dev, UART_LINE_CTRL_DTR, &dtr);
-    
-    bool terminal_connected = false;
-
-    if (ret == 0) {
-        terminal_connected = (dtr != 0);
-    } else if (ret == -ENOTSUP || ret == -ENOSYS) {
-        terminal_connected = true; 
-    }
-
-    if (terminal_connected && !dtr_ready) {
-        LOG_INF("USB Terminal Opened (DTR High)");
-        uart_irq_rx_enable(dev);
-        dtr_ready = true;
-    } else if (!terminal_connected && dtr_ready) {
-        LOG_WRN("USB Terminal Closed (DTR Low)");
-        uart_irq_rx_disable(dev);
-        dtr_ready = false;
-    }
-    
-    return dtr_ready;
-}
-
-void UsbCdcFacade::transmit(std::string_view data) noexcept {
-    if (!isConnected()) {
-        return;
-    }
-    std::size_t sent = 0;
-    for (char c : data) {
-        uart_poll_out(dev, c);
-        if (++sent % TxChunkBytes == 0) {
-            k_msleep(TxChunkGapMs);   // let the CDC TX ring buffer drain before sending more
-        }
-    }
-}
-
-void UsbCdcFacade::uartInterruptHandler(const device* dev, void* user_data) {
-    auto* self = static_cast<UsbCdcFacade*>(user_data);
-    uart_irq_update(dev);
-    if (uart_irq_rx_ready(dev)) {
-        bool discard_rest_of_burst = false;
-        uint8_t c;
-        while (uart_fifo_read(dev, &c, 1) == 1) {
-            if (c == '\b' || c == 0x7F) {
-                const std::size_t head = self->rx_head.load(std::memory_order_relaxed);
-                const std::size_t tail = self->rx_tail.load(std::memory_order_acquire);
-                
-                if (head != tail) {
-                    uart_poll_out(dev, '\b');
-                    uart_poll_out(dev, ' ');
-                    uart_poll_out(dev, '\b');
-                    
-                    self->rx_head.store((head + RX_RING_BUF_SIZE - 1) % RX_RING_BUF_SIZE, std::memory_order_release);
-                }
-                continue;
-            }
-            
-            if (c == '\r' || c == '\n') {
-                uart_poll_out(dev, '\r');
-                uart_poll_out(dev, '\n');
-            } else {
-                uart_poll_out(dev, c);
-            }
-
-            if (discard_rest_of_burst) {
-                self->dropped_bytes.fetch_add(1, std::memory_order_relaxed);
-                continue;
-            }
-            const std::size_t head = self->rx_head.load(std::memory_order_relaxed);
-            const std::size_t tail = self->rx_tail.load(std::memory_order_acquire);
-            const std::size_t next_head = (head + 1) % RX_RING_BUF_SIZE;
-            if (next_head != tail) {
-                self->rx_buffer[head] = static_cast<char>(c);
-                self->rx_head.store(next_head, std::memory_order_release);
-
-                if (self->overflow_logged.exchange(false, std::memory_order_relaxed)) {
-                    self->dropped_bytes.store(0, std::memory_order_relaxed);
-                }
-            } else {
-                const std::size_t buffered = (head + RX_RING_BUF_SIZE - tail) % RX_RING_BUF_SIZE;
-                self->rx_tail.store(head, std::memory_order_release);
-                self->dropped_bytes.fetch_add(buffered + 1, std::memory_order_relaxed);
-                self->overflow_count.fetch_add(1, std::memory_order_relaxed);
-                discard_rest_of_burst = true;
-                if (!self->overflow_logged.exchange(true, std::memory_order_relaxed)) {
-                    LOG_WRN("USB RX overflow - input buffer flushed");
-                }
-            }
-        }
-    }
-}
-
-bool UsbCdcFacade::readLine(CommandBuffer& out_line) noexcept {
-    const std::size_t head = rx_head.load(std::memory_order_acquire);
-    std::size_t tail = rx_tail.load(std::memory_order_relaxed);
-    if (head == tail) {
-        return false;
-    }
-    std::size_t temp_tail = tail;
-    std::size_t i = 0;
-    bool found_eol = false;
-    bool overlong = false;
-    while (temp_tail != head) {
-        const char c = rx_buffer[temp_tail];
-        if (c == CR || c == LF) {
-            found_eol = true;
-            temp_tail = (temp_tail + 1) % RX_RING_BUF_SIZE;
-            
-            if (c == CR && temp_tail != head && rx_buffer[temp_tail] == LF) {
-                temp_tail = (temp_tail + 1) % RX_RING_BUF_SIZE;
-            }
-            break;
-        }
-        if (i >= MAX_CMD_LEN - 1) {
-            overlong = true;
-        } else {
-            out_line[i++] = c;
-        }
-        temp_tail = (temp_tail + 1) % RX_RING_BUF_SIZE;
-    }
-    if (!found_eol) {
-        return false;
-    }
-    rx_tail.store(temp_tail, std::memory_order_release);
-    if (overlong) {
-        LOG_WRN("USB CLI command exceeded %zu bytes, discarded", MAX_CMD_LEN - 1);
-        out_line[0] = '\0';
-        return false;
-    }
-    out_line[i] = '\0';
-    overflow_logged.store(false, std::memory_order_release);
-    return true;
-}
-
 UsbShell::UsbShell(DeviceContext* ctx, SbsBattery* bat) noexcept : sys_ctx(ctx), battery(bat) {}
 
 const std::array<UsbShell::Command, UsbShell::CommandCount> UsbShell::kCommandTable{{
@@ -303,38 +106,6 @@ const std::array<UsbShell::Command, UsbShell::CommandCount> UsbShell::kCommandTa
     {kLogDumpCmd,    false, &UsbShell::cmdLogDump},
     {kRebootCmd,     false, &UsbShell::cmdReboot},
 }};
-
-void UsbShell::process() {
-    ensure_shell_observer_registered();
-
-    if (!usb.init()) {
-        LOG_ERR("USB initialization failed");
-        return;
-    }
-
-    CommandBuffer cmd_buf;
-    do {
-        while (g_shellPowerObserver.isSleeping()) {
-            k_msleep(200);
-            atomic_set(&g_shell_alive, 1);
-        }
-
-        if (usb.isConnected() && usb.readLine(cmd_buf)) {
-            PowerManager::getInstance().reportActivity();
-\
-            if (cmd_buf[0] != '\0') {
-                dispatchCommand(std::string_view(cmd_buf.data()));
-            }
-
-            usb.transmit(PromptStr);
-        }
-        
-        k_msleep(ShellPollMs);
-
-        atomic_set(&g_shell_alive, 1);
-
-    } while (THREAD_LOOP_CONDITION);
-}
 
 void UsbShell::dispatchCommand(std::string_view cmd) {
     cmd = trim(cmd);
@@ -530,9 +301,3 @@ void UsbShell::cmdReboot([[maybe_unused]] std::string_view args) noexcept {
     k_msleep(100);
     sys_reboot(SYS_REBOOT_COLD);
 }
-
-void shell_thread(void) {
-    diag_shell.process();
-}
-extern const k_tid_t shell_tid;
-K_THREAD_DEFINE(shell_tid, ShellStackSize, shell_thread, nullptr, nullptr, nullptr, ShellPriority, 0, 0);

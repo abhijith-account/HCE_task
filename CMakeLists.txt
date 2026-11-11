@@ -16,18 +16,20 @@ target_include_directories(app PRIVATE
 file(GLOB PMS_SRCS      CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/src/Power_Management_System/*.cpp)
 file(GLOB BATT_SRCS     CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/src/Smart_Battery_System/*.cpp)
 file(GLOB RTOS_CMD_SRCS CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/src/RTOS_Command_based_thread_system/*.cpp)
+file(GLOB USB_CDC_SHELL_SRCS CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/src/USB_CDC_SHELL/*.cpp)
+file(GLOB FAULT_TOLERANT_I2C_SRCS CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/src/Fault_Tolerant_I2C/*.cpp)
 
 target_sources(app PRIVATE
     src/main.cpp
     ${RTOS_CMD_SRCS}
     src/RTOS_Synchronization_Layer.cpp
     src/Device_State_Machine+Watchdog.cpp
-    src/Fault_Tolerant_I2C_Communication_Layer.cpp
+    ${FAULT_TOLERANT_I2C_SRCS}
     src/Persistent_Configuration_System.cpp
     ${PMS_SRCS}
     ${BATT_SRCS}
     src/Static_Memory+MISRA_Compliance_Layer.cpp
-    src/USB_CDC_Virtual_COM_Shell_Interface.cpp
+    ${USB_CDC_SHELL_SRCS}
 )
 
 if(CONFIG_BOARD_MPS2_AN386)
