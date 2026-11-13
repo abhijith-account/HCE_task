@@ -70,7 +70,8 @@ set(I2C_TEST_SRCS
 set(USB_SHELL_TEST_SRCS
     usb_shell/test_usb_shell_mocks.cpp
     usb_shell/test_Usb_Cdc_Facade.cpp
-    usb_shell/test_Shell_Commands.cpp
+    usb_shell/test_Shell_LogDump_Reboot.cpp
+    usb_shell/test_Shell_Status_SetRate.cpp
     usb_shell/test_Shell_Thread_Power.cpp
     usb_shell/test_usb_shell_common.h
 )
