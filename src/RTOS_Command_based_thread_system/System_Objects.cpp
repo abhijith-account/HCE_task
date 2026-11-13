@@ -1,6 +1,6 @@
 #include "System_Objects.h"
+#include "Device_State_Machine+Watchdog.h"
 
-extern DeviceContext sys_context;
 extern I2CManager i2c_manager;
 extern bool g_usb_connected;
 

@@ -12,6 +12,8 @@ extern atomic_t g_bms_comm_alive;
 extern atomic_t g_batt_mon_alive;
 extern atomic_t g_mem_mon_alive;
 extern atomic_t g_shell_alive;
+extern DeviceContext sys_context;
+
 enum class SystemState {
   INIT,
   RUNNING,

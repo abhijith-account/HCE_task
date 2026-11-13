@@ -22,9 +22,6 @@
 
 LOG_MODULE_DECLARE(I2C_HW, LOG_LEVEL_INF);
 
-/* Global context reference */
-extern DeviceContext sys_context;
-
 constexpr size_t MAX_CACHED_REGISTERS = 64U;
 constexpr uint8_t CACHE_RELIABILITY_MAX = 100U;
 constexpr uint8_t CACHE_RELIABILITY_MIN_FOR_FALLBACK = 50U;

@@ -21,8 +21,6 @@ LOG_MODULE_REGISTER(SYNC_LAYER, LOG_LEVEL_INF);
     #define THREAD_LOOP_CONDITION true
 #endif
 
-extern DeviceContext sys_context;
-
 atomic_t g_hr_prod_alive = ATOMIC_INIT(1);
 atomic_t g_disp_cons_alive = ATOMIC_INIT(1);
 

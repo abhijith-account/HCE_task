@@ -17,15 +17,12 @@
 
 #include <zephyr/debug/thread_analyzer.h>
 #include <new>
-#include <zephyr/kernel.h>
 #include <zephyr/sys/atomic.h>
-#include <zephyr/logging/log.h>
 
 LOG_MODULE_REGISTER(MAIN_OS, LOG_LEVEL_INF);
 
 // Add the external flag at the top with your other externs
 extern bool g_usb_connected;
-extern DeviceContext sys_context;
 extern ZephyrWorkQueue status_work;
 
 #ifdef CONFIG_USB_DEVICE_STACK

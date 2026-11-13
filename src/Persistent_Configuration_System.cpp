@@ -11,7 +11,6 @@ LOG_MODULE_REGISTER(CONFIG_SYS, LOG_LEVEL_INF);
 #define NVS_PARTITION storage_partition
 #define NVS_PARTITION_DEVICE FIXED_PARTITION_DEVICE(NVS_PARTITION)
 
-extern DeviceContext sys_context;
 ConfigStore ConfigStore::instance;
 ConfigStore::ConfigStore() : initialized(false) {}
 ConfigStore& ConfigStore::getInstance() {
