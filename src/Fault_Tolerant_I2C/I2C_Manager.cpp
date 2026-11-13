@@ -73,14 +73,6 @@ namespace {
 I2CManager::I2CManager(const device* i2c_dev) : i2c_dev(i2c_dev) {}
 
 Result<uint8_t> I2CManager::readRegister(uint16_t sensor_addr, uint8_t reg_addr) {
-    const uint32_t cache_key = (static_cast<uint32_t>(sensor_addr) << 8U) | static_cast<uint32_t>(reg_addr);
-    ensure_power_observer_registered();
-    
-    // SAFE HALT: Complete lock out of physical bus. No polling.
-    if (g_i2cPowerObserver.isSleeping() || sys_context.getState() == SystemState::FAULT || sys_context.getState() == SystemState::SAFE_HALT) {
-        return Result<uint8_t>::Err(I2CFault::DEVICE_NOT_READY);
-    }
-
     const uint32_t cache_key = make_cache_key(sensor_addr, reg_addr);
     if (is_bus_locked_out()||is_device_unavailable(i2c_dev)) {
         return Result<uint8_t>::Err(I2CFault::DEVICE_NOT_READY);
@@ -115,12 +107,6 @@ Result<uint8_t> I2CManager::readRegister(uint16_t sensor_addr, uint8_t reg_addr)
 }
 
 Result<bool> I2CManager::writeRegister(uint16_t sensor_addr, uint8_t reg_addr, uint8_t val) {
-    ensure_power_observer_registered();
-    
-    if (g_i2cPowerObserver.isSleeping() || sys_context.getState() == SystemState::FAULT || sys_context.getState() == SystemState::SAFE_HALT) {
-        return Result<bool>::Err(I2CFault::DEVICE_NOT_READY);
-    }
-
     const uint32_t cache_key = make_cache_key(sensor_addr, reg_addr);
     if (is_bus_locked_out()||is_device_unavailable(i2c_dev)) {
         return Result<uint8_t>::Err(I2CFault::DEVICE_NOT_READY);
@@ -148,13 +134,6 @@ Result<bool> I2CManager::writeRegister(uint16_t sensor_addr, uint8_t reg_addr, u
 }
 
 Result<uint16_t> I2CManager::readWord(uint16_t sensor_addr, uint8_t reg_addr) {
-    uint32_t cache_key = (static_cast<uint32_t>(sensor_addr) << 8) | reg_addr;
-    ensure_power_observer_registered();
-    
-    if (g_i2cPowerObserver.isSleeping() || sys_context.getState() == SystemState::FAULT || sys_context.getState() == SystemState::SAFE_HALT) {
-        return Result<uint16_t>::Err(I2CFault::DEVICE_NOT_READY);
-    }
-
     const uint32_t cache_key = make_cache_key(sensor_addr, reg_addr);
     if (is_bus_locked_out()||is_device_unavailable(i2c_dev)) {
         return Result<uint8_t>::Err(I2CFault::DEVICE_NOT_READY);
@@ -200,13 +179,6 @@ Result<bool> I2CManager::writeWord(uint16_t sensor_addr, uint8_t reg_addr, uint1
 }
 
 Result<uint32_t> I2CManager::read24Bit(uint16_t sensor_addr, uint8_t reg_addr) {
-    uint32_t cache_key = (static_cast<uint32_t>(sensor_addr) << 8) | static_cast<uint32_t>(reg_addr);
-    ensure_power_observer_registered();
-    
-    if (g_i2cPowerObserver.isSleeping() || sys_context.getState() == SystemState::FAULT || sys_context.getState() == SystemState::SAFE_HALT) {
-        return Result<uint32_t>::Err(I2CFault::DEVICE_NOT_READY);
-    }
-
     const uint32_t cache_key = make_cache_key(sensor_addr, reg_addr);
     if (is_bus_locked_out()||is_device_unavailable(i2c_dev)) {
         return Result<uint8_t>::Err(I2CFault::DEVICE_NOT_READY);
@@ -242,13 +214,6 @@ Result<uint32_t> I2CManager::read24Bit(uint16_t sensor_addr, uint8_t reg_addr) {
 }
 
 Result<uint64_t> I2CManager::read64Bit(uint16_t sensor_addr, uint8_t reg_addr) {
-    uint32_t cache_key = (static_cast<uint32_t>(sensor_addr) << 8) | reg_addr;
-    ensure_power_observer_registered();
-    
-    if (g_i2cPowerObserver.isSleeping() || sys_context.getState() == SystemState::FAULT || sys_context.getState() == SystemState::SAFE_HALT) {
-        return Result<uint64_t>::Err(I2CFault::DEVICE_NOT_READY);
-    }
-    
     const uint32_t cache_key = make_cache_key(sensor_addr, reg_addr);
     if (is_bus_locked_out()||is_device_unavailable(i2c_dev)) {
         return Result<uint8_t>::Err(I2CFault::DEVICE_NOT_READY);
