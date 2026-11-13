@@ -154,21 +154,6 @@ bool get_cached_value(uint32_t key, uint64_t* out_val, uint32_t max_age_ms) {
 
 } // namespace i2c_internal
 
-using namespace i2c_internal;
-
-void FailSafeStrategy::executeRecovery(const device* ) {
-      LOG_ERR("I2C Critical Failure. Falling back to Last-known-Good data: %llu",
-            (unsigned long long)last_known_good_value);
-}
-
-void FailSafeStrategy::updateLastGood(uint64_t val) {
-      last_known_good_value = val;
-}
-
-uint64_t FailSafeStrategy::getLastGood() const {
-      return last_known_good_value;
-}
-
 #ifdef IS_TEST_ENVIRONMENT
 void resetI2CCacheForTests() noexcept {
     for (size_t i = 0; i < MAX_CACHED_REGISTERS; i++) {
@@ -200,11 +185,11 @@ void resetI2CCachePool() {
 }
 
 void test_update_cache(uint32_t key, uint64_t value, bool calibrated) {
-    update_cache(key, value, calibrated);
+    i2c_internal::update_cache(key, value, calibrated);
 }
 
 bool test_get_cached_value(uint32_t key, uint64_t* out_val, uint32_t max_age_ms) {
-    return get_cached_value(key, out_val, max_age_ms);
+    return i2c_internal::get_cached_value(key, out_val, max_age_ms);
 }
 
 void test_set_reliability(uint32_t key, uint8_t score) {

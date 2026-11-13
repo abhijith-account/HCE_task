@@ -37,20 +37,6 @@ const struct device *i2c_hardware = DEVICE_DT_GET(DT_NODELABEL(i2c1));
 I2CManager i2c_manager(i2c_hardware);
 #endif
 
-static bool is_recoverable_with_bus_reset(I2CFault fault) {
-    return (fault == I2CFault::TIMEOUT) || (fault == I2CFault::BUS_BUSY);
-}
-
-static I2CFault classify_i2c_error(int err) {
-    switch (err) {
-        case -ETIMEDOUT: return I2CFault::TIMEOUT;
-        case -EBUSY:     return I2CFault::BUS_BUSY;
-        case -EAGAIN:    return I2CFault::ARBITRATION_LOST;
-        case -ENODEV:    return I2CFault::DEVICE_NOT_READY;
-        default:         return I2CFault::NACK;
-    }
-}
-
 namespace {
     class I2CPowerObserver final : public IPowerObserver {
     private:
@@ -103,12 +89,7 @@ Result<uint8_t> I2CManager::readRegister(uint16_t sensor_addr, uint8_t reg_addr)
         return Result<uint8_t>::Ok(data);
     }
 
-    const I2CFault fault = classify_i2c_error(err);
-    if (is_recoverable_with_bus_reset(fault)) {
-        reset_strategy.executeRecovery(i2c_dev);
-    } else {
-        retry_strategy.executeRecovery(i2c_dev);
-    }
+    const I2CFault fault = classify_and_recover(err, i2c_dev, reset_strategy, retry_strategy);
 
     uint64_t cached_val = 0U;
     if (get_cached_value(cache_key, &cached_val, 3000U)) {
@@ -141,12 +122,7 @@ Result<bool> I2CManager::writeRegister(uint16_t sensor_addr, uint8_t reg_addr, u
         return Result<bool>::Ok(true);
     }
 
-    const I2CFault fault = classify_i2c_error(err);
-    if (is_recoverable_with_bus_reset(fault)) {
-        reset_strategy.executeRecovery(i2c_dev);
-    } else {
-        retry_strategy.executeRecovery(i2c_dev);
-    }
+    const I2CFault fault = classify_and_recover(err, i2c_dev, reset_strategy, retry_strategy);
 
     return Result<bool>::Err(fault);
 }
@@ -179,12 +155,7 @@ Result<uint16_t> I2CManager::readWord(uint16_t sensor_addr, uint8_t reg_addr) {
         return Result<uint16_t>::Ok(val);
     }
 
-    const I2CFault fault = classify_i2c_error(err);
-    if (is_recoverable_with_bus_reset(fault)) {
-        reset_strategy.executeRecovery(i2c_dev);
-    } else {
-        retry_strategy.executeRecovery(i2c_dev);
-    }
+    const I2CFault fault = classify_and_recover(err, i2c_dev, reset_strategy, retry_strategy);
 
     uint64_t cached_val = 0U;
     if (get_cached_value(cache_key, &cached_val, 3000U)) {
@@ -230,12 +201,7 @@ Result<uint32_t> I2CManager::read24Bit(uint16_t sensor_addr, uint8_t reg_addr) {
         return Result<uint32_t>::Ok(val);
     }
 
-    const I2CFault fault = classify_i2c_error(err);
-    if (is_recoverable_with_bus_reset(fault)) {
-        reset_strategy.executeRecovery(i2c_dev);
-    } else {
-        retry_strategy.executeRecovery(i2c_dev);
-    }
+    const I2CFault fault = classify_and_recover(err, i2c_dev, reset_strategy, retry_strategy);
 
     uint64_t cached_val = 0U;
     if (get_cached_value(cache_key, &cached_val, 3000U)) {
@@ -275,12 +241,7 @@ Result<uint64_t> I2CManager::read64Bit(uint16_t sensor_addr, uint8_t reg_addr) {
         return Result<uint64_t>::Ok(val);
     }
 
-    const I2CFault fault = classify_i2c_error(err);
-    if (is_recoverable_with_bus_reset(fault)) {
-        reset_strategy.executeRecovery(i2c_dev);
-    } else {
-        retry_strategy.executeRecovery(i2c_dev);
-    }
+    const I2CFault fault = classify_and_recover(err, i2c_dev, reset_strategy, retry_strategy);
 
     uint64_t cached_val = 0U;
     if (get_cached_value(cache_key, &cached_val, 3000U)) {

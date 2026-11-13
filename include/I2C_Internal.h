@@ -1,15 +1,21 @@
-// I2C_Internal.h
-// Private to the Fault_Tolerant_I2C sources (I2C_Manager.cpp, I2C_Fallback_Cache.cpp). Not part of the public API
-// (that is Fault_Tolerant_I2C_Communication_Layer.h).
-//
-// The fallback cache lives in I2C_Fallback_Cache.cpp; I2CManager (I2C_Manager.cpp) stores every good read in it and falls back
-// to it on a bus error. update_cache() and get_cached_value() used to be file-local (static) in the single source file; they are
-// exported here, inside a namespace so the names cannot collide with anything else.
 #pragma once
 
 #include <cstdint>
+#include "Fault_Tolerant_I2C_Communication_Layer.h"
 
 namespace i2c_internal {
+
+/* Map a negative Zephyr driver errno to an I2CFault enum value. */
+I2CFault classify_i2c_error(int err);
+
+/* Return true when the fault requires a physical SCL bus reset (TIMEOUT or BUS_BUSY). */
+bool is_recoverable_with_bus_reset(I2CFault fault);
+
+/* Classify `err` and execute either `reset_strategy` or `retry_strategy`. */
+I2CFault classify_and_recover(int err,
+                              const device* i2c_dev,
+                              BusResetStrategy& reset_strategy,
+                              RetryStrategy& retry_strategy);
 
 /* Store / refresh the value for `key`: resets the reliability score to the maximum, bumps the sample count. */
 void update_cache(uint32_t key, uint64_t value, bool calibrated = true);
