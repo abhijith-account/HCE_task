@@ -199,7 +199,7 @@ void UsbShell::cmdStatus([[maybe_unused]] std::string_view args) noexcept {
     const StatusSnapshot snap = collectStatus();
     static StatusBuffer json_stack_buf;
     [[maybe_unused]] const std::size_t json_len = formatStatus(snap, json_stack_buf);
-    LOG_INF("status json: %u bytes, %u slots", (unsigned)json_len, (unsigned)snap.slot_count);
+    LOG_INF("status json: %u bytes, %u slots", static_cast<unsigned int>(json_len), static_cast<unsigned int>(snap.slot_count));
     usb.transmit(json_stack_buf.data());
 }
 

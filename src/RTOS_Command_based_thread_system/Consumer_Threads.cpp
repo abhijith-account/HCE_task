@@ -5,7 +5,7 @@
 #include "Command_Core.h"
 
 extern "C" void processor_thread(void *arg1, void *arg2, void *arg3) {
-    ICommand* incoming_cmd;
+    ICommand* incoming_cmd=nullptr;
     do {
         // Halt processing entirely while in SAFE_HALT
         while (g_powerObserver.isSleeping() || SystemObjects::context().getState() == SystemState::SAFE_HALT) {
@@ -23,7 +23,7 @@ extern "C" void processor_thread(void *arg1, void *arg2, void *arg3) {
 }
 
 extern "C" void logger_thread(void *arg1, void *arg2, void *arg3) {
-    ICommand* incoming_cmd;
+    ICommand* incoming_cmd=nullptr;
     do {
         // Halt processing entirely while in SAFE_HALT
         while (g_powerObserver.isSleeping() || SystemObjects::context().getState() == SystemState::SAFE_HALT) {

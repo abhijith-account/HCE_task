@@ -4,20 +4,9 @@
 // process() lives here, not with the commands, because it uses the observer and g_shell_alive, which are private to this file.
 
 #include "USB_CDC_Virtual_COM_Shell_Interface.h"
-#include <zephyr/device.h>
-#include <zephyr/drivers/uart.h>
-#include <zephyr/sys/__assert.h>
-#include "Persistent_Configuration_System.h"
-#include <zephyr/usb/usb_device.h>
 #include <zephyr/logging/log.h>
-#include <zephyr/sys/reboot.h>
 #include <zephyr/kernel.h>
 #include <zephyr/sys/atomic.h>
-#include <charconv>
-#include <cstring>
-#include <cstdarg>
-#include <cstdio>
-#include <utility>
 #include "Device_State_Machine+Watchdog.h"
 #include "Power_Management_System.h" 
 
@@ -81,7 +70,6 @@ void UsbShell::process() {
 
         if (usb.isConnected() && usb.readLine(cmd_buf)) {
             PowerManager::getInstance().reportActivity();
-\
             if (cmd_buf[0] != '\0') {
                 dispatchCommand(std::string_view(cmd_buf.data()));
             }

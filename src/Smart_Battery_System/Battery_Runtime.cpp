@@ -13,9 +13,6 @@
 #endif
 
 extern DeviceContext sys_context;
-#ifndef IS_TEST_ENVIRONMENT
-extern I2CManager i2c_manager;
-#endif
 
 LOG_MODULE_REGISTER(BATTERY_RUNTIME, LOG_LEVEL_INF);
 

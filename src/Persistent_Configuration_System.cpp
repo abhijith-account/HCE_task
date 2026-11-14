@@ -30,6 +30,7 @@ bool ConfigStore::init() {
     rc = flash_area_get_sectors(DT_FIXED_PARTITION_ID(DT_NODELABEL(storage_partition)), &sector_cnt, fcb_sectors);
     if (rc != 0) {
         LOG_ERR("Failed to get flash sectors: %d", rc);
+        flash_area_close(fap);
         return false;
     }
 
@@ -48,6 +49,7 @@ bool ConfigStore::init() {
         /* FIX: Prevent massive flash operations if the system is unstable/faulted */
         if (sys_context.getState() == SystemState::FAULT) {
             LOG_ERR("System FAULT. Aborting flash erase to prevent corruption.");
+            flash_area_close(fap);
             return false;
         }
 
@@ -146,7 +148,7 @@ bool ConfigStore::validateEndurance(ConfigKey key) {
 
         sys_context.feedWatchdog();
         PowerManager::getInstance().reportActivity();
-        test_val = i;
+        test_val = static_cast<uint16_t>(i);
 
         if (!set(key, test_val)){
             LOG_ERR("Endurance Test failed to write at cycle %d", i);

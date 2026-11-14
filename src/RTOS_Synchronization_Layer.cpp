@@ -71,8 +71,6 @@ void ZephyrWorkQueue::cancel() {
     k_work_cancel_delayable(&work);
 }
 
-extern ZephyrWorkQueue status_work;
-
 namespace {
     class SyncPowerObserver final : public IPowerObserver {
     private:

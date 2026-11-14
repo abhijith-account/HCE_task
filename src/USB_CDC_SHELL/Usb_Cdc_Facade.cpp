@@ -7,19 +7,11 @@
 #include <zephyr/device.h>
 #include <zephyr/drivers/uart.h>
 #include <zephyr/sys/__assert.h>
-#include "Persistent_Configuration_System.h"
 #include <zephyr/usb/usb_device.h>
 #include <zephyr/logging/log.h>
-#include <zephyr/sys/reboot.h>
 #include <zephyr/kernel.h>
 #include <zephyr/sys/atomic.h>
-#include <charconv>
 #include <cstring>
-#include <cstdarg>
-#include <cstdio>
-#include <utility>
-#include "Device_State_Machine+Watchdog.h"
-#include "Power_Management_System.h" 
 
 LOG_MODULE_REGISTER(USB_CLI, LOG_LEVEL_INF);
 
