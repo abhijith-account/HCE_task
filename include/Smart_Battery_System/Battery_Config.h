@@ -46,7 +46,7 @@ struct BatteryLimits {
 namespace CurveFitting {
     struct OcvPoint { uint16_t mv{}; uint8_t soc_pct{}; };
 
-    static constexpr OcvPoint OCV_LUT[] = {
+    constexpr OcvPoint OCV_LUT[] = {
         { 8700, 0 },    { 9600, 5 },    { 10200, 10 },
         { 10800, 25 },  { 11100, 40 },  { 11400, 60 },
         { 11700, 75 },  { 12000, 85 },  { 12300, 95 },
@@ -59,9 +59,9 @@ namespace CurveFitting {
 
         for (size_t i = 0; i < N - 1; ++i) {
             if (mv <= lut[i+1].mv) {
-                uint32_t v_range = lut[i+1].mv - lut[i].mv;
-                uint32_t s_range = lut[i+1].soc_pct - lut[i].soc_pct;
-                uint32_t v_offset = mv - lut[i].mv;
+                const uint32_t v_range = lut[i+1].mv - lut[i].mv;
+                const uint32_t s_range = lut[i+1].soc_pct - lut[i].soc_pct;
+                const uint32_t v_offset = mv - lut[i].mv;
                 return lut[i].soc_pct + static_cast<uint8_t>((v_offset * s_range) / v_range);
             }
         }

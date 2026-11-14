@@ -18,11 +18,11 @@ struct Reading {
     static Reading Err(Fault e) { return {T{}, e, false}; }
 };
 
-static constexpr int16_t MIN_VALID_CELSIUS = -40;
-static constexpr int16_t MAX_VALID_CELSIUS = 125;
-static constexpr int16_t KELVIN_OFFSET_TENTHS = 2731;
-static constexpr uint8_t OVERSAMPLE_COUNT = 8U;
-static constexpr int32_t SUPPLY_MILLIVOLTS = 3300;
+constexpr int16_t MIN_VALID_CELSIUS = -40;
+constexpr int16_t MAX_VALID_CELSIUS = 125;
+constexpr int16_t KELVIN_OFFSET_TENTHS = 2731;
+constexpr uint8_t OVERSAMPLE_COUNT = 8U;
+constexpr int32_t SUPPLY_MILLIVOLTS = 3300;
 
 #ifndef CONFIG_BOARD_MPS2_AN386
 extern const struct adc_dt_spec thermistor_adc_chan;
@@ -39,7 +39,7 @@ namespace CurveFitting {
 
 struct NtcPoint { int32_t mv; int16_t temp_tenths; };
 
-static constexpr NtcPoint NTC_LUT[] = {
+constexpr NtcPoint NTC_LUT[] = {
     { 3220, -400 }, { 3187, -350 }, { 3143, -300 }, { 3086, -250 },
     { 3014, -200 }, { 2925, -150 }, { 2816, -100 }, { 2689,  -50 },
     { 2543,    0 }, { 2381,   50 }, { 2206,  100 }, { 2023,  150 },
@@ -57,9 +57,9 @@ int16_t interpolateNtc(const NtcPoint (&lut)[N], int32_t mv) {
 
     for (size_t i = 0; i < N - 1; ++i) {
         if (mv >= lut[i+1].mv) {
-            int32_t v_range = lut[i].mv - lut[i+1].mv;
-            int32_t t_range = lut[i+1].temp_tenths - lut[i].temp_tenths;
-            int32_t v_offset = lut[i].mv - mv;
+            const int32_t v_range = lut[i].mv - lut[i+1].mv;
+            const int32_t t_range = lut[i+1].temp_tenths - lut[i].temp_tenths;
+            const int32_t v_offset = lut[i].mv - mv;
             return lut[i].temp_tenths + static_cast<int16_t>((v_offset * t_range) / v_range);
         }
     }

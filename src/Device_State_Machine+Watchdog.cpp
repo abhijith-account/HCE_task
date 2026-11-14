@@ -19,7 +19,7 @@ bool WatchdogTimer::init(uint32_t timeout_ms){
         return false;
     }
 
-    struct wdt_timeout_cfg wdt_config = {
+    const struct wdt_timeout_cfg wdt_config = {
         .window = {
             .min = 0U,
             .max = timeout_ms
@@ -48,7 +48,7 @@ bool WatchdogTimer::init(uint32_t timeout_ms){
 void WatchdogTimer::feed(){
     if (channel_id >= 0)
     {
-        k_spinlock_key_t key = k_spin_lock(&wdt_access_lock);
+        const k_spinlock_key_t key = k_spin_lock(&wdt_access_lock);
         const int rc = wdt_feed(wdt_dev, channel_id);
         k_spin_unlock(&wdt_access_lock, key);
         
@@ -85,14 +85,14 @@ bool DeviceContext::isLegalTransition(SystemState from, SystemState to){
 }
 
 SystemState DeviceContext::getState() const{
-    k_spinlock_key_t key = k_spin_lock(&device_state_lock);
+    const k_spinlock_key_t key = k_spin_lock(&device_state_lock);
     const SystemState snapshot = current_state;
     k_spin_unlock(&device_state_lock, key);
     return snapshot;
 }
 
 bool DeviceContext::requestTransition(SystemState next_state){
-    k_spinlock_key_t key = k_spin_lock(&device_state_lock);
+    const k_spinlock_key_t key = k_spin_lock(&device_state_lock);
     const SystemState previous_state = current_state;
     
     if (!isLegalTransition(previous_state, next_state))
@@ -113,7 +113,7 @@ bool DeviceContext::requestTransition(SystemState next_state){
 }
 
 void DeviceContext::triggerFault(const char* reason){
-    k_spinlock_key_t key = k_spin_lock(&device_state_lock);
+    const k_spinlock_key_t key = k_spin_lock(&device_state_lock);
     const char* const fault_reason = (reason != nullptr) ? reason : "unspecified fault";
     LOG_ERR("CRITICAL FAULT: %s. Forcing SAFE_HALT.", fault_reason);
     current_state = SystemState::FAULT;
@@ -121,7 +121,7 @@ void DeviceContext::triggerFault(const char* reason){
 }
 
 bool DeviceContext::initWatchdog(uint32_t timeout_ms){
-    bool success = wdt.init(timeout_ms);
+    const bool success = wdt.init(timeout_ms);
     if (success){
         PowerManager::getInstance().registerObserver(this);
     }
@@ -167,15 +167,15 @@ extern "C" void daly_watchdog_feed_hook(void){
     
     last_health_check = now;
     
-    bool prod_ok = atomic_cas(&g_producer_alive, 1, 0);
-    bool proc_ok = atomic_cas(&g_processor_alive, 1, 0);
-    bool log_ok = atomic_cas(&g_logger_alive, 1, 0);
-    bool hr_ok = atomic_cas(&g_hr_prod_alive, 1, 0);
-    bool disp_ok = atomic_cas(&g_disp_cons_alive, 1, 0);
-    bool bms_ok = atomic_cas(&g_bms_comm_alive, 1, 0);
-    bool batt_ok = atomic_cas(&g_batt_mon_alive, 1, 0);
-    bool mem_ok = atomic_cas(&g_mem_mon_alive, 1, 0);
-    bool shell_ok = atomic_cas(&g_shell_alive, 1, 0); // NEW
+    const bool prod_ok = atomic_cas(&g_producer_alive, 1, 0);
+    const bool proc_ok = atomic_cas(&g_processor_alive, 1, 0);
+    const bool log_ok = atomic_cas(&g_logger_alive, 1, 0);
+    const bool hr_ok = atomic_cas(&g_hr_prod_alive, 1, 0);
+    const bool disp_ok = atomic_cas(&g_disp_cons_alive, 1, 0);
+    const bool bms_ok = atomic_cas(&g_bms_comm_alive, 1, 0);
+    const bool batt_ok = atomic_cas(&g_batt_mon_alive, 1, 0);
+    const bool mem_ok = atomic_cas(&g_mem_mon_alive, 1, 0);
+    const bool shell_ok = atomic_cas(&g_shell_alive, 1, 0); // NEW
     
     if (prod_ok && proc_ok && log_ok && hr_ok && disp_ok && bms_ok && batt_ok && mem_ok && shell_ok){
         sys_context.feedWatchdog();

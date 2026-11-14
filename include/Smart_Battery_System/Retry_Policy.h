@@ -14,9 +14,9 @@
 namespace RetryPolicy {
 
 struct Config {
-    uint32_t max_retries;
-    uint32_t initial_backoff_ms;
-    uint32_t max_backoff_ms;
+    uint32_t max_retries{0U};
+    uint32_t initial_backoff_ms{0U};
+    uint32_t max_backoff_ms{0U};
 };
 
 template <typename R, typename ReadFn, typename IsOkFn,

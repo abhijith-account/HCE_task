@@ -102,7 +102,7 @@ static void log_gpio_plan()
                 af |= (1U << pin);
             }
         }
-        LOG_INF("STOP GPIO%c: out=0x%04x lvl=0x%04x | af=0x%04x lvl=0x%04x | od=0x%04x",'A' + i,(unsigned)out, (unsigned)(ports[i]->ODR & out),(unsigned)af,  (unsigned)(ports[i]->IDR & af),(unsigned)(ports[i]->OTYPER & (out | af)));
+        LOG_INF("STOP GPIO%c: out=0x%04x lvl=0x%04x | af=0x%04x lvl=0x%04x | od=0x%04x",'A' + i,static_cast<unsigned int>(out), static_cast<unsigned int>(ports[i]->ODR & out),static_cast<unsigned int>(af),  static_cast<unsigned int>(ports[i]->IDR & af),static_cast<unsigned int>(ports[i]->OTYPER & (out | af)));
     }
 
     RCC->AHB1ENR = prev_ahb1enr;
@@ -116,7 +116,7 @@ StopState& StopState::getInstance() {
 }
 
 bool StopState::enter(PowerManager& pm) {
-    LOG_WRN("Preparing for Deep Sleep (PM_STATE_SUSPEND_TO_RAM): %u s total, wake every %u s",(unsigned)(STOP_TOTAL_TIME_US / 1000000U),(unsigned)(STOP_WAKE_INTERVAL_US / 1000000U));
+    LOG_WRN("Preparing for Deep Sleep (PM_STATE_SUSPEND_TO_RAM): %u s total, wake every %u s",static_cast<unsigned int>(STOP_TOTAL_TIME_US / 1000000U),static_cast<unsigned int>(STOP_WAKE_INTERVAL_US / 1000000U));
 
     s_stop_wake_reason = StopWakeReason::WAKE_NONE;
     atomic_set(&s_activity_pending, 0);
@@ -144,7 +144,7 @@ bool StopState::enter(PowerManager& pm) {
 #ifndef CONFIG_BOARD_MPS2_AN386
 
     if ((CoreDebug->DHCSR & CoreDebug_DHCSR_C_DEBUGEN_Msk) != 0U) {
-        LOG_WRN("DEBUGGER ATTACHED (DHCSR=0x%08x, DBGMCU_CR=0x%08x): STOP will run as SLEEP, ~0.9 mA. ""End the debug session and power-cycle the board with SWD disconnected to measure STOP.",(unsigned)CoreDebug->DHCSR, (unsigned)DBGMCU->CR);
+        LOG_WRN("DEBUGGER ATTACHED (DHCSR=0x%08x, DBGMCU_CR=0x%08x): STOP will run as SLEEP, ~0.9 mA. ""End the debug session and power-cycle the board with SWD disconnected to measure STOP.",static_cast<unsigned int>(CoreDebug->DHCSR), static_cast<unsigned int>(DBGMCU->CR));
     }
 #endif
 
@@ -515,7 +515,7 @@ void StopState::exit(PowerManager& pm) {
         pm.resetPmFailures();
     }
 
-    LOG_INF("Exiting PM_STATE_SUSPEND_TO_RAM -> %s (wake: %s, ~%u ms in STOP)",s_transition_target_name,stop_wake_reason_str(s_stop_wake_reason),(unsigned)(s_elapsed_sleep_time_us / 1000U));
+    LOG_INF("Exiting PM_STATE_SUSPEND_TO_RAM -> %s (wake: %s, ~%u ms in STOP)",s_transition_target_name,stop_wake_reason_str(s_stop_wake_reason),static_cast<unsigned int>(s_elapsed_sleep_time_us / 1000U));
 
     s_stop_wake_reason = StopWakeReason::WAKE_NONE;
 
@@ -628,13 +628,13 @@ void StopState::exit(PowerManager& pm) {
     LOG_INF("Pre-WFI pending (last iter): EXTI_PR=0x%08x NVIC_ISPR0=0x%08x",s_pre_wfi_exti_pr,s_pre_wfi_nvic_pending0);
     LOG_INF("Pre-WFI RCC_CR=0x%08x RCC_CFGR=0x%08x", s_pre_wfi_rcc_cr, s_pre_wfi_rcc_cfgr);
     LOG_INF("Pre-WFI PWR_CR=0x%08x PWR_CSR=0x%08x (VOS3 expected; PDDS/LPDS/FPDS/UDEN all 0)", s_pre_wfi_pwr_cr, s_pre_wfi_pwr_csr);
-    LOG_INF("DBGMCU_CR: right after the firmware cleared it = 0x%08x, earlier probe before WFI = 0x%08x%s",(unsigned)s_stop_dbgmcu_after_write, (unsigned)s_probe_dbgmcu_cr,(s_stop_dbgmcu_after_write == 0U && s_probe_dbgmcu_cr != 0U) ? "  <-- a debug probe is re-asserting it" : (s_stop_dbgmcu_after_write != 0U) ? "  <-- the write is NOT taking effect" : "");
+    LOG_INF("DBGMCU_CR: right after the firmware cleared it = 0x%08x, earlier probe before WFI = 0x%08x%s",static_cast<unsigned int>(s_stop_dbgmcu_after_write), static_cast<unsigned int>(s_probe_dbgmcu_cr),(s_stop_dbgmcu_after_write == 0U && s_probe_dbgmcu_cr != 0U) ? "  <-- a debug probe is re-asserting it" : (s_stop_dbgmcu_after_write != 0U) ? "  <-- the write is NOT taking effect" : "");
 
     LOG_INF("Last RTC ALRAF clear: %u/100000 rem, Cycles: %u",s_last_alraf_timeout, s_last_alraf_cycles);
 
     for (int i = 0; i < 8; ++i) {
         if (s_stop_od_af_mask[i]) {
-            LOG_INF("STOP OD lines GPIO%c: od_af=0x%04x low=0x%04x%s", 'A' + i,(unsigned)s_stop_od_af_mask[i], (unsigned)s_stop_od_low_mask[i],s_stop_od_low_mask[i] ? "  <-- STUCK LOW" : "");
+            LOG_INF("STOP OD lines GPIO%c: od_af=0x%04x low=0x%04x%s", 'A' + i,static_cast<unsigned int>(s_stop_od_af_mask[i]), static_cast<unsigned int>(s_stop_od_low_mask[i]),s_stop_od_low_mask[i] ? "  <-- STUCK LOW" : "");
         }
     }
 
@@ -653,17 +653,17 @@ void StopState::exit(PowerManager& pm) {
             if (mode != 0x3U && pull == 0x1U) { pu |= (1U << pin); }
             if (mode != 0x3U && pull == 0x2U) { pd |= (1U << pin); }
         }
-        LOG_INF("STOP APPLIED GPIO%c: out=0x%04x in=0x%04x pu=0x%04x pd=0x%04x (pre-policy MODER=0x%08x)",'A' + i, (unsigned)out, (unsigned)in, (unsigned)pu, (unsigned)pd,(unsigned)s_stop_gpio_snap.moder[i]);
+        LOG_INF("STOP APPLIED GPIO%c: out=0x%04x in=0x%04x pu=0x%04x pd=0x%04x (pre-policy MODER=0x%08x)",'A' + i, static_cast<unsigned int>(out), static_cast<unsigned int>(in), static_cast<unsigned int>(pu), static_cast<unsigned int>(pd),static_cast<unsigned int>(s_stop_gpio_snap.moder[i]));
     }
 
-    LOG_INF("STOP diag: SCR=0x%08x (SLEEPDEEP=%u) DHCSR=0x%08x (C_DEBUGEN=%u) DBGMCU_CR=0x%08x",(unsigned)s_probe_scr, (unsigned)((s_probe_scr >> 2) & 1U),(unsigned)s_probe_dhcsr, (unsigned)(s_probe_dhcsr & 1U),(unsigned)s_probe_dbgmcu_cr);
+    LOG_INF("STOP diag: SCR=0x%08x (SLEEPDEEP=%u) DHCSR=0x%08x (C_DEBUGEN=%u) DBGMCU_CR=0x%08x",static_cast<unsigned int>(s_probe_scr), static_cast<unsigned int>((s_probe_scr >> 2) & 1U),static_cast<unsigned int>(s_probe_dhcsr), static_cast<unsigned int>(s_probe_dhcsr & 1U),static_cast<unsigned int>(s_probe_dbgmcu_cr));
     if ((s_probe_dhcsr & 1U) != 0U) {
         LOG_WRN("STOP was NOT a real STOP: a debugger was attached (C_DEBUGEN=1). ""Power-cycle with SWD disconnected, then re-measure.");
     }
 
     LOG_INF("Full mid-STOP service: %u cycles (~%u us @1MHz)",s_last_full_wake_cycles, s_last_full_wake_cycles / 4U);
     
-    LOG_INF("STOP total WFI wake count: %u", (unsigned)s_wfi_wake_count);
+    LOG_INF("STOP total WFI wake count: %u", static_cast<unsigned int>(s_wfi_wake_count));
 
     s_wfi_wake_count = 0;
 
@@ -681,7 +681,7 @@ void StopState::exit(PowerManager& pm) {
 
     s_real_hw_sleep_active = false;
 
-    LOG_INF("Exiting PM_STATE_SUSPEND_TO_RAM -> %s (wake: %s, ~%u ms in STOP)",s_transition_target_name,stop_wake_reason_str(s_stop_wake_reason),(unsigned)(s_elapsed_sleep_time_us / 1000U));
+    LOG_INF("Exiting PM_STATE_SUSPEND_TO_RAM -> %s (wake: %s, ~%u ms in STOP)",s_transition_target_name,stop_wake_reason_str(s_stop_wake_reason),static_cast<unsigned int>(s_elapsed_sleep_time_us / 1000U));
 
     pm_policy_state_lock_put(PM_STATE_SUSPEND_TO_IDLE, PM_ALL_SUBSTATES);
 #endif

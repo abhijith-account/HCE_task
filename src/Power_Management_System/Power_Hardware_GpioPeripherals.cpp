@@ -28,7 +28,7 @@ void usb_disable_hardware_and_release_pins() {
     PM_USB_PCGCCTL |= 0x3U;                      // STOPPCLK | GATEHCLK: stop PHY + HCLK inside the core
 
     volatile uint32_t dummy = USB_OTG_FS->GCCFG;
-    (void)dummy;
+    static_cast<void>(dummy);
 
     __HAL_RCC_USB_OTG_FS_FORCE_RESET();
     __DSB();
@@ -229,7 +229,7 @@ void adc_save_and_disable(AdcSnapshot &snap) {
     ADC123_COMMON->CCR = 0U;
 
     volatile uint32_t dummy = ADC123_COMMON->CCR;
-    (void)dummy;
+    static_cast<void>(dummy);
 
     __HAL_RCC_ADC1_CLK_DISABLE();
 #ifdef __HAL_RCC_ADC2_CLK_DISABLE
@@ -272,7 +272,7 @@ void dac_save_and_disable(uint32_t &prev_cr) {
     prev_cr = DAC->CR;
     DAC->CR = 0U;   // output buffers & channels completely off (they ignore clock gating)
     volatile uint32_t dummy = DAC->CR;
-    (void)dummy;
+    static_cast<void>(dummy);
     CLEAR_BIT(RCC->APB1ENR, RCC_APB1ENR_DACEN);
 #else
     prev_cr = 0U;
@@ -285,7 +285,7 @@ void dac_restore_after_wake(uint32_t prev_cr) {
     __DSB();
     DAC->CR = prev_cr;
 #else
-    (void)prev_cr;
+    static_cast<void>(prev_cr);
 #endif
 }
 
