@@ -10,12 +10,8 @@
 #include "Retry_Policy.h"
 #include "Fsm_classifier.h"
 #include <zephyr/logging/log.h>
-#include <zephyr/device.h>
-#include <zephyr/sys/byteorder.h>
 #include <zephyr/sys/atomic.h>
 #include <zephyr/kernel.h>
-#include <array>
-#include <algorithm>
 
 LOG_MODULE_DECLARE(BATTERY_SYS, LOG_LEVEL_INF);
 

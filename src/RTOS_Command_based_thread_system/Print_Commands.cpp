@@ -1,4 +1,3 @@
-#include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 #include "Print_Commands.h"
 
@@ -43,7 +42,7 @@ const char* PrintCmd::getSensorName() const noexcept {
 }
 
 void PrintCmd::execute() noexcept {
-    LOG_INF("[%s] #%u: Metric: %s = %.2f", LogTags::PRINT, command_id, getSensorName(), (double)final_value);
+    LOG_INF("[%s] #%u: Metric: %s = %.2f", LogTags::PRINT, command_id, getSensorName(), static_cast<double>(final_value));
 }
 
 PrintBME280Cmd::PrintBME280Cmd(const BME280Data& d) noexcept : data(d) {}
@@ -51,7 +50,7 @@ PrintBME280Cmd::PrintBME280Cmd(const BME280Data& d) noexcept : data(d) {}
 void PrintBME280Cmd::execute() noexcept {
     LOG_INF("[%s] #%u: Metric: BME280 Temp = %.2f C | Press = %.2f hPa | Hum = %.2f %%RH",
             LogTags::PRINT, command_id,
-            (double)data.temperature, (double)data.pressure, (double)data.humidity);
+            static_cast<double>(data.temperature), static_cast<double>(data.pressure), static_cast<double>(data.humidity));
 }
 
 bool printBME280Measurement(const BME280Data& data) noexcept {
@@ -68,7 +67,7 @@ PrintLPS22HBCmd::PrintLPS22HBCmd(const LPS22HBData& d) noexcept : data(d) {}
 void PrintLPS22HBCmd::execute() noexcept {
     LOG_INF("[%s] #%u: Metric: LPS22HB Temp = %.2f C | Press = %.2f hPa",
             LogTags::PRINT, command_id,
-            (double)data.temperature, (double)data.pressure);
+            static_cast<double>(data.temperature), static_cast<double>(data.pressure));
 }
 
 bool printLPS22HBMeasurement(const LPS22HBData& data) noexcept {

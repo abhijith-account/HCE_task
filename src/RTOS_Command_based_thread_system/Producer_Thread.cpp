@@ -33,7 +33,7 @@ extern "C" void producer_thread(void *arg1, void *arg2, void *arg3) {
            g_bme280_initialized = false;
            g_lps22hb_initialized = false;
            g_pav3015_initialized = false;
-           (void)SystemObjects::context().requestTransition(SystemState::SAFE_HALT);
+           static_cast<void>(SystemObjects::context().requestTransition(SystemState::SAFE_HALT));
            k_msleep(100);
            continue;
        }
@@ -93,7 +93,7 @@ extern "C" void producer_thread(void *arg1, void *arg2, void *arg3) {
            state = ProducerState::ReadBME;
        }
 
-       (void)enqueued;
+       static_cast<void>(enqueued);
        k_msleep(500);
        atomic_set(&g_producer_alive, 1);
     } while(THREAD_LOOP_CONDITION);

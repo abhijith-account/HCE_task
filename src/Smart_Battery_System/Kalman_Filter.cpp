@@ -1,6 +1,5 @@
 #include "Kalman_Filter.h"
 #include <algorithm>
-using namespace std;
 
 namespace KalmanFilter{
 
@@ -14,7 +13,7 @@ namespace KalmanFilter{
     const float kalman_gain=p_covariance/(p_covariance+measurement_noise);
     soc_pct=soc_pct+kalman_gain*(measured_soc_pct-soc_pct);
     p_covariance=(1.0f-kalman_gain)*p_covariance;
-    soc_pct=clamp(soc_pct,0.0f,100.0f);
+    soc_pct=std::clamp(soc_pct,0.0f,100.0f);
   }
 
 }

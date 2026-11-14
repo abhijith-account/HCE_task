@@ -71,16 +71,16 @@ namespace {
         }
 
         bool isSleeping() const noexcept { return atomic_get(&is_sleeping) != 0; }
-    };
 
-    MemoryPowerObserver g_memoryPowerObserver;
-    atomic_t g_memoryObserverRegistered = ATOMIC_INIT(0);
+        MemoryPowerObserver g_memoryPowerObserver;
+        atomic_t g_memoryObserverRegistered = ATOMIC_INIT(0);
 
-    void ensure_memory_observer_registered() {
-        if (atomic_cas(&g_memoryObserverRegistered, 0, 1)) {
-            PowerManager::getInstance().registerObserver(&g_memoryPowerObserver);
+        void ensure_memory_observer_registered() {
+            if (atomic_cas(&g_memoryObserverRegistered, 0, 1)) {
+                PowerManager::getInstance().registerObserver(&g_memoryPowerObserver);
+            }
         }
-    }
+    };
 }
 
 void memory_monitor_thread(void){

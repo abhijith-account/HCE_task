@@ -93,7 +93,7 @@ extern "C" void trace_logger_thread(void *arg1, void *arg2, void *arg3) {
 
         while (g_trace_tail != g_trace_head) {
             uint32_t wrapped_idx = g_trace_tail & TRACE_BUFFER_MASK;
-            TraceEvent event;
+            TraceEvent event{};
 
             unsigned int key = irq_lock();
             if (g_trace_head - g_trace_tail > TRACE_BUFFER_SIZE) {
