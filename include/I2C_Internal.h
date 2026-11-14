@@ -3,6 +3,10 @@
 #include <cstdint>
 #include "Fault_Tolerant_I2C_Communication_Layer.h"
 
+#ifdef IS_TEST_ENVIRONMENT
+extern int g_i2c_force_errno;
+#endif
+
 namespace i2c_internal {
 
 /* Map a negative Zephyr driver errno to an I2CFault enum value. */

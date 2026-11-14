@@ -23,7 +23,6 @@ LOG_MODULE_REGISTER(MAIN_OS, LOG_LEVEL_INF);
 
 // Add the external flag at the top with your other externs
 extern bool g_usb_connected;
-extern ZephyrWorkQueue status_work;
 
 #ifdef CONFIG_USB_DEVICE_STACK
 /* Callback to monitor physical USB hardware events */
@@ -53,8 +52,7 @@ static void usb_status_cb(enum usb_dc_status_code cb_status, const uint8_t *para
 
 int main(void){
     printk("BOOT\n");
-    const struct device *console_dev  = nullptr;
-    console_dev = DEVICE_DT_GET(DT_CHOSEN(zephyr_console));
+    const struct device *const console_dev  =  DEVICE_DT_GET(DT_CHOSEN(zephyr_console));
     
     if (device_is_ready(console_dev)) {
 #ifdef CONFIG_USB_DEVICE_STACK

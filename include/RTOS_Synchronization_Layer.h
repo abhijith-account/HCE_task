@@ -40,3 +40,4 @@ struct SharedHeartRateBuffer{
 };
 extern SharedHeartRateBuffer hr_buffer;
 extern ZephyrSemaphore display_sem;
+extern ZephyrWorkQueue status_work;

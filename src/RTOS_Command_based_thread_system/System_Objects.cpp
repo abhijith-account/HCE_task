@@ -1,9 +1,6 @@
 #include "System_Objects.h"
 #include "Device_State_Machine+Watchdog.h"
 
-extern I2CManager i2c_manager;
-extern bool g_usb_connected;
-
 namespace SystemObjects {
     DeviceContext& context() { return sys_context; }
     I2CManager& i2c() { return i2c_manager; }

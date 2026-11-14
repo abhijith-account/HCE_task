@@ -78,7 +78,6 @@ Result<uint8_t> I2CManager::readRegister(uint16_t sensor_addr, uint8_t reg_addr)
         return Result<uint8_t>::Err(I2CFault::DEVICE_NOT_READY);
     }
 #ifdef IS_TEST_ENVIRONMENT
-    extern int g_i2c_force_errno;
     if (g_i2c_force_errno != 0) {
         return Result<uint8_t>::Err(classify_i2c_error(g_i2c_force_errno));
     }
@@ -108,7 +107,6 @@ Result<bool> I2CManager::writeRegister(uint16_t sensor_addr, uint8_t reg_addr, u
         return Result<bool>::Err(I2CFault::DEVICE_NOT_READY);
     }
 #ifdef IS_TEST_ENVIRONMENT
-    extern int g_i2c_force_errno;
     if (g_i2c_force_errno != 0) {
         return Result<bool>::Err(classify_i2c_error(g_i2c_force_errno));
     }
@@ -131,7 +129,6 @@ Result<uint16_t> I2CManager::readWord(uint16_t sensor_addr, uint8_t reg_addr) {
         return Result<uint16_t>::Err(I2CFault::DEVICE_NOT_READY);
     }
 #ifdef IS_TEST_ENVIRONMENT
-    extern int g_i2c_force_errno;
     if (g_i2c_force_errno != 0) {
         return Result<uint16_t>::Err(classify_i2c_error(g_i2c_force_errno));
     }
@@ -171,13 +168,12 @@ Result<uint32_t> I2CManager::read24Bit(uint16_t sensor_addr, uint8_t reg_addr) {
         return Result<uint32_t>::Err(I2CFault::DEVICE_NOT_READY);
     }
 #ifdef IS_TEST_ENVIRONMENT
-    extern int g_i2c_force_errno;
     if (g_i2c_force_errno != 0) {
         return Result<uint32_t>::Err(classify_i2c_error(g_i2c_force_errno));
     }
 #endif
     uint8_t buf[3] = {0U, 0U, 0U};
-    int err = i2c_burst_read(i2c_dev, sensor_addr, reg_addr, buf, 3);
+    const int err = i2c_burst_read(i2c_dev, sensor_addr, reg_addr, buf, 3);
 
     if (err == 0) {
         uint32_t val = (static_cast<uint32_t>(buf[0]) << 16U) | (static_cast<uint32_t>(buf[1]) << 8U) | static_cast<uint32_t>(buf[2]);
@@ -202,13 +198,12 @@ Result<uint64_t> I2CManager::read64Bit(uint16_t sensor_addr, uint8_t reg_addr) {
         return Result<uint64_t>::Err(I2CFault::DEVICE_NOT_READY);
     }
 #ifdef IS_TEST_ENVIRONMENT
-    extern int g_i2c_force_errno;
     if (g_i2c_force_errno != 0) {
         return Result<uint64_t>::Err(classify_i2c_error(g_i2c_force_errno));
     }
 #endif
     uint8_t buf[8] = {0U};
-    int err = i2c_burst_read(i2c_dev, sensor_addr, reg_addr, buf, 8);
+    const int err = i2c_burst_read(i2c_dev, sensor_addr, reg_addr, buf, 8);
 
     if (err == 0) {
         uint64_t val = (static_cast<uint64_t>(buf[0]) << 56U) | (static_cast<uint64_t>(buf[1]) << 48U) |

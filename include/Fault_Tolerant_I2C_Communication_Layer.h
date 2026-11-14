@@ -65,3 +65,5 @@ class I2CManager{
       Result<uint64_t> read64Bit(uint16_t sensor_addr,uint8_t reg_addr);
 };
 
+extern I2CManager i2c_manager;
+
