@@ -73,7 +73,7 @@ void active_burn_fn(void*, void*, void*) {
             // Multiply + SRAM load/store loop: much higher core switching activity than a spin.
             const uint32_t end = k_cycle_get_32() + k_us_to_cyc_ceil32(burn_us);
             uint32_t acc = 1U;
-            while ((int32_t)(k_cycle_get_32() - end) < 0) {
+            while (static_cast<int32_t>(k_cycle_get_32() - end) < 0) {
                 for (uint32_t i = 0; i < 64U; ++i) {
                     acc = acc * 1664525U + 1013904223U + buf[i];
                     buf[i] = acc ^ (acc >> 7);
@@ -133,7 +133,7 @@ void ActiveState::exit(PowerManager& pm) {
     // transitionTo() flushes the log queue before IdleState::enter() suspends anything.
     LOG_INF("Exiting PM_STATE_ACTIVE -> %s (no activity for %u ms)",
             s_transition_target_name,
-            (unsigned)(k_uptime_get_32() - pm.getLastActivityTime()));
+            static_cast<unsigned int>(k_uptime_get_32() - pm.getLastActivityTime()));
 
     pm_policy_state_lock_put(PM_STATE_SUSPEND_TO_IDLE, PM_ALL_SUBSTATES);
 #ifndef CONFIG_BOARD_MPS2_AN386
@@ -306,6 +306,6 @@ void IdleState::exit(PowerManager& pm) {
     // before StopState::enter() suspends the UART again.
     LOG_INF("Exiting PM_STATE_SUSPEND_TO_IDLE -> %s (idle for %u ms)%s",
             s_transition_target_name,
-            (unsigned)(k_uptime_get_32() - s_idle_entry_time_ms),
+            static_cast<unsigned int>(k_uptime_get_32() - s_idle_entry_time_ms),
             to_stop ? " [handoff: ADC + background threads stay parked]" : "");
 }

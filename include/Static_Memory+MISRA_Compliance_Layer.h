@@ -1,17 +1,15 @@
+#pragma once
 #include <array>
 #include <cstdint>
-#include <new>
 #include <cstddef>
 #include <zephyr/kernel.h>
-#include <zephyr/logging/log.h>
-#pragma once
 
 template <typename T,size_t N>
 class StaticPool{
     private:
-        alignas(4) std::array<uint8_t,sizeof(T)*N> memory_block;
+        alignas(4) std::array<uint8_t,sizeof(T)*N> memory_block{};
         std::array<bool,N> in_use;
-        k_mutex pool_mutex;
+        struct k_mutex pool_mutex{};
 
     public:
         StaticPool(){

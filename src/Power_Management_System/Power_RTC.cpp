@@ -86,7 +86,7 @@ int set_rtc_alarm(const struct device* rtc_dev, uint32_t interval_us, void* user
 
     rtc_alarm_set_callback(rtc_dev, 0, nullptr, nullptr);
 
-    struct rtc_time now;
+    struct rtc_time now{};
     if (rtc_get_time(rtc_dev, &now) != 0) {
         return -EIO;
     }

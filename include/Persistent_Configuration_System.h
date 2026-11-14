@@ -1,7 +1,6 @@
 #pragma once
 
 #include <zephyr/fs/fcb.h>
-#include <zephyr/logging/log.h>
 #include <zephyr/pm/policy.h>
 #include "Power_Management_System.h"
 #include <type_traits>
@@ -47,9 +46,9 @@ struct FcbRecordHeader {
 
 class ConfigStore {
     private:
-        struct fcb fcb_instance;
-        struct flash_sector fcb_sectors[2]; // Sectors 6 and 7
-        bool initialized;
+        struct fcb fcb_instance{};
+        struct flash_sector fcb_sectors[2]{}; // Sectors 6 and 7
+        bool initialized{false};
 
         static ConfigStore instance;
 
@@ -77,7 +76,7 @@ class ConfigStore {
 
             FlashPowerGuard pm_guard;
 
-            struct fcb_entry loc;
+            struct fcb_entry loc{};
             int rc = fcb_append(&fcb_instance, sizeof(FcbRecordHeader) + sizeof(T), &loc);
             if (rc == -ENOSPC) {
                 // Flash area full: rotate (erase oldest sector) and retry once.
@@ -116,8 +115,8 @@ class ConfigStore {
             loc.fe_elem_off = 0;
 
             bool found = false;
-            FcbRecordHeader header;
-            T temp_val;
+            FcbRecordHeader header{};
+            T temp_val{};
 
             // Walk through all records to find the most recent one for this key
             while (fcb_getnext(&fcb_instance, &loc) == 0) {

@@ -43,9 +43,9 @@ struct alignas(4) BME280Calibration {
 };
 
 struct BME280Data {
-    float temperature;
-    float pressure;
-    float humidity;
+    float temperature{0.0f};
+    float pressure{0.0f};
+    float humidity{0.0f};
 };
 
 /* Pure math: no I/O, no RTOS dependency. */

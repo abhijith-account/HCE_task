@@ -24,7 +24,7 @@ static_assert(PoolConfig::Elements >= QueueConfig::Depth, "Pool must support pea
 
 class ICommand {
 public:
-    uint32_t command_id;
+    uint32_t command_id{0};
 
     ICommand();
     virtual ~ICommand() = default;

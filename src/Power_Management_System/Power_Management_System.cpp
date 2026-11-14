@@ -27,9 +27,6 @@ using namespace pm_internal;
 // Device handles used by the monitor thread (the test binary may override the weak ones)
 // ============================================================================
 extern const struct device* i2c_hardware;
-extern const struct device* uart_hardware;
-extern const struct device* usb_hardware;
-extern const struct device* adc_hardware;
 
 #ifdef IS_TEST_ENVIRONMENT
     __attribute__((weak)) const struct device* rtc_hardware = nullptr;
@@ -152,7 +149,7 @@ bool PowerManager::init(const struct device* rtc, const struct device* i2c,
         adc_dev = nullptr;
     }
     if (rtc_dev) {
-        struct rtc_time time;
+        struct rtc_time time{};
         bool need_set = (rtc_get_time(rtc_dev, &time) != 0);
         if (need_set) {
             memset(&time, 0, sizeof(time));

@@ -2,6 +2,7 @@
 #include <zephyr/drivers/flash.h>
 #include <zephyr/storage/flash_map.h>
 #include <zephyr/pm/policy.h>
+#include <zephyr/logging/log.h>
 #include "Persistent_Configuration_System.h"
 #include "Device_State_Machine+Watchdog.h"
 #include "Power_Management_System.h"

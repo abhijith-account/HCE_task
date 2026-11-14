@@ -8,12 +8,11 @@
 #include <atomic>
 #include <cstddef>
 #include <string_view>
-#include <stdio.h>
-#include <cstdlib>
 #include "Device_State_Machine+Watchdog.h"
 #include "Smart_Battery_System.h"
 #include "Power_Management_System.h"
 #include <cstdio>
+
 constexpr std::size_t RX_RING_BUF_SIZE  = 256;
 constexpr std::size_t MAX_CMD_LEN       = 128;
 constexpr std::size_t StatusBufferSize  = 512;
