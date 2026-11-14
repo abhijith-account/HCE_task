@@ -71,7 +71,7 @@ namespace {
         }
 
         bool isSleeping() const noexcept { return atomic_get(&is_sleeping) != 0; }
-
+        };
         MemoryPowerObserver g_memoryPowerObserver;
         atomic_t g_memoryObserverRegistered = ATOMIC_INIT(0);
 
@@ -80,7 +80,6 @@ namespace {
                 PowerManager::getInstance().registerObserver(&g_memoryPowerObserver);
             }
         }
-    };
 }
 
 void memory_monitor_thread(void){
