@@ -107,7 +107,7 @@ Result<bool> I2CManager::writeRegister(uint16_t sensor_addr, uint8_t reg_addr, u
     if (is_bus_locked_out()||is_device_unavailable(i2c_dev)) {
         return Result<bool>::Err(I2CFault::DEVICE_NOT_READY);
     }
-#ifndef IS_TEST_ENVIRONMENT
+#ifdef IS_TEST_ENVIRONMENT
     extern int g_i2c_force_errno;
     if (g_i2c_force_errno != 0) {
         return Result<bool>::Err(classify_i2c_error(g_i2c_force_errno));
@@ -130,7 +130,7 @@ Result<uint16_t> I2CManager::readWord(uint16_t sensor_addr, uint8_t reg_addr) {
     if (is_bus_locked_out()||is_device_unavailable(i2c_dev)) {
         return Result<uint16_t>::Err(I2CFault::DEVICE_NOT_READY);
     }
-#ifndef IS_TEST_ENVIRONMENT
+#ifdef IS_TEST_ENVIRONMENT
     extern int g_i2c_force_errno;
     if (g_i2c_force_errno != 0) {
         return Result<uint16_t>::Err(classify_i2c_error(g_i2c_force_errno));
@@ -170,7 +170,7 @@ Result<uint32_t> I2CManager::read24Bit(uint16_t sensor_addr, uint8_t reg_addr) {
     if (is_bus_locked_out()||is_device_unavailable(i2c_dev)) {
         return Result<uint32_t>::Err(I2CFault::DEVICE_NOT_READY);
     }
-#ifndef IS_TEST_ENVIRONMENT
+#ifdef IS_TEST_ENVIRONMENT
     extern int g_i2c_force_errno;
     if (g_i2c_force_errno != 0) {
         return Result<uint32_t>::Err(classify_i2c_error(g_i2c_force_errno));
@@ -201,7 +201,7 @@ Result<uint64_t> I2CManager::read64Bit(uint16_t sensor_addr, uint8_t reg_addr) {
     if (is_bus_locked_out()||is_device_unavailable(i2c_dev)) {
         return Result<uint64_t>::Err(I2CFault::DEVICE_NOT_READY);
     }
-#ifndef IS_TEST_ENVIRONMENT
+#ifdef IS_TEST_ENVIRONMENT
     extern int g_i2c_force_errno;
     if (g_i2c_force_errno != 0) {
         return Result<uint64_t>::Err(classify_i2c_error(g_i2c_force_errno));
