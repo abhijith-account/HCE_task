@@ -96,7 +96,7 @@ HAL_StatusTypeDef stop_enter_wfi(uint32_t &out_pwr_csr_on_wake, uint32_t &out_ic
     SET_BIT(PWR->CR, PWR_CR_CWUF | PWR_CR_CSBF);   // clear wake-up / standby flags
     __DSB();
 
-    uint32_t primask = __get_PRIMASK();
+    const uint32_t primask = __get_PRIMASK();
     __disable_irq();
 
     SET_BIT(SCB->SCR, SCB_SCR_SLEEPDEEP_Msk);

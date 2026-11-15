@@ -37,7 +37,7 @@ Reading<int16_t> readCelsius() {
         sum_mv += mv;
     }
 
-    int32_t avg_mv = sum_mv / static_cast<int32_t>(OVERSAMPLE_COUNT);
+    const int32_t avg_mv = sum_mv / static_cast<int32_t>(OVERSAMPLE_COUNT);
 
     if ((avg_mv <= 0) || (avg_mv >= SUPPLY_MILLIVOLTS)) return Reading<int16_t>::Err(Fault::OUT_OF_RANGE);
 

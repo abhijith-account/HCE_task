@@ -29,12 +29,12 @@ Result<uint64_t> SensorReadCmd::readHardwareData() const noexcept {
             return Result<uint64_t>::Err(I2CFault::NACK);
 
         case ReadLength::Triple: {
-            auto res = SystemObjects::i2c().read24Bit(s_addr, reg_addr);
+            const auto res = SystemObjects::i2c().read24Bit(s_addr, reg_addr);
             return res.isOk() ? Result<uint64_t>::Ok(res.unwrap()) : Result<uint64_t>::Err(res.error);
         }
 
         case ReadLength::Word: {
-            auto res = SystemObjects::i2c().readWord(s_addr, reg_addr);
+            const auto res = SystemObjects::i2c().readWord(s_addr, reg_addr);
             return res.isOk() ? Result<uint64_t>::Ok(res.unwrap()) : Result<uint64_t>::Err(res.error);
         }
 
@@ -65,7 +65,7 @@ void SensorReadCmd::execute() noexcept {
         raw = PAV3015Driver::readMock();
         if (fail_counter) *fail_counter = 0;
     } else {
-        auto res = readHardwareData();
+        const auto res = readHardwareData();
         if (!res.isOk()) {
             logCommandError(LogTags::READ, command_id, "I2C Transaction Failed.");
             if (fail_counter && ++(*fail_counter) >= 3) {
@@ -77,7 +77,7 @@ void SensorReadCmd::execute() noexcept {
         if (fail_counter) *fail_counter = 0;
     } 
 #else
-    auto res = readHardwareData();
+    const auto res = readHardwareData();
     if (!res.isOk()) {
         logCommandError(LogTags::READ, command_id, "I2C Transaction Failed.");
         if (fail_counter && ++(*fail_counter) >= 3) {
@@ -107,7 +107,7 @@ void SensorReadCmd::execute() noexcept {
     }
 
     if (last_val_ptr != nullptr) {
-        uint64_t diff = (raw > *last_val_ptr) ? (raw - *last_val_ptr) : (*last_val_ptr - raw);
+        const uint64_t diff = (raw > *last_val_ptr) ? (raw - *last_val_ptr) : (*last_val_ptr - raw);
         if (diff > threshold || *last_val_ptr == 0) {
             *last_val_ptr = raw;
             SystemObjects::power().reportActivity();

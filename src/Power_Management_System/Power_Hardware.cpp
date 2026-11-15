@@ -48,7 +48,7 @@ void usb_reconnect_work_handler(struct k_work *work) {
 #ifndef CONFIG_BOARD_MPS2_AN386
     usb_restore_pins_and_reenable();
 #ifdef CONFIG_USB_DEVICE_STACK
-    int err = usb_dc_attach();
+    const int err = usb_dc_attach();
     if (err == 0) {
         LOG_INF("USB re-attached after STOP wake; awaiting host re-enumeration");
     } else {
@@ -68,7 +68,7 @@ bool pm_device_suspend_tolerant(const struct device* dev, const char* name) {
         return true;
     }
 
-    int rc = pm_device_action_run(dev, PM_DEVICE_ACTION_SUSPEND);
+    const int rc = pm_device_action_run(dev, PM_DEVICE_ACTION_SUSPEND);
     if (rc == 0 || rc == -EALREADY || rc == -ENOSYS || rc == -ENOTSUP) {
         return true;
     }
@@ -82,7 +82,7 @@ bool pm_device_resume_tolerant(const struct device* dev, const char* name) {
         return true;
     }
 
-    int rc = pm_device_action_run(dev, PM_DEVICE_ACTION_RESUME);
+    const int rc = pm_device_action_run(dev, PM_DEVICE_ACTION_RESUME);
     if (rc == 0 || rc == -EALREADY || rc == -ENOSYS || rc == -ENOTSUP) {
         return true;
     }

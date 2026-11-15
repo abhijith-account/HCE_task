@@ -23,8 +23,8 @@ enum class SystemState {
 
 class WatchdogTimer {
     private:
-        const device* wdt_dev;
-        int channel_id;
+        const struct device *wdt_dev{nullptr};
+        int channel_id{-1};
     public:
         WatchdogTimer();
         bool init(uint32_t timeout_ms);
@@ -34,7 +34,7 @@ class WatchdogTimer {
 
 class DeviceContext : public IPowerObserver {
     private:
-        SystemState current_state;
+        SystemState current_state{SystemState::INIT};
         WatchdogTimer wdt;
         static bool isLegalTransition(SystemState from, SystemState to);
     public:

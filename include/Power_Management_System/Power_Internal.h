@@ -122,52 +122,52 @@ namespace pm_internal {
 
 // ---- register snapshots ----
 struct GpioSnapshot {
-    uint32_t moder[8];
-    uint32_t pupdr[8];
-    uint32_t otyper[8];
-    uint32_t ospeedr[8];
-    uint32_t odr[8];
-    uint32_t afr[8][2];   // AFRL / AFRH, replayed through HAL_GPIO_Init() on restore
+    uint32_t moder[8]{};
+    uint32_t pupdr[8]{};
+    uint32_t otyper[8]{};
+    uint32_t ospeedr[8]{};
+    uint32_t odr[8]{};
+    uint32_t afr[8][2]{};   // AFRL / AFRH, replayed through HAL_GPIO_Init() on restore
 };
 
 struct PeripheralClockSnapshot {
-    uint32_t apb1enr;
-    uint32_t apb2enr;
-    uint32_t apb1lpenr;
-    uint32_t apb2lpenr;
+    uint32_t apb1enr{0U};
+    uint32_t apb2enr{0U};
+    uint32_t apb1lpenr{0U};
+    uint32_t apb2lpenr{0U};
 };
 
 struct ClockSnapshot {
-    uint32_t cr;
-    uint32_t cfgr;
-    uint32_t systick_ctrl;
-    uint32_t systick_load;
-    uint32_t flash_acr;
-    uint32_t pwr_vos;
-    uint32_t pwr_od;     // PWR_CR ODEN | ODSWEN as found before the downscale (0 if Over-drive was off)
+    uint32_t cr{0U};
+    uint32_t cfgr{0U};
+    uint32_t systick_ctrl{0U};
+    uint32_t systick_load{0U};
+    uint32_t flash_acr{0U};
+    uint32_t pwr_vos{0U};
+    uint32_t pwr_od{0U};     // PWR_CR ODEN | ODSWEN as found before the downscale (0 if Over-drive was off)
 };
 
 struct AhbClockSnapshot {
-    uint32_t ahb1enr;
-    uint32_t ahb2enr;
-    uint32_t ahb3enr;
-    uint32_t ahb1lpenr;
-    uint32_t ahb2lpenr;
-    uint32_t ahb3lpenr;
+    uint32_t ahb1enr{0U};
+    uint32_t ahb2enr{0U};
+    uint32_t ahb3enr{0U};
+    uint32_t ahb1lpenr{0U};
+    uint32_t ahb2lpenr{0U};
+    uint32_t ahb3lpenr{0U};
 };
 
 struct AdcSnapshot {
-    uint32_t cr1_1;
-    uint32_t cr2_1;
+    uint32_t cr1_1{0U};
+    uint32_t cr2_1{0U};
 #ifdef ADC2
-    uint32_t cr1_2;
-    uint32_t cr2_2;
+    uint32_t cr1_2{0U};
+    uint32_t cr2_2{0U};
 #endif
 #ifdef ADC3
-    uint32_t cr1_3;
-    uint32_t cr2_3;
+    uint32_t cr1_3{0U};
+    uint32_t cr2_3{0U};
 #endif
-    uint32_t ccr;
+    uint32_t ccr{0U};
 };
 
 // ---- Power_Hardware.cpp: clocks, GPIO, ADC, peripheral gating, USB, thread suspension ----

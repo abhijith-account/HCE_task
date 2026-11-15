@@ -24,7 +24,7 @@ namespace LPS22HBDriver {
 
 bool initDevice(I2CManager& i2c) noexcept {
     const uint16_t addr = static_cast<uint16_t>(SensorID::LPS22HB);
-    auto res = i2c.writeRegister(addr, LPS22HBConfig::CTRL_REG1, LPS22HBConfig::CTRL_REG1_VALUE);
+    const auto res = i2c.writeRegister(addr, LPS22HBConfig::CTRL_REG1, LPS22HBConfig::CTRL_REG1_VALUE);
     return res.isOk();
 }
 

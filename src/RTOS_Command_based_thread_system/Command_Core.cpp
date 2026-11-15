@@ -15,7 +15,7 @@ K_MSGQ_DEFINE(processor_queue, sizeof(ICommand*), QueueConfig::Depth, QueueConfi
 K_MSGQ_DEFINE(logger_queue, sizeof(ICommand*), QueueConfig::Depth, QueueConfig::Alignment);
 
 void* allocateCommandMemory() noexcept {
-    void* mem = g_commandPool.allocate();
+    void* const mem = g_commandPool.allocate();
     if (!mem) {
         g_queueStats.commandsDropped++;
         LOG_ERR("Memory pool exhausted. Dropping command.");
@@ -29,7 +29,7 @@ bool enqueueCommandRaw(k_msgq* queue, ICommand* cmd) noexcept {
         return false;
     }
 
-    uint32_t used = QueueConfig::Depth - k_msgq_num_free_get(queue);
+    const uint32_t used = QueueConfig::Depth - k_msgq_num_free_get(queue);
     if (queue == PROCESSOR_Q && used > g_queueStats.processorPeakDepth) {
         g_queueStats.processorPeakDepth = used;
     } else if (queue == LOGGER_Q && used > g_queueStats.loggerPeakDepth) {

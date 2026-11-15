@@ -25,7 +25,7 @@ namespace INA226 {
       return Result<int16_t>::Err(r.error);
     }
     
-    uint16_t raw_val=r.unwrap();
+    const uint16_t raw_val=r.unwrap();
     return Result<int16_t>::Ok(static_cast<int16_t>((raw_val<<8)|(raw_val>>8)));
   }
   
@@ -36,7 +36,7 @@ namespace INA226 {
       return Result<int16_t>::Err(r.error);
     }
     
-    uint16_t raw_val=r.unwrap();
+    const uint16_t raw_val=r.unwrap();
     return Result<int16_t>::Ok(static_cast<int16_t>((raw_val<<8)|(raw_val>>8)));
   }
   
@@ -47,7 +47,7 @@ namespace INA226 {
       return Result<int16_t>::Err(r.error);
     }
     
-    uint16_t raw_val=r.unwrap();
+    const uint16_t raw_val=r.unwrap();
     return Result<int16_t>::Ok(static_cast<int16_t>((raw_val<<8)|(raw_val>>8)));
   }
 }

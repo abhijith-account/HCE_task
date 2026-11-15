@@ -6,15 +6,9 @@
 
 #include "Smart_Battery_System.h"
 #include "Persistent_Configuration_System.h"
-#include "Power_Management_System.h" 
-#include "Retry_Policy.h"
 #include "Fsm_classifier.h"
 #include <zephyr/logging/log.h>
-#include <zephyr/device.h>
-#include <zephyr/sys/byteorder.h>
-#include <zephyr/sys/atomic.h>
 #include <zephyr/kernel.h>
-#include <array>
 #include <algorithm>
 
 LOG_MODULE_REGISTER(BATTERY_SYS, LOG_LEVEL_INF);
@@ -47,7 +41,7 @@ void SbsBattery::setWatchdogFeedHook(WatchdogFeedHook hook) {
 }
 
 void SbsBattery::feedWatchdog() const {
-    WatchdogFeedHook hook = watchdog_feed_hook.load();
+    const WatchdogFeedHook hook = watchdog_feed_hook.load();
     if (hook) hook();
 }
 
@@ -123,13 +117,13 @@ void SbsBattery::updateStateAndPublish(uint16_t pack_mv, int32_t current_ma, int
                               BatteryLimits::KF_PROCESS_NOISE);
 
         // --- 2. MEASUREMENT (OCV Compensation) ---
-        int32_t ir_drop_mv = (current_ma * BatteryLimits::ESTIMATED_PACK_IR_MILLIOHMS) / 1000;
+        const int32_t ir_drop_mv = (current_ma * BatteryLimits::ESTIMATED_PACK_IR_MILLIOHMS) / 1000;
         int32_t estimated_ocv_mv = static_cast<int32_t>(pack_mv) - ir_drop_mv;
         estimated_ocv_mv = std::clamp(estimated_ocv_mv, 0, static_cast<int32_t>(UINT16_MAX));
-        float z_measured_soc = static_cast<float>(estimateSocFromVoltage(static_cast<uint16_t>(estimated_ocv_mv)));
+        const float z_measured_soc = static_cast<float>(estimateSocFromVoltage(static_cast<uint16_t>(estimated_ocv_mv)));
 
         // --- 3. KALMAN UPDATE (Sensor Fusion) ---
-        float r_noise = (absolute(shunt_uv) < BatteryLimits::IDLE_SHUNT_UV_THRESHOLD) 
+        const float r_noise = (absolute(shunt_uv) < BatteryLimits::IDLE_SHUNT_UV_THRESHOLD) 
                         ? BatteryLimits::KF_MEAS_NOISE_REST 
                         : BatteryLimits::KF_MEAS_NOISE_ACTIVE;
 

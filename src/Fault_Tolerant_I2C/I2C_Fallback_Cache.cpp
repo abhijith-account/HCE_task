@@ -8,14 +8,9 @@
 
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
-#include <zephyr/device.h>
 #include "Fault_Tolerant_I2C_Communication_Layer.h"
 #include "Static_Memory+MISRA_Compliance_Layer.h"
-#include "Power_Management_System.h"
 #include "Device_State_Machine+Watchdog.h" 
-#include <zephyr/sys/atomic.h>
-#include <cerrno>
-#include <cstdlib>
 #include <new>
 #include <cstdint>
 #include "I2C_Internal.h"
@@ -28,12 +23,12 @@ constexpr uint8_t CACHE_RELIABILITY_MIN_FOR_FALLBACK = 50U;
 constexpr uint8_t CACHE_RELIABILITY_DECAY_PER_USE = 10U;
 
 struct CacheEntry {
-    uint32_t key;
-    uint64_t raw_value;
-    int64_t timestamp;
-    uint8_t reliability_score;
-    bool is_calibrated;
-    uint32_t sample_count;
+    uint32_t key{0U};
+    uint64_t raw_value{0ULL};
+    int64_t timestamp{0U};
+    uint8_t reliability_score{0U};
+    bool is_calibrated{false};
+    uint32_t sample_count{0U};
 };
 
 static StaticPool<CacheEntry, MAX_CACHED_REGISTERS> cache_pool;

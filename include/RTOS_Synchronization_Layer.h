@@ -5,7 +5,7 @@
 
 class ZephyrSemaphore {
   private:
-      k_sem sem;
+    struct k_sem sem{};
   public:
     ZephyrSemaphore(unsigned int initial,unsigned int limit);
     void give();
@@ -14,7 +14,7 @@ class ZephyrSemaphore {
 
 class ZephyrMutex{
   private:
-      k_mutex mutex;
+      struct k_mutex mutex{};
   public:
       ZephyrMutex();
       void lock();
@@ -23,8 +23,8 @@ class ZephyrMutex{
 
 class ZephyrWorkQueue {
   private:
-      k_work_delayable work;
-      void (*callback)();
+      struct k_work_delayable work{};
+      void (*callback)(){nullptr};
       static void execute_callback(struct k_work *w);
   public:
       explicit ZephyrWorkQueue(void (*cb)());
@@ -33,7 +33,7 @@ class ZephyrWorkQueue {
 };
 
 struct SharedHeartRateBuffer{
-      std::array<uint32_t,10> data;
+      std::array<uint32_t, 10> data{};
       size_t head=0;
       size_t tail=0;
       ZephyrMutex mutex;
