@@ -16,7 +16,7 @@ private:
 
 public:
     SensorReadCmd(SensorID s_id, uint8_t r_addr, ReadLength len) noexcept;
-    void execute() noexcept override final;
+    void execute() noexcept override;
 };
 
 class ComputeCmd final : public ICommand {
@@ -27,7 +27,7 @@ private:
 
 public:
     ComputeCmd(SensorID s_id, uint8_t r_addr, uint64_t data) noexcept;
-    void execute() noexcept override final;
+    void execute() noexcept override;
 };
 
 #ifdef IS_TEST_ENVIRONMENT

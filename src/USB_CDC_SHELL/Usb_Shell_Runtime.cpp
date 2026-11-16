@@ -50,7 +50,6 @@ namespace {
     }
 }
 
-extern DeviceContext sys_context;
 UsbShell diag_shell(&sys_context, getSmartBatteryInstance());
 
 void UsbShell::process() {

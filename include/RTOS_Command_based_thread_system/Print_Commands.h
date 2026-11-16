@@ -16,7 +16,7 @@ private:
 
 public:
     PrintCmd(SensorID s_id, float val) noexcept;
-    void execute() noexcept override final;
+    void execute() noexcept override;
 };
 
 class PrintBME280Cmd final : public ICommand {
@@ -25,7 +25,7 @@ private:
 
 public:
     explicit PrintBME280Cmd(const BME280Data& d) noexcept;
-    void execute() noexcept override final;
+    void execute() noexcept override;
 };
 
 class PrintLPS22HBCmd final : public ICommand {
@@ -34,7 +34,7 @@ private:
 
 public:
     explicit PrintLPS22HBCmd(const LPS22HBData& d) noexcept;
-    void execute() noexcept override final;
+    void execute() noexcept override;
 };
 
 [[nodiscard]] bool printBME280Measurement(const BME280Data& data) noexcept;

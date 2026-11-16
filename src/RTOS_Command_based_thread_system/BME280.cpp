@@ -22,9 +22,9 @@ namespace BMEConstants {
 }
 
 namespace {
-    BME280Calibration g_bme280Calib;
+    BME280Calibration g_bme280Calib{};
 
-    struct k_mutex calib_mutex;
+    struct k_mutex calib_mutex{};
     bool calib_mutex_initialized = false;
 
     void ensureCalibMutex() {
@@ -35,9 +35,9 @@ namespace {
     }
 
     [[nodiscard]] bool readTempCalibration(I2CManager& i2c, uint16_t addr) noexcept {
-        auto t1 = i2c.readWord(addr, BME280CalibReg::DIG_T1); if (!t1.isOk()) { return false; }
-        auto t2 = i2c.readWord(addr, BME280CalibReg::DIG_T2); if (!t2.isOk()) { return false; }
-        auto t3 = i2c.readWord(addr, BME280CalibReg::DIG_T3); if (!t3.isOk()) { return false; }
+        const auto t1 = i2c.readWord(addr, BME280CalibReg::DIG_T1); if (!t1.isOk()) { return false; }
+        const auto t2 = i2c.readWord(addr, BME280CalibReg::DIG_T2); if (!t2.isOk()) { return false; }
+        const auto t3 = i2c.readWord(addr, BME280CalibReg::DIG_T3); if (!t3.isOk()) { return false; }
 
         g_bme280Calib.dig_T1 = t1.unwrap();
         g_bme280Calib.dig_T2 = static_cast<int16_t>(t2.unwrap());
@@ -46,15 +46,15 @@ namespace {
     }
 
     [[nodiscard]] bool readPressureCalibration(I2CManager& i2c, uint16_t addr) noexcept {
-        auto p1 = i2c.readWord(addr, BME280CalibReg::DIG_P1); if (!p1.isOk()) { return false; }
-        auto p2 = i2c.readWord(addr, BME280CalibReg::DIG_P2); if (!p2.isOk()) { return false; }
-        auto p3 = i2c.readWord(addr, BME280CalibReg::DIG_P3); if (!p3.isOk()) { return false; }
-        auto p4 = i2c.readWord(addr, BME280CalibReg::DIG_P4); if (!p4.isOk()) { return false; }
-        auto p5 = i2c.readWord(addr, BME280CalibReg::DIG_P5); if (!p5.isOk()) { return false; }
-        auto p6 = i2c.readWord(addr, BME280CalibReg::DIG_P6); if (!p6.isOk()) { return false; }
-        auto p7 = i2c.readWord(addr, BME280CalibReg::DIG_P7); if (!p7.isOk()) { return false; }
-        auto p8 = i2c.readWord(addr, BME280CalibReg::DIG_P8); if (!p8.isOk()) { return false; }
-        auto p9 = i2c.readWord(addr, BME280CalibReg::DIG_P9); if (!p9.isOk()) { return false; }
+        const auto p1 = i2c.readWord(addr, BME280CalibReg::DIG_P1); if (!p1.isOk()) { return false; }
+        const auto p2 = i2c.readWord(addr, BME280CalibReg::DIG_P2); if (!p2.isOk()) { return false; }
+        const auto p3 = i2c.readWord(addr, BME280CalibReg::DIG_P3); if (!p3.isOk()) { return false; }
+        const auto p4 = i2c.readWord(addr, BME280CalibReg::DIG_P4); if (!p4.isOk()) { return false; }
+        const auto p5 = i2c.readWord(addr, BME280CalibReg::DIG_P5); if (!p5.isOk()) { return false; }
+        const auto p6 = i2c.readWord(addr, BME280CalibReg::DIG_P6); if (!p6.isOk()) { return false; }
+        const auto p7 = i2c.readWord(addr, BME280CalibReg::DIG_P7); if (!p7.isOk()) { return false; }
+        const auto p8 = i2c.readWord(addr, BME280CalibReg::DIG_P8); if (!p8.isOk()) { return false; }
+        const auto p9 = i2c.readWord(addr, BME280CalibReg::DIG_P9); if (!p9.isOk()) { return false; }
 
         g_bme280Calib.dig_P1 = p1.unwrap();
         g_bme280Calib.dig_P2 = static_cast<int16_t>(p2.unwrap());
@@ -69,14 +69,14 @@ namespace {
     }
 
     [[nodiscard]] bool readHumidityCalibration(I2CManager& i2c, uint16_t addr) noexcept {
-        auto h1 = i2c.readRegister(addr, BME280CalibReg::DIG_H1); if (!h1.isOk()) { return false;}
-        auto h2_l = i2c.readRegister(addr, BME280CalibReg::DIG_H2_L); if (!h2_l.isOk()) { return false;}
-        auto h2_m = i2c.readRegister(addr, BME280CalibReg::DIG_H2_M); if (!h2_m.isOk()) { return false;}
-        auto h3 = i2c.readRegister(addr, BME280CalibReg::DIG_H3); if (!h3.isOk()) { return false;}
-        auto h4_m = i2c.readRegister(addr, BME280CalibReg::DIG_H4_M); if (!h4_m.isOk()) { return false;}
-        auto h_shared = i2c.readRegister(addr, BME280CalibReg::DIG_H_SHARED); if (!h_shared.isOk()) { return false;}
-        auto h5_m = i2c.readRegister(addr, BME280CalibReg::DIG_H5_M); if (!h5_m.isOk()) { return false;}
-        auto h6 = i2c.readRegister(addr, BME280CalibReg::DIG_H6); if (!h6.isOk()) { return false;}
+        const auto h1 = i2c.readRegister(addr, BME280CalibReg::DIG_H1); if (!h1.isOk()) { return false;}
+        const auto h2_l = i2c.readRegister(addr, BME280CalibReg::DIG_H2_L); if (!h2_l.isOk()) { return false;}
+        const auto h2_m = i2c.readRegister(addr, BME280CalibReg::DIG_H2_M); if (!h2_m.isOk()) { return false;}
+        const auto h3 = i2c.readRegister(addr, BME280CalibReg::DIG_H3); if (!h3.isOk()) { return false;}
+        const auto h4_m = i2c.readRegister(addr, BME280CalibReg::DIG_H4_M); if (!h4_m.isOk()) { return false;}
+        const auto h_shared = i2c.readRegister(addr, BME280CalibReg::DIG_H_SHARED); if (!h_shared.isOk()) { return false;}
+        const auto h5_m = i2c.readRegister(addr, BME280CalibReg::DIG_H5_M); if (!h5_m.isOk()) { return false;}
+        const auto h6 = i2c.readRegister(addr, BME280CalibReg::DIG_H6); if (!h6.isOk()) { return false;}
 
         const auto shared_val = h_shared.unwrap();
         g_bme280Calib.dig_H1 = h1.unwrap();
