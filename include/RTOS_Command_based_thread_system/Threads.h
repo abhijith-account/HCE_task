@@ -13,6 +13,7 @@ namespace ThreadConfig {
 }
 
 static_assert(ThreadConfig::PrioProcessor < ThreadConfig::PrioProducer, "Processor must have higher priority than Producer to prevent starvation");
+static_assert(ThreadConfig::PrioLogger < ThreadConfig::PrioProcessor, "Logger must have higher priority than Processor to prevent queue starvation");
 
 enum class ProducerState : uint8_t {
     ReadBME,

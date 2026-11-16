@@ -14,7 +14,6 @@ extern int run_thread_iterations;
 #endif
 
 LOG_MODULE_REGISTER(MEM_SYS, LOG_LEVEL_INF);
-extern DeviceContext sys_context;
 
 atomic_t g_mem_mon_alive = ATOMIC_INIT(1);
 
@@ -100,7 +99,7 @@ void memory_monitor_thread(void){
                     size_t unused_bytes = 0;
                     int ret = k_thread_stack_space_get(*mt.tid, &unused_bytes);
                     if (ret == 0) {
-                        LOG_INF("%-16s: unused %5u B", mt.label, (unsigned)unused_bytes);
+                        LOG_INF("%-16s: unused %5u B", mt.label, static_cast<unsigned int>(unused_bytes));
                     } else {
                         LOG_INF("%-16s: stack info unavailable (err %d)", mt.label, ret);
                     }

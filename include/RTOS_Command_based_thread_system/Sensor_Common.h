@@ -23,9 +23,9 @@ static_assert(sizeof(SensorID) == 2, "SensorID must be 16-bit");
 static_assert(sizeof(ReadLength) == 1, "ReadLength must be 8-bit");
 
 struct SensorDescriptor {
-    SensorID id;
-    uint8_t reg;
-    ReadLength len;
+    SensorID id{SensorID::BME280};
+    uint8_t reg{0U};
+    ReadLength len{ReadLength::Word};
 };
 
 namespace LogTags {

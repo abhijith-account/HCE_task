@@ -14,15 +14,13 @@
 #include "Persistent_Configuration_System.h"
 #include "Static_Memory+MISRA_Compliance_Layer.h"
 #include "Power_Management_System.h"
+#include "USB_CDC_Virtual_COM_Shell_Interface.h"
 
 #include <zephyr/debug/thread_analyzer.h>
 #include <new>
 #include <zephyr/sys/atomic.h>
 
 LOG_MODULE_REGISTER(MAIN_OS, LOG_LEVEL_INF);
-
-// Add the external flag at the top with your other externs
-extern bool g_usb_connected;
 
 #ifdef CONFIG_USB_DEVICE_STACK
 /* Callback to monitor physical USB hardware events */

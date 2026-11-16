@@ -4,22 +4,14 @@
 // The main loop, power gating and the thread are in Usb_Shell_Runtime.cpp; the transport is in Usb_Cdc_Facade.cpp.
 
 #include "USB_CDC_Virtual_COM_Shell_Interface.h"
-#include <zephyr/device.h>
-#include <zephyr/drivers/uart.h>
-#include <zephyr/sys/__assert.h>
 #include "Persistent_Configuration_System.h"
-#include <zephyr/usb/usb_device.h>
+#include "Device_State_Machine+Watchdog.h"
 #include <zephyr/logging/log.h>
 #include <zephyr/sys/reboot.h>
 #include <zephyr/kernel.h>
-#include <zephyr/sys/atomic.h>
 #include <charconv>
-#include <cstring>
 #include <cstdarg>
 #include <cstdio>
-#include <utility>
-#include "Device_State_Machine+Watchdog.h"
-#include "Power_Management_System.h" 
 
 // snprintf indirection: the host tests inject formatting failures / truncation through testable_snprintf().
 #ifdef IS_TEST_ENVIRONMENT
@@ -35,7 +27,7 @@
         if (mock_snprintf_call_count == mock_snprintf_exact_return_on_call) return mock_snprintf_exact_return_value;
         va_list args;
         va_start(args, format);
-        int ret = vsnprintf(str, size, format, args);
+        const int ret = vsnprintf(str, size, format, args);
         va_end(args);
         return ret;
     }
@@ -54,7 +46,7 @@ namespace {
         }
         const auto* first = token.data();
         const auto* last  = token.data() + token.size();
-        auto [ptr, ec] = std::from_chars(first, last, out_value);
+        const auto [ptr, ec] = std::from_chars(first, last, out_value);
         return ec == std::errc{} && ptr == last;
     }
 
@@ -150,9 +142,9 @@ UsbShell::StatusSnapshot UsbShell::collectStatus() const {
         uint32_t deviceId = InfusionDeviceConfig::UnprovisionedId;
         uint8_t rate = 0;
         uint8_t threshold = 0;
-        (void)cfg.getDeviceId(slot, deviceId);
+        static_cast<void>(cfg.getDeviceId(slot, deviceId));
         const bool haveRate = cfg.getInfusionRate(slot, rate);
-        (void)cfg.getAlarmThreshold(slot, threshold);
+        static_cast<void>(cfg.getAlarmThreshold(slot, threshold));
         snap.slots[idx] = {deviceId, haveRate ? rate : static_cast<uint8_t>(0), threshold};
         ++idx;
     }
@@ -219,8 +211,8 @@ void UsbShell::cmdSetRate(std::string_view args) noexcept {
         return;
     }
 
-    std::string_view device_str = trim(args.substr(0, separator_pos));
-    std::string_view rate_str = trim(args.substr(separator_pos + 1));
+    const std::string_view device_str = trim(args.substr(0, separator_pos));
+    const std::string_view rate_str = trim(args.substr(separator_pos + 1));
     
     int device_id_in = 0;
     int rate_in        = 0;

@@ -11,8 +11,8 @@ namespace pm_internal {
 
 // ---- USB OTG FS: soft-disconnect, release PA11/PA12 for STOP, and bring them back ----
 static uint32_t s_usb_prev_gccfg = 0;
-#define PM_USB_PCGCCTL   (*(volatile uint32_t*)((uint32_t)USB_OTG_FS + 0xE00U))
-#define PM_USB_DEVICE    ((USB_OTG_DeviceTypeDef*)((uint32_t)USB_OTG_FS + USB_OTG_DEVICE_BASE))
+#define PM_USB_PCGCCTL   (*reinterpret_cast<volatile uint32_t*>(reinterpret_cast<uintptr_t>(USB_OTG_FS) + 0xE00U))
+#define PM_USB_DEVICE    (reinterpret_cast<USB_OTG_DeviceTypeDef*>(reinterpret_cast<uintptr_t>(USB_OTG_FS) + USB_OTG_DEVICE_BASE))
 
 void usb_disable_hardware_and_release_pins() {
     __HAL_RCC_USB_OTG_FS_CLK_ENABLE();

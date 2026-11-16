@@ -45,17 +45,17 @@ public:
 
 private:
     INA226::Driver ina226;
-    DeviceContext* sys_context;
+    DeviceContext* sys_context{nullptr};
 
-    std::atomic<BatteryFSM> current_state;
-    std::atomic<bool> full_charge_logged;
-    std::atomic<WatchdogFeedHook> watchdog_feed_hook;
+    std::atomic<BatteryFSM> current_state{BatteryFSM::IDLE};
+    std::atomic<bool> full_charge_logged{false};
+    std::atomic<WatchdogFeedHook> watchdog_feed_hook{nullptr};
 
-    mutable struct k_mutex cache_mutex;
+    mutable struct k_mutex cache_mutex{};
 
-    uint32_t last_valid_comm_time;
-    uint32_t consecutive_comm_failures;
-    uint32_t consecutive_mutex_failures;
+    uint32_t last_valid_comm_time{0U};
+    uint32_t consecutive_comm_failures{0U};
+    uint32_t consecutive_mutex_failures{0U};
 
     static constexpr uint32_t COMM_TIMEOUT_MS = 5000U;
     static constexpr uint32_t MAX_RETRIES = 3U;
@@ -64,14 +64,14 @@ private:
     static constexpr uint32_t WATCHDOG_FAILURE_THRESHOLD = 2U;
     static constexpr uint32_t WATCHDOG_MUTEX_FAILURE_THRESHOLD = 5U;
 
-    BmsCache cache;
-    AtomicCommStatistics stats;
+    BmsCache cache{};
+    AtomicCommStatistics stats{};
 
-    bool soc_initialized;
-    int64_t accumulated_uAh;
-    uint32_t last_poll_time_ms;
-    uint8_t consecutive_jump_rejects;
-    uint32_t rest_period_start_ms;
+    bool soc_initialized{false};
+    int64_t accumulated_uAh{0};
+    uint32_t last_poll_time_ms{0U};
+    uint8_t consecutive_jump_rejects{0U};
+    uint32_t rest_period_start_ms{0U};
 
     result<int16_t> fetchBusVoltageRawWithRetry();
     result<int16_t> fetchCurrentRawWithRetry();
@@ -88,8 +88,8 @@ private:
     void publishError(CommFault fault);
     BmsCache getCacheSnapshot() const;
     
-    float kf_soc_pct;
-    float kf_p_covariance;
+    float kf_soc_pct{0.0f};
+    float kf_p_covariance{1.0f};
 };
 
 SbsBattery* getSmartBatteryInstance();

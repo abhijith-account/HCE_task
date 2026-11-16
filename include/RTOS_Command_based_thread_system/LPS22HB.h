@@ -20,8 +20,8 @@ namespace MockValues {
 }
 
 struct LPS22HBData {
-    float temperature;
-    float pressure;
+    float temperature{0.0f};
+    float pressure{0.0f};
 };
 
 /* Pure math: no I/O, no RTOS dependency. */

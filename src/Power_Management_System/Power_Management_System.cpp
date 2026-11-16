@@ -27,7 +27,6 @@ using namespace pm_internal;
 // Device handles used by the monitor thread (the test binary may override the weak ones)
 // ============================================================================
 extern const struct device* i2c_hardware;
-
 #ifdef IS_TEST_ENVIRONMENT
     __attribute__((weak)) const struct device* rtc_hardware = nullptr;
     __attribute__((weak)) const struct device* uart_hardware = nullptr;

@@ -119,24 +119,24 @@ private:
     void transitionTo(IPowerState& next_state);
     size_t captureObservers(std::array<IPowerObserver*, MAX_OBSERVERS>& out);
 
-    IPowerState* current_state;
+    IPowerState* current_state{nullptr};
 
-    uint32_t last_sleep_time;
-    uint32_t expected_wake_time;
+    uint32_t last_sleep_time{0U};
+    uint32_t expected_wake_time{0U};
 
-    const struct device* rtc_dev;
-    const struct device* i2c_dev;
-    const struct device* uart_dev;
-    const struct device* usb_dev;
-    const struct device* adc_dev;
+    const struct device* rtc_dev{nullptr};
+    const struct device* i2c_dev{nullptr};
+    const struct device* uart_dev{nullptr};
+    const struct device* usb_dev{nullptr};
+    const struct device* adc_dev{nullptr};
 
-    size_t observer_count;
-    std::array<IPowerObserver*, MAX_OBSERVERS> observers;
+    size_t observer_count{0U};
+    std::array<IPowerObserver*, MAX_OBSERVERS> observers{};
 
-    DeviceContext* fault_context;
-    uint32_t consecutive_pm_failures;
+    DeviceContext* fault_context{nullptr};
+    uint32_t consecutive_pm_failures{0U};
 
-    std::atomic<uint32_t> last_activity_time;
+    std::atomic<uint32_t> last_activity_time{0U};
 };
 
 
