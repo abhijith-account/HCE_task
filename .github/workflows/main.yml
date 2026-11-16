@@ -98,7 +98,9 @@ jobs:
           echo '```' >> qemu_m4_report.md
           
           # 4. Evaluate the QEMU exit code (124 means it successfully ran until timeout)
-          if [ "${EXIT_CODE:-0}" -eq 124 ] \vert{}\vert{} [ "${EXIT_CODE:-0}" -eq 0 ]; then
+          if [ "${EXIT_CODE:-0}" -eq 124 ]; then
+            echo "## Cortex-M4 QEMU Test Passed!" >> $GITHUB_STEP_SUMMARY
+          elif [ "${EXIT_CODE:-0}" -eq 0 ]; then
             echo "## Cortex-M4 QEMU Test Passed!" >> $GITHUB_STEP_SUMMARY
           else
             echo "## Cortex-M4 QEMU Test FAILED (exit code $EXIT_CODE)!" >> $GITHUB_STEP_SUMMARY

@@ -254,7 +254,6 @@ HCE_task/
 │   └── test_synchronization.cpp      # Unit tests for mutex, semaphore, workqueue, and heart-rate buffer
 ├── CMakeLists.txt                    # Top-level Zephyr application build script
 ├── Kconfig                           # Custom Kconfig symbols (LOG_PREEMPTION_DELAY, SOC_MPS2_AN386, LOG_EXECUTION_CYCLES)
-├── coverage_report.html              # Generated gcovr HTML coverage report (100% line & branch coverage)
 ├── mps2_an386.overlay                # Devicetree overlay for QEMU Cortex-M4 (emulated I2C, ADC, RTC, 512 KB Flash)
 ├── nucleo_f446re.overlay             # Devicetree overlay for STM32F446RE (clocks, USB CDC, I2C1, ADC1, sleep pinctrl)
 ├── prj.conf                          # Base Zephyr kernel, C++20, MPU, FCB, logging, and peripheral configuration
