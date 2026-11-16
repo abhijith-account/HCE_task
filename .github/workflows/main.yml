@@ -96,17 +96,21 @@ jobs:
           timeout 120s west build -d build_mps2 -t run >> qemu_m4_report.md 2>&1 || EXIT_CODE=$?
           echo '```' >> qemu_m4_report.md
           
-          # 4. Create a lightweight summary for the GitHub UI
-          echo "## Cortex-M4 QEMU Test Passed!" >> $GITHUB_STEP_SUMMARY
+          # 4. Evaluate the QEMU exit code (124 means it successfully ran until timeout)
+          if [ "${EXIT_CODE:-0}" -eq 124 ] \vert{}\vert{} [ "${EXIT_CODE:-0}" -eq 0 ]; then
+            echo "## Cortex-M4 QEMU Test Passed!" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "## Cortex-M4 QEMU Test FAILED (exit code $EXIT_CODE)!" >> $GITHUB_STEP_SUMMARY
+          fi
+          
           echo "**Note:** The full execution log was ~25MB due to continuous RTOS loop output and exceeded GitHub's 1MB display limit." >> $GITHUB_STEP_SUMMARY
           echo "Please download the **QEMU-M4-Execution-Report** from the Artifacts menu to view the complete boot sequence." >> $GITHUB_STEP_SUMMARY
           echo "### Final Output Snippet (Last 50 Lines):" >> $GITHUB_STEP_SUMMARY
           echo '```text' >> $GITHUB_STEP_SUMMARY
           tail -n 50 qemu_m4_report.md >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
-          
-          # 5. Evaluate the QEMU exit code (124 means it successfully ran until timeout)
-          if [ "${EXIT_CODE:-0}" -eq 124 ]; then 
+
+          if [ "${EXIT_CODE:-0}" -eq 124 ]; then
             echo "Firmware booted successfully and ran to timeout!"
             exit 0
           elif [ "${EXIT_CODE:-0}" -ne 0 ]; then
@@ -138,25 +142,19 @@ jobs:
           
       - name: Build and run host unit tests
         run: |
-          if [ -f tests/CMakeLists.txt ]; then
-            mkdir -p tests/build
-            cd tests/build
-
-            cmake ..
-            make -j$(nproc)
-
-            if [ -f ./run_pm_tests ]; then ./run_pm_tests; fi
-            if [ -f ./run_usb_shell_tests ]; then ./run_usb_shell_tests; fi
-            if [ -f ./run_battery_tests ]; then ./run_battery_tests; fi
-            if [ -f ./run_static_memory_tests ]; then ./run_static_memory_tests; fi
-            if [ -f ./run_config_tests ]; then ./run_config_tests; fi
-            if [ -f ./run_i2c_faults_tests ]; then ./run_i2c_faults_tests; fi
-            if [ -f ./run_state_machine_tests ]; then ./run_state_machine_tests; fi
-            if [ -f ./run_sync_tests ]; then ./run_sync_tests; fi
-            if [ -f ./run_command_tests ]; then ./run_command_tests; fi
-          else
-            echo "tests/CMakeLists.txt not found. Skipping host unit tests."
-          fi
+          mkdir -p tests/build
+          cd tests/build
+          cmake ..
+          make -j$(nproc)
+          ./run_pm_tests
+          ./run_usb_shell_tests
+          ./run_battery_tests
+          ./run_static_memory_tests
+          ./run_config_tests
+          ./run_i2c_faults_tests
+          ./run_state_machine_tests
+          ./run_sync_tests
+          ./run_command_tests
 
       - name: Enforce coverage
         run: |
@@ -180,6 +178,6 @@ jobs:
         with:
           name: Nucleo-Firmware
           path: |
+            build_nucleo/zephyr/zephyr.elf
             build_nucleo/zephyr/zephyr.hex
             build_nucleo/zephyr/zephyr.bin
-            firmware/zephyr.bin

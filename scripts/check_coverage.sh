@@ -1,15 +1,14 @@
 #!/bin/bash
-set -e
+set -euo pipefail
 
-echo "========================================="
+echo "======================================="
 echo " Verifying 100% Line and Branch Coverage "
-echo "========================================="
+echo "======================================="
 
 mkdir -p coverage_report
 
-GCOVR_OPTS=(
+GCOVR_BASE_OPTS=(
     --root .
-    --object-directory tests/build
     --exclude-throw-branches
     --exclude-unreachable-branches
     --filter src/
@@ -17,32 +16,36 @@ GCOVR_OPTS=(
 
 echo "Generating coverage reports..."
 
-gcovr "${GCOVR_OPTS[@]}" \
+gcovr "${GCOVR_BASE_OPTS[@]}" \
+    --object-directory tests/build \
+    --json coverage_report/coverage.json \
     --html-details coverage_report/index.html \
     --txt coverage_report/coverage.txt \
     --txt-metric branch \
     --print-summary
 
+TRACE_OPTS=("${GCOVR_BASE_OPTS[@]}" --add-tracefile coverage_report/coverage.json)
+
 echo
 echo "========== UNCOVERED LINES =========="
 
-gcovr "${GCOVR_OPTS[@]}" \
+gcovr "${TRACE_OPTS[@]}" \
     --txt \
     --txt-metric line \
-    | grep -A9999 "^Missing" || true
+    | grep -A999 "^Missing" || true
 
 echo
-echo "========= UNCOVERED BRANCHES ========="
+echo "========== UNCOVERED BRANCHES =========="
 
-gcovr "${GCOVR_OPTS[@]}" \
+gcovr "${TRACE_OPTS[@]}" \
     --txt \
     --txt-metric branch \
-    | grep -A9999 "^Missing" || true
+    | grep -A999 "^Missing" || true
 
 echo
 echo "Checking thresholds..."
 
-gcovr "${GCOVR_OPTS[@]}" \
+gcovr "${TRACE_OPTS[@]}" \
     --fail-under-line 100 \
     --fail-under-branch 100
 

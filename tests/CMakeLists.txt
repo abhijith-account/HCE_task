@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.10)
+cmake_minimum_required(VERSION 3.20.0)
 project(pm_tests)
 
 set(CMAKE_CXX_STANDARD 20)
@@ -157,96 +157,33 @@ add_executable(run_command_tests
 )
 
 # 5. Include the checked-in Zephyr mocks and your real headers
-target_include_directories(run_pm_tests PRIVATE 
-    ${MOCK_DIR}
-    ../include
+enable_testing()
+
+set(ALL_TEST_TARGETS
+    run_pm_tests
+    run_usb_shell_tests
+    run_battery_tests
+    run_static_memory_tests
+    run_config_tests
+    run_i2c_faults_tests
+    run_state_machine_tests
+    run_sync_tests
+    run_command_tests
 )
 
-target_include_directories(run_usb_shell_tests PRIVATE 
-    ${MOCK_DIR}
-    ../include
-)
+foreach(test_target IN LISTS ALL_TEST_TARGETS)
+    target_include_directories(${test_target} PRIVATE ${MOCK_DIR} ../include)
+    target_link_libraries(${test_target} PRIVATE GTest::gtest_main pthread)
+    target_compile_options(${test_target} PRIVATE --coverage)
+    target_link_options(${test_target} PRIVATE --coverage)
+    target_compile_definitions(${test_target} PRIVATE IS_TEST_ENVIRONMENT)
+    add_test(NAME ${test_target} COMMAND ${test_target})
+endforeach()
 
-target_include_directories(run_battery_tests PRIVATE
-    ${MOCK_DIR}
-    ../include
-)
+target_compile_options(run_usb_shell_tests PRIVATE -fno-builtin-snprintf -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0)
+target_link_options(run_usb_shell_tests PRIVATE -Wl,--wrap=snprintf)
+target_link_options(run_static_memory_tests PRIVATE -Wl,--wrap=k_thread_stack_space_get)
 
-target_include_directories(run_static_memory_tests PRIVATE
-   ${MOCK_DIR}
-   ../include
-)
-
-target_include_directories(run_config_tests PRIVATE
-   ${MOCK_DIR}      
-   ../include
-)
-
-target_include_directories(run_i2c_faults_tests PRIVATE
-   ${MOCK_DIR}
-   ../include
-)
-
-target_include_directories(run_state_machine_tests PRIVATE
-   ${MOCK_DIR}
-   ../include
-)
-
-target_include_directories(run_sync_tests PRIVATE
-   ${MOCK_DIR}
-   ../include
-)
-
-target_include_directories(run_command_tests PRIVATE
-   ${MOCK_DIR}
-   ../include
-)
-
-# 6. Link GTest and threading libraries
-target_link_libraries(run_pm_tests PRIVATE GTest::gtest_main pthread)
-target_link_libraries(run_usb_shell_tests PRIVATE GTest::gtest_main pthread)
-target_link_libraries(run_battery_tests PRIVATE GTest::gtest_main pthread)
-target_link_libraries(run_static_memory_tests PRIVATE GTest::gtest_main pthread)
-target_link_libraries(run_config_tests PRIVATE GTest::gtest_main pthread)
-target_link_libraries(run_i2c_faults_tests PRIVATE GTest::gtest_main pthread)
-target_link_libraries(run_state_machine_tests PRIVATE GTest::gtest_main pthread)
-target_link_libraries(run_sync_tests PRIVATE GTest::gtest_main pthread)
-target_link_libraries(run_command_tests PRIVATE GTest::gtest_main pthread)
-
-# Enable GCOV profiling flags for compilation and linking
-target_compile_options(run_pm_tests PRIVATE --coverage)
-target_link_options(run_pm_tests PRIVATE --coverage)
-
-target_compile_options(run_usb_shell_tests PRIVATE --coverage -fno-builtin-snprintf -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0)
-target_link_options(run_usb_shell_tests PRIVATE --coverage -Wl,--wrap=snprintf)
-
-target_compile_options(run_battery_tests PRIVATE --coverage)
-target_link_options(run_battery_tests PRIVATE --coverage)
-
-target_compile_options(run_static_memory_tests PRIVATE --coverage)
-target_link_options(run_static_memory_tests PRIVATE --coverage -Wl,--wrap=k_thread_stack_space_get)
-
-target_compile_options(run_config_tests PRIVATE --coverage)
-target_link_options(run_config_tests PRIVATE --coverage)
-
-target_compile_options(run_i2c_faults_tests PRIVATE --coverage)
-target_link_options(run_i2c_faults_tests PRIVATE --coverage)
-
-target_compile_options(run_state_machine_tests PRIVATE --coverage)
-target_link_options(run_state_machine_tests PRIVATE --coverage)
-
-target_compile_options(run_sync_tests PRIVATE --coverage)
-target_link_options(run_sync_tests PRIVATE --coverage)
-
-target_compile_options(run_command_tests PRIVATE --coverage)
-target_link_options(run_command_tests PRIVATE --coverage)
-
-target_compile_definitions(run_static_memory_tests PRIVATE IS_TEST_ENVIRONMENT)
-target_compile_definitions(run_pm_tests PRIVATE IS_TEST_ENVIRONMENT CONFIG_BOARD_MPS2_AN386)
-target_compile_definitions(run_usb_shell_tests PRIVATE IS_TEST_ENVIRONMENT INA226_TEST_BYPASS_STATIC_ASSERT)
-target_compile_definitions(run_battery_tests PRIVATE IS_TEST_ENVIRONMENT INA226_TEST_BYPASS_STATIC_ASSERT)
-target_compile_definitions(run_config_tests PRIVATE IS_TEST_ENVIRONMENT)
-target_compile_definitions(run_sync_tests PRIVATE IS_TEST_ENVIRONMENT)
-target_compile_definitions(run_command_tests PRIVATE IS_TEST_ENVIRONMENT)
-target_compile_definitions(run_i2c_faults_tests PRIVATE IS_TEST_ENVIRONMENT)
-target_compile_definitions(run_state_machine_tests PRIVATE IS_TEST_ENVIRONMENT)
+target_compile_definitions(run_pm_tests PRIVATE CONFIG_BOARD_MPS2_AN386)
+target_compile_definitions(run_usb_shell_tests PRIVATE INA226_TEST_BYPASS_STATIC_ASSERT)
+target_compile_definitions(run_battery_tests PRIVATE INA226_TEST_BYPASS_STATIC_ASSERT)
