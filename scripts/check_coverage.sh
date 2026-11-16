@@ -9,8 +9,6 @@ mkdir -p coverage_report
 
 GCOVR_BASE_OPTS=(
     --root .
-    --exclude-throw-branches
-    --exclude-unreachable-branches
     --filter src/
 )
 
@@ -18,6 +16,8 @@ echo "Generating coverage reports..."
 
 gcovr "${GCOVR_BASE_OPTS[@]}" \
     --object-directory tests/build \
+    --exclude-throw-branches \
+    --exclude-unreachable-branches \
     --json coverage_report/coverage.json \
     --html-details coverage_report/index.html \
     --txt coverage_report/coverage.txt \

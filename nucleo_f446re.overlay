@@ -2,7 +2,7 @@
 
 / {
     chosen {
-        /* Route Zephyr system logs and console to the USB Virtual COM port */
+        /* Route Zephyr system logs and console to USART3 (PC10/PC11) */
         zephyr,console = &usart3;
         zephyr,shell-uart = &usart3;
         zephyr,code-partition = &code_partition;
@@ -66,7 +66,7 @@
     };
 };
 
-/* Disable ST-Link UART for Standalone Mode */
+/* Enable USART3 (PC10 TX / PC11 RX) with sleep pinctrl */
 &usart3 {
     status = "okay";
     current-speed = <115200>;
