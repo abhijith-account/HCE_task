@@ -1,40 +1,40 @@
 # HCE_task — Zephyr RTOS Safety-Critical Medical Device Firmware (`medical_firmware`)
 
 **Repository:** [abhijith-account/HCE_task](https://github.com/abhijith-account/HCE_task)
-**Target RTOS:** [Zephyr RTOS v4.4.0](https://www.google.com/search?q=https://github.com/zephyrproject-rtos/zephyr)
+**Target RTOS:** [Zephyr RTOS v4.4.0](https://github.com/zephyrproject-rtos/zephyr)
 **Language Standard:** C++20 (`CONFIG_STD_CPP20=y`) & C11
 **Target Platforms:** STMicroelectronics **STM32 Nucleo-F446RE** (ARM Cortex-M4F @ 96 MHz) & **ARM MPS2+ AN386** (QEMU Cortex-M4 Emulation)
 
 ## 1. Executive Overview
 
-`HCE_task` (`medical_firmware`) is a deterministic, fault-tolerant C++20 embedded firmware application built on [Zephyr RTOS v4.4.0](https://www.google.com/search?q=https://github.com/zephyrproject-rtos/zephyr) for a multi-channel medical infusion pump and patient telemetry controller.
+`HCE_task` (`medical_firmware`) is a deterministic, fault-tolerant C++20 embedded firmware application built on [Zephyr RTOS v4.4.0](https://github.com/zephyrproject-rtos/zephyr) for a multi-channel medical infusion pump and patient telemetry controller.
 
 The firmware is engineered around five strict safety-critical and low-power design pillars:
 - **Zero Dynamic Heap Allocation (`CONFIG_HEAP_MEM_POOL_SIZE=0`)**: All runtime objects, sensor pipeline commands (`ICommand`), and I2C register cache entries (`CacheEntry`) are allocated deterministically from static, mutex-guarded memory pools (`StaticPool<T, N>`) using placement `new`.
-- **Hardware Memory & Stack Isolation**: Enforces ARM MPU protection (`CONFIG_ARM_MPU=y`), hardware stack overflow guards (`CONFIG_HW_STACK_PROTECTION=y`), compiler stack canaries (`CONFIG_STACK_CANARIES=y`), and zero-heap C/C++ standard library configuration (`CONFIG_NEWLIB_LIBC_MIN_REQUIRED_HEAP_SIZE=0`).
+- **Hardware Memory & Stack Isolation**: Enforces ARM MPU protection (`CONFIG_ARM_MPU=y`), hardware stack overflow guards (`CONFIG_HW_STACK_PROTECTION=y`), and compiler stack canaries (`CONFIG_STACK_CANARIES=y`).
 - **3-Tier Hardware Power Profile (`PM_STATE_ACTIVE` -> `PM_STATE_SUSPEND_TO_IDLE` -> `PM_STATE_SUSPEND_TO_RAM`)**: Autonomously transitions from **Active Mode** (`96 MHz` PLL, `> 50 mA` load) after `30 s` of inactivity to **Idle Mode** (`16 MHz` HSI, `VOS3`, `~5 mA` load) for `5 s`, and then into **Deep Sleep / STOP Mode** (`~234 µA` typical on main regulator, `60 s` total duration with `1 MHz` mid-STOP RTC wakeups every `25 s` to service the hardware watchdog).
 - **Multi-Tier Fault Recovery & Safe Halt**: Combines a 3-stage I2C fault recovery pipeline (exponential retry, SCL bus reset, and a 64-entry reliability-scored fallback cache) with a spinlock-guarded system state machine (`INIT`, `RUNNING`, `FAULT`, `SAFE_HALT`) and a 9-thread heartbeat watchdog supervisor (`IWDG`).
-- **100% Host Unit Test Coverage Gate**: Includes a 9-binary GoogleTest (`GTest`) suite organized into domain-specific test modules (`tests/power/`, `tests/battery/`, `tests/rtos/`, and root test suites) backed by checked-in Zephyr OS stubs (`tests/mocks/`), deterministic per-call fault injection, linker symbol wrapping (`--wrap`), and a strict `gcovr` gate requiring **100% line and 100% branch coverage** across `src/` (with pre-generated results in `coverage_report.html`).
+- **100% Host Unit Test Coverage Gate**: Includes a 9-binary GoogleTest (`GTest`) suite organized into domain-specific test subdirectories (`tests/power/`, `tests/battery/`, `tests/rtos/`, `tests/usb_shell/`, `tests/i2c/`, and `tests/config/`) alongside standalone suites (`test_static_memory.cpp`, `test_state_machine.cpp`, `test_synchronization.cpp`), backed by checked-in Zephyr OS stubs (`tests/mocks/`), deterministic per-call fault injection, linker symbol wrapping (`--wrap`), and a strict `gcovr` gate requiring **100% line and 100% branch coverage** across `src/` (with pre-generated results in `coverage_report.html`).
 
 ## 2. Core Subsystems & Architecture
 
-The codebase is organized into nine modular subsystems under `include/` and `src/`:
+The codebase is organized into nine modular subsystems across `include/` and `src/`:
 
 | Subsystem | Header & Implementation Paths | Key Architectural Mechanisms |
 | :--- | :--- | :--- |
-| **Static Memory & MISRA Compliance Layer** | `include/Static_Memory+MISRA_Compliance_Layer.h`<br>`src/Static_Memory+MISRA_Compliance_Layer.cpp` | Provides the `StaticPool<T, N>` template (`alignas(4)` byte array + boolean occupancy bitmap + `k_mutex`) with pointer-bounds validation on deallocation. Runs `memory_monitor_thread` to log unused stack watermarks across 11 RTOS threads every `30 s`. |
-| **RTOS Command-Based Thread System** | `include/RTOS_Command_based_thread_system/`<br>`src/RTOS_Command_based_thread_system/` | Implements a priority-preemptive Producer -> Processor -> Logger pipeline (`Prio 6 -> 5 -> 4`) backed by a 16-slot `MaxCommandSize` static pool (`48 B`, `alignas(8)`) and two 10-deep `k_msgq` queues (`processor_queue`, `logger_queue`). |
-| **Smart Battery System (BMS)** | `include/Smart_Battery_System/`<br>`src/Smart_Battery_System/` | Monitors a 3S Li-ion pack (`8700-12600 mV`, `2000 mAh`) via a TI **INA226** (`0x40`, `100 mΩ` shunt, `25 µA` current LSB, `819.2 mA` max measurable range) and 8x oversampled 12-bit ADC NTC thermistor (`PA0`, `-40 °C` to `125 °C` LUT). Fuses coulomb counting + 3S OCV curve interpolation using a 1D **Kalman Filter** and an EMA/hysteresis **FSM Classifier** (`IDLE`, `CHARGING`, `DISCHARGING`, `CUTOFF`). |
-| **Power Management System (PMS)** | `include/Power_Management_System/`<br>`src/Power_Management_System/` | Singleton `PowerManager` notifying up to 8 `IPowerObserver` listeners (`beforeSleep`, `afterWakeup`, `sleepAborted`). Controls STM32 RCC clock scaling (`96 MHz` PLL -> `16 MHz` HSI in Idle -> `4 MHz` pre-STOP -> `1 MHz` mid-STOP service), USB OTG FS PHY power-down, GPIO `ANALOG` sleep pinmuxing, and RTC Alarm A wakeups. Escalates to system fault after 3 consecutive PM failures (`PM_FAILURE_FAULT_THRESHOLD = 3`). |
-| **Device State Machine & Watchdog** | `include/Device_State_Machine+Watchdog.h`<br>`src/Device_State_Machine+Watchdog.cpp` | Spinlock-synchronized `DeviceContext` enforcing legal transitions between `INIT`, `RUNNING`, `FAULT`, and `SAFE_HALT`. Integrates `WatchdogTimer` (`&iwdg`) and `daly_watchdog_feed_hook`, verifying atomic heartbeats from 9 threads every `1000 ms`. |
-| **Fault-Tolerant I2C Communication Layer** | `include/Fault_Tolerant_I2C_Communication_Layer.h`<br>`src/Fault_Tolerant_I2C_Communication_Layer.cpp` | Wraps 8/16/24/64-bit I2C register operations in `Result<T>`. Implements `RetryStrategy`, `BusResetStrategy`, and `FailSafeStrategy` backed by a 64-entry `StaticPool<CacheEntry, 64>` with `3000 ms` max age and reliability score decay (`100 -> 50`, `-10` per fallback read). |
+| **Static Memory & MISRA Compliance Layer** | `include/Static_Memory+MISRA_Compliance_Layer.h`<br>`src/Static_Memory+MISRA_Compliance_Layer.cpp` | Provides the `StaticPool<T, N>` template (`alignas(4)` `std::array` byte buffer + boolean occupancy bitmap + `k_mutex`) with pointer-bounds validation on deallocation. Runs `memory_monitor_thread` to log unused stack watermarks across 11 RTOS threads every `30 s`. |
+| **RTOS Command-Based Thread System** | `include/RTOS_Command_based_thread_system/`<br>`src/RTOS_Command_based_thread_system/` | Implements a priority-preemptive Producer -> Processor -> Logger pipeline (`Prio 6 -> 5 -> 4`, verified at compile time via `static_assert`) backed by a 16-slot `MaxCommandSize` static pool (`48 B`, `alignas(8)`) and two 10-deep `k_msgq` queues (`processor_queue`, `logger_queue`). |
+| **Smart Battery System (BMS)** | `include/Smart_Battery_System/`<br>`src/Smart_Battery_System/` | Splits hardware I2C/ADC polling & retry backoff (`Smart_Battery_Acquisition.cpp`) from SoC/FSM orchestration (`Smart_Battery_System.cpp`). Monitors a 3S Li-ion pack (`8700-12600 mV`, `2000 mAh`) via a TI **INA226** (`0x40`, `100 mΩ` shunt, `25 µA` current LSB, `819.2 mA` max measurable range) and 8x oversampled 12-bit ADC NTC thermistor (`PA0`, `-40 °C` to `125 °C` LUT), fusing coulomb counting + 3S OCV curve interpolation via a 1D **Kalman Filter** and EMA/hysteresis **FSM Classifier** (`IDLE`, `CHARGING`, `DISCHARGING`, `CUTOFF`). |
+| **Power Management System (PMS)** | `include/Power_Management_System/`<br>`src/Power_Management_System/` | Singleton `PowerManager` notifying up to 8 `IPowerObserver` listeners (`beforeSleep`, `afterWakeup`, `sleepAborted`). Partitioned into 8 focused modules covering FSM/observer coordination, Active/Idle states, STOP state execution, RTC Alarm A wakeups, and STM32 hardware domains (`Power_Hardware_Clocks.cpp`, `Power_Hardware_GpioPeripherals.cpp`, `Power_Hardware_StopPwr.cpp`, `Power_Hardware.cpp`). Escalates to system fault after 3 consecutive PM failures (`PM_FAILURE_FAULT_THRESHOLD = 3`). |
+| **Device State Machine & Watchdog** | `include/Device_State_Machine+Watchdog.h`<br>`src/Device_State_Machine+Watchdog.cpp` | Spinlock-synchronized `DeviceContext` (`sys_context`) enforcing legal transitions between `INIT`, `RUNNING`, `FAULT`, and `SAFE_HALT`. Integrates `WatchdogTimer` (`&iwdg`) and `daly_watchdog_feed_hook`, verifying atomic heartbeats from 9 threads every `1000 ms`. |
+| **Fault-Tolerant I2C Communication Layer** | `include/Fault_Tolerant_I2C_Communication_Layer.h`<br>`include/I2C_Internal.h`<br>`src/Fault_Tolerant_I2C/` | Modularized into `I2C_Manager.cpp` (8/16/24/64-bit `Result<T>` register operations), `I2C_Recovery_Strategies.cpp` (`classify_i2c_error`, `classify_and_recover`, `RetryStrategy`, `BusResetStrategy`, `FailSafeStrategy`), and `I2C_Fallback_Cache.cpp` (`i2c_internal::update_cache` / `get_cached_value` over a 64-entry `StaticPool<CacheEntry, 64>` with `3000 ms` max age and reliability score decay `100 -> 50`). |
 | **Persistent Configuration System** | `include/Persistent_Configuration_System.h`<br>`src/Persistent_Configuration_System.cpp` | Manages append-only records in internal Flash via Zephyr's Flash Circular Buffer (`FCB`, magic `0x12345678`) across 2 sectors (`storage_partition`, `256 KB`). Guards writes with `FlashPowerGuard`, rotates sectors on `-ENOSPC`, provisions 5 infusion device slots (`Slots 1-5`), and runs a one-time 1,000-cycle Flash endurance test. |
-| **USB CDC Virtual COM Shell Interface** | `include/USB_CDC_Virtual_COM_Shell_Interface.h`<br>`src/USB_CDC_Virtual_COM_Shell_Interface.cpp` | Interrupt-driven UART/CDC ACM facade (`256 B` lock-free atomic RX ring buffer, `32 B` chunked TX with `2 ms` inter-chunk gap) exposing the `med-device:~$ ` CLI (`status`, `set_rate`, `log_dump`, `reboot`) with compile-time slot bounds checking and hardware USB cable disconnect fault detection. |
+| **USB CDC Virtual COM Shell Interface** | `include/USB_CDC_Virtual_COM_Shell_Interface.h`<br>`src/USB_CDC_SHELL/` | Partitioned into `Usb_Cdc_Facade.cpp` (interrupt-driven UART/CDC ACM transport with `256 B` lock-free atomic RX ring buffer and `32 B` chunked TX), `Usb_Shell_Commands.cpp` (`med-device:~$ ` CLI parser for `status`, `set_rate`, `log_dump`, `reboot` with compile-time slot bounds validation), and `Usb_Shell_Runtime.cpp` (`ShellPowerObserver` and `shell_thread`). |
 | **RTOS Synchronization Layer** | `include/RTOS_Synchronization_Layer.h`<br>`src/RTOS_Synchronization_Layer.cpp` | C++ wrappers around `k_sem` (`ZephyrSemaphore`), `k_mutex` (`ZephyrMutex`), and `k_work_delayable` (`ZephyrWorkQueue`). Coordinates a 10-element `SharedHeartRateBuffer` between `heart_rate_producer_thread` and `display_consumer_thread`, plus a 1 Hz system status workqueue (`status_work`). |
 
 ## 3. RTOS Thread & Concurrency Architecture
 
-All 12 threads are statically allocated at compile time via `K_THREAD_DEFINE` with explicit stack sizes, numeric priorities (`4` = highest priority, `15` = lowest application priority), and compile-time `static_assert` checks (`PrioProcessor < PrioProducer` to prevent queue starvation):
+All 12 threads are statically allocated at compile time via `K_THREAD_DEFINE` with explicit stack sizes, numeric priorities (`4` = highest priority, `15` = lowest application priority), and compile-time `static_assert` checks (`PrioProcessor < PrioProducer` and `PrioLogger < PrioProcessor` to prevent queue starvation):
 
 | Thread Handle (`k_tid_t`) | Entry Function | Stack Size | Zephyr Priority | Heartbeat Flag | Role & Execution Timing |
 | :--- | :--- | :--- | :--- | :--- | :--- |
@@ -57,17 +57,17 @@ All 12 threads are statically allocated at compile time via `K_THREAD_DEFINE` wi
 
 Implemented across `src/Power_Management_System/`:
 - **`PM_STATE_ACTIVE` (`30 s` inactivity timeout, `> 50 mA` target on STM32)**:
-  - Holds `PM_STATE_SUSPEND_TO_IDLE` policy lock, enables extra AHB1/AHB2/AHB3/APB1/APB2 peripheral clocks (`ACTIVE_*_EXTRA_CLOCKS`), and runs `active_burn_tid` at priority `15`.
+  - Holds `PM_STATE_SUSPEND_TO_IDLE` policy lock, enables extra AHB1/AHB2/AHB3/APB1/APB2 peripheral clocks (`ACTIVE_*_EXTRA_CLOCKS`), and runs `active_burn_tid` at priority `15` (`Power_ActiveIdleStates.cpp`).
   - Any sensor value change exceeding its activity threshold (`BME280: 0x1000`, `LPS22HB Press: 0x50`, `LPS22HB Temp: 0x10`, `PAV3015: 0x05`), CLI input, Flash write, or state transition calls `PowerManager::reportActivity()`, resetting the inactivity timer and waking the MCU if asleep.
 - **`PM_STATE_SUSPEND_TO_IDLE` (`5 s` timeout, `~5 mA` target on STM32)**:
-  - Flushes UART logs (`120 ms`), suspends all 10 background worker threads (`suspend_background_threads()`), and suspends UART, ADC, and I2C devices via `pm_device_action_run()`.
-  - Downscales `SYSCLK` from the `96 MHz` PLL to the **`16 MHz` HSI oscillator** (`IDLE_HCLK_DIV = 1`) via a consolidated `MODIFY_REG(RCC->CFGR, RCC_CFGR_HPRE | RCC_CFGR_PPRE1 | RCC_CFGR_PPRE2, ...)` prescaler update, recalculates `SysTick->LOAD` to preserve wall-clock `k_uptime_get_32()` accuracy, disables Flash prefetch/ICache/DCache (`FLASH_LATENCY_0`), powers down the PLL and HSE (`HSEON`/`HSEBYP`/`CSSON`), drops regulator voltage to **Scale 3 (`VOS3`)**, and gates APB clocks while keeping `IDLE_APB1_EXTRA_CLOCKS` active.
+  - Flushes UART logs (`120 ms`), suspends all 10 background worker threads (`suspend_background_threads()` in `Power_Hardware.cpp`), and suspends UART, ADC, and I2C devices via `pm_device_action_run()`.
+  - Downscales `SYSCLK` from the `96 MHz` PLL to the **`16 MHz` HSI oscillator** (`IDLE_HCLK_DIV = 1`) in `Power_Hardware_Clocks.cpp` via a consolidated `MODIFY_REG(RCC->CFGR, RCC_CFGR_HPRE | RCC_CFGR_PPRE1 | RCC_CFGR_PPRE2, ...)` prescaler update, recalculates `SysTick->LOAD` to preserve wall-clock `k_uptime_get_32()` accuracy, disables Flash prefetch/ICache/DCache (`FLASH_LATENCY_0`), powers down the PLL and HSE (`HSEON`/`HSEBYP`/`CSSON`), drops regulator voltage to **Scale 3 (`VOS3`)**, and gates APB clocks while keeping `IDLE_APB1_EXTRA_CLOCKS` active.
   - **Optimized Idle -> STOP Handoff (`s_idle_exit_to_stop`)**: When transitioning from `PM_STATE_SUSPEND_TO_IDLE` directly into `PM_STATE_SUSPEND_TO_RAM`, `IdleState::exit()` leaves the ADC and background threads parked rather than waking and immediately re-suspending them.
 - **`PM_STATE_SUSPEND_TO_RAM` (`60 s` total sleep, `25 s` RTC wake intervals, `~234 µA` typical on STM32)**:
-  - **Pre-Sleep Hardware Shutdown**: Downscales `HCLK` to `4 MHz` (`16 MHz HSI / 4`), detaches USB (`usb_dc_detach()`), soft-disconnects `DP` pull-up (`USB_OTG_DCTL_SDIS`), powers down the USB transceiver (`GCCFG = 0`), gates USB PHY/HCLK (`PCGCCTL |= 0x3`), disables `ADC1/2/3` and `ADC123_COMMON->CCR` (`VREFINT`/temp/VBAT off), disables `DAC`, powers down the **SYSCFG I/O Compensation Cell** (`SYSCFG_CMPCR_CMP_PD = 0`, saving `~150-200 µA`), and disables the **Backup Regulator** (`PWR_CSR_BRE = 0`, saving `~150 µA`).
-  - **Zero-Contention GPIO Sleep Policy**: Snapshots all 8 ports (`GPIOA-GPIOH`), preserves `PC14`/`PC15` (LSE 32.768 kHz crystal), parks unused/SWD/JTAG debug (`PA13`/`PA14`/`PA15`, `PB3`/`PB4`) and USB pins in `ANALOG` (`No Pull`), holds open-drain `I2C` pins at their sampled level, and configures push-pull alternate-function pins as inputs with weak pull-up/pull-down matching the external idle level to prevent mA-class contention.
-  - **Debugger Detection & `PRIMASK = 1` WFI Entry**: Clears `DBGMCU->CR`, `DWT->CTRL`, and `CoreDebug->DEMCR`, warning over UART if an SWD debugger is attached (`CoreDebug->DHCSR.C_DEBUGEN == 1`, which forces STM32 STOP to run as SLEEP at `~0.9 mA` until power-cycled with SWD disconnected). Masks interrupts (`PRIMASK = 1` per PM0214 Section 2.5.2) with only `EXTI` line 17 (RTC Alarm) unmasked before executing `__WFI()`.
-  - **`1 MHz` Mid-STOP Watchdog Housekeeping**: On each `25 s` RTC wakeup prior to `60 s`, downscales `HCLK` to **`1 MHz` (`HSI / 16`)**, feeds `IWDG`, re-arms RTC Alarm A for the remaining sleep time (verifying `RTC_FLAG_ALRAF` clear with the DWT cycle counter), and re-enters `__WFI()`. Upon full wakeup, restores all clocks/registers and schedules `usb_reconnect_work` (`250 ms` delay) to re-attach USB CDC.
+  - **Pre-Sleep Hardware Shutdown (`Power_Hardware_GpioPeripherals.cpp` & `Power_Hardware_StopPwr.cpp`)**: Downscales `HCLK` to `4 MHz` (`16 MHz HSI / 4`), detaches USB (`usb_dc_detach()`), soft-disconnects `DP` pull-up (`USB_OTG_DCTL_SDIS`), powers down the USB transceiver (`GCCFG = 0`), gates USB PHY/HCLK (`PCGCCTL |= 0x3`), disables `ADC1/2/3` and `ADC123_COMMON->CCR` (`VREFINT`/temp/VBAT off), disables `DAC`, powers down the **SYSCFG I/O Compensation Cell** (`SYSCFG_CMPCR_CMP_PD = 0`, saving `~150-200 µA`), and disables the **Backup Regulator** (`PWR_CSR_BRE = 0`, saving `~150 µA`).
+  - **Zero-Contention GPIO Sleep Policy (`Power_Hardware_GpioPeripherals.cpp`)**: Snapshots all 8 ports (`GPIOA-GPIOH`), preserves `PC14`/`PC15` (LSE 32.768 kHz crystal), parks unused/SWD/JTAG debug (`PA13`/`PA14`/`PA15`, `PB3`/`PB4`) and USB pins in `ANALOG` (`No Pull`), holds open-drain `I2C` pins at their sampled level, and configures push-pull alternate-function pins as inputs with weak pull-up/pull-down matching the external idle level to prevent mA-class contention.
+  - **Debugger Detection & `PRIMASK = 1` WFI Entry (`Power_Hardware_StopPwr.cpp`)**: Clears `DBGMCU->CR`, `DWT->CTRL`, and `CoreDebug->DEMCR`, warning over UART if an SWD debugger is attached (`CoreDebug->DHCSR.C_DEBUGEN == 1`, which forces STM32 STOP to run as SLEEP at `~0.9 mA` until power-cycled with SWD disconnected). Masks interrupts (`PRIMASK = 1` per PM0214 Section 2.5.2) with only `EXTI` line 17 (RTC Alarm) unmasked before executing `__WFI()`.
+  - **`1 MHz` Mid-STOP Watchdog Housekeeping (`Power_StopState.cpp` & `Power_RTC.cpp`)**: On each `25 s` RTC wakeup prior to `60 s`, downscales `HCLK` to **`1 MHz` (`HSI / 16`)**, feeds `IWDG`, re-arms RTC Alarm A for the remaining sleep time (verifying `RTC_FLAG_ALRAF` clear with the DWT cycle counter), and re-enters `__WFI()`. Upon full wakeup, restores all clocks/registers and schedules `usb_reconnect_work` (`250 ms` delay) to re-attach USB CDC.
 
 ### 2. System State Machine & Watchdog Supervisor (`DeviceContext`)
 
@@ -82,23 +82,23 @@ Managed in `src/Device_State_Machine+Watchdog.cpp` under `k_spinlock` protection
 
 ### 3. 3-Stage Fault-Tolerant I2C Pipeline & Sensor Fault Escalation
 
-Implemented in `src/Fault_Tolerant_I2C_Communication_Layer.cpp` and `src/RTOS_Command_based_thread_system/Sensor_Commands.cpp`:
-1. **Stage 1 — Retry (`RetryStrategy`)**: Logs a warning and performs a `10 ms` backoff retry on transient errors (`NACK`, `ARBITRATION_LOST`).
-2. **Stage 2 — Hardware Bus Recovery (`BusResetStrategy`)**: Invoked on bus lockups (`-ETIMEDOUT -> TIMEOUT`, `-EBUSY -> BUS_BUSY`) to toggle SCL and recover the bus.
-3. **Stage 3 — Reliability-Scored Cache Fallback (`FailSafeStrategy`)**: Queries `StaticPool<CacheEntry, 64>` for `[sensor_addr, reg_addr]`. Returns the cached value only if `is_calibrated == true`, `age <= 3000 ms`, and `reliability_score >= 50` (`CACHE_RELIABILITY_MIN_FOR_FALLBACK`), decrementing `reliability_score` by `10` (`CACHE_RELIABILITY_DECAY_PER_USE`) on each fallback use.
+Implemented across `src/Fault_Tolerant_I2C/` (`I2C_Recovery_Strategies.cpp`, `I2C_Fallback_Cache.cpp`, `I2C_Manager.cpp`), `include/I2C_Internal.h`, and `src/RTOS_Command_based_thread_system/Sensor_Commands.cpp`:
+1. **Stage 1 — Retry (`RetryStrategy` in `I2C_Recovery_Strategies.cpp`)**: Dispatched via `i2c_internal::classify_and_recover()`, logging a warning and performing a `10 ms` backoff retry on transient errors (`NACK`, `ARBITRATION_LOST`).
+2. **Stage 2 — Hardware Bus Recovery (`BusResetStrategy` in `I2C_Recovery_Strategies.cpp`)**: Invoked on bus lockups (`-ETIMEDOUT -> TIMEOUT`, `-EBUSY -> BUS_BUSY`) to log and execute SCL bus recovery.
+3. **Stage 3 — Reliability-Scored Cache Fallback (`FailSafeStrategy` & `I2C_Fallback_Cache.cpp`)**: Queries `StaticPool<CacheEntry, 64>` via `i2c_internal::get_cached_value()` for `[sensor_addr, reg_addr]`. Returns the cached value only if `is_calibrated == true`, `age <= 3000 ms`, and `reliability_score >= 50` (`CACHE_RELIABILITY_MIN_FOR_FALLBACK`), decrementing `reliability_score` by `10` (`CACHE_RELIABILITY_DECAY_PER_USE`) on each fallback use.
 4. **3-Strike Sensor Disconnect Escalation**: Once a sensor's cache entry expires or its reliability score drops below `50`, `SensorReadCmd::execute()` increments a per-sensor failure counter (`bme_failures`, `lps_failures`, `pav_failures`). Upon **3 consecutive uncached read failures**, it calls `SystemObjects::context().triggerFault("I2C Sensor Disconnected")`, prompting `producer_thread` to disable all sensors and lock the system in `SystemState::SAFE_HALT`.
 
 ### 4. Smart Battery Estimation, Disconnect Detection & BMS Watchdog (`SbsBattery`)
 
-Implemented in `src/Smart_Battery_System/`:
-- **Pack Disconnect & Plausibility Checks**: Detects physical battery disconnect when `pack_mv < 4000 mV` (`MIN_VALID_VOLTAGE_MV`), or `< 8700 mV` (`PACK_MIN_VOLTAGE_MV`) on initial connect or after a single-step drop `> 2000 mV`, cleanly zeroing cached telemetry and resetting `FsmClassifier`. Rejects implausible readings (`> 20000 mV` or `|I| > 8000 mA`) and single-step spikes (`ΔV > 2000 mV`, `ΔI > 8000 mA`, `ΔT > 20.0 °C` up to `MAX_CONSECUTIVE_JUMP_REJECTS = 3`).
-- **1D Kalman Filter + OCV Resync**: Fuses coulomb counting (`accumulated_uAh`) with a 10-point 3S Open-Circuit Voltage lookup table (`8700 mV = 0%` to `12600 mV = 100%`) using IR drop compensation (`150 mΩ`) and adaptive measurement noise (`KF_MEAS_NOISE_REST = 2.0` vs. `KF_MEAS_NOISE_ACTIVE = 50.0`). Automatically re-seeds/resyncs the coulomb counter at full charge (`>= 12500 mV` at rest), full discharge (`<= 8800 mV` at rest), or after `30 min` of continuous rest (`|shunt_uv| < 150 µV`).
-- **Cutoff, Recovery & BMS Watchdog**: Enters `BatteryFSM::CUTOFF` and requests `SystemState::SAFE_HALT` when `SoC < 10%` (`CUTOFF_SOC_PCT`), automatically transitioning back to `SystemState::INIT` once `SoC > 15%` (`REENABLE_SOC_PCT`). Triggers a critical `"BMS Communication Watchdog"` fault after `2` consecutive I2C/thermistor failures, `5` consecutive mutex timeouts, or `> 5000 ms` without valid communication.
+Implemented across `src/Smart_Battery_System/Smart_Battery_Acquisition.cpp` and `src/Smart_Battery_System/Smart_Battery_System.cpp`:
+- **Pack Disconnect & Plausibility Checks (`Smart_Battery_Acquisition.cpp`)**: Detects physical battery disconnect when `pack_mv < 4000 mV` (`MIN_VALID_VOLTAGE_MV`), or `< 8700 mV` (`PACK_MIN_VOLTAGE_MV`) on initial connect or after a single-step drop `> 2000 mV`, cleanly zeroing cached telemetry and resetting `FsmClassifier`. Rejects implausible readings (`> 20000 mV` or `|I| > 8000 mA`) and single-step spikes (`ΔV > 2000 mV`, `ΔI > 8000 mA`, `ΔT > 20.0 °C` up to `MAX_CONSECUTIVE_JUMP_REJECTS = 3`).
+- **1D Kalman Filter + OCV Resync (`Smart_Battery_System.cpp`)**: Fuses coulomb counting (`accumulated_uAh`) with a 10-point 3S Open-Circuit Voltage lookup table (`8700 mV = 0%` to `12600 mV = 100%`) using IR drop compensation (`150 mΩ`) and adaptive measurement noise (`KF_MEAS_NOISE_REST = 2.0` vs. `KF_MEAS_NOISE_ACTIVE = 50.0`). Automatically re-seeds/resyncs the coulomb counter at full charge (`>= 12500 mV` at rest), full discharge (`<= 8800 mV` at rest), or after `30 min` of continuous rest (`|shunt_uv| < 150 µV`).
+- **Cutoff, Recovery & BMS Watchdog (`Smart_Battery_System.cpp` & `Battery_Runtime.cpp`)**: Enters `BatteryFSM::CUTOFF` and requests `SystemState::SAFE_HALT` when `SoC < 10%` (`CUTOFF_SOC_PCT`), automatically transitioning back to `SystemState::INIT` once `SoC > 15%` (`REENABLE_SOC_PCT`). Triggers a critical `"BMS Communication Watchdog"` fault after `2` consecutive I2C/thermistor failures, `5` consecutive mutex timeouts, or `> 5000 ms` without valid communication.
 
 ### 5. Flash Circular Buffer (`FCB`) & One-Time 1,000-Cycle Endurance Test
 
 Implemented in `src/Persistent_Configuration_System.cpp` and `src/main.cpp`:
-- Mounts Zephyr's `FCB` (`f_magic = 0x12345678`) across 2 sectors (`storage_partition`, `256 KB`). If unformatted (`-ENOMSG`), safely erases and formats the partition while feeding the watchdog (aborting immediately if in `SystemState::FAULT`), then seeds default device IDs (`1001-1005`) and alarm thresholds (`80, 85, 90, 95, 100`) across `Slots 1-5`.
+- Mounts Zephyr's `FCB` (`f_magic = 0x12345678`) across 2 sectors (`storage_partition`, `256 KB`). If unformatted (`-ENOMSG`), safely erases and formats the partition while feeding the watchdog (aborting immediately and closing the flash area if in `SystemState::FAULT`), then seeds default device IDs (`1001-1005`) and alarm thresholds (`80, 85, 90, 95, 100`) across `Slots 1-5`.
 - On first boot, `config.validateEndurance(ConfigKey::ALARM_THRESHOLD_BASE)` executes a **1,000 write/read-verify cycle endurance test** (writing `uint16_t` values `0` through `999` to key `300`, while per-slot thresholds use keys `301-305`). Once `999` is persisted, subsequent boots detect `read_val == 999` and skip the endurance loop automatically to preserve Flash lifespan.
 
 ## 5. Repository Directory Structure
@@ -113,7 +113,7 @@ HCE_task/
 │   └── nucleo_f446re.conf            # Kconfig overrides for STM32 Nucleo-F446RE hardware
 ├── include/
 │   ├── Power_Management_System/
-│   │   ├── Power_Internal.h          # Timeout constants (30s/5s/60s/25s), STM32 RCC clock masks, internal helpers
+│   │   ├── Power_Internal.h          # Timeout constants (30s/5s/60s/25s), STM32 RCC clock masks, pm_internal API
 │   │   └── Power_Management_System.h # IPowerState, IPowerObserver, PowerManager singleton API
 │   ├── RTOS_Command_based_thread_system/
 │   │   ├── BME280.h                  # Bosch BME280 calibration & compensation math + I2C driver (0x76)
@@ -136,8 +136,9 @@ HCE_task/
 │   │   ├── Retry_Policy.h            # Host-testable generic exponential backoff retry template
 │   │   ├── Smart_Battery_System.h    # SbsBattery class, telemetry cache, fault/retry thresholds
 │   │   └── Thermistor.h              # 12-bit ADC 8x oversampling & 34-point NTC LUT (-40 C to 125 C)
-│   ├── Device_State_Machine+Watchdog.h # SystemState FSM, WatchdogTimer, DeviceContext
-│   ├── Fault_Tolerant_I2C_Communication_Layer.h # Result<T>, I2CStrategy hierarchy, I2CManager
+│   ├── Device_State_Machine+Watchdog.h # SystemState FSM, WatchdogTimer, DeviceContext (sys_context)
+│   ├── Fault_Tolerant_I2C_Communication_Layer.h # Result<T>, I2CStrategy hierarchy, I2CManager (i2c_manager)
+│   ├── I2C_Internal.h                # Internal cache & recovery API (update_cache, get_cached_value, classify_and_recover)
 │   ├── Persistent_Configuration_System.h # ConfigKey, InfusionDeviceConfig, FlashPowerGuard, ConfigStore (FCB)
 │   ├── RTOS_Synchronization_Layer.h   # ZephyrSemaphore, ZephyrMutex, ZephyrWorkQueue, SharedHeartRateBuffer
 │   ├── Static_Memory+MISRA_Compliance_Layer.h # StaticPool<T, N> zero-heap allocator
@@ -145,9 +146,16 @@ HCE_task/
 ├── scripts/
 │   └── check_coverage.sh             # gcovr script enforcing 100% line and 100% branch coverage
 ├── src/
+│   ├── Fault_Tolerant_I2C/
+│   │   ├── I2C_Fallback_Cache.cpp    # 64-entry StaticPool<CacheEntry, 64>, staleness & reliability score decay
+│   │   ├── I2C_Manager.cpp           # 8/16/24/64-bit register transfers & recovery strategy orchestration
+│   │   └── I2C_Recovery_Strategies.cpp # Fault classification, RetryStrategy, BusResetStrategy, FailSafeStrategy
 │   ├── Power_Management_System/
 │   │   ├── Power_ActiveIdleStates.cpp # ActiveState (clock boost + burner) & IdleState (16 MHz HSI) execution
-│   │   ├── Power_Hardware.cpp        # STM32 USB OTG FS power-down, GPIO analog snapshots, clock scaling
+│   │   ├── Power_Hardware.cpp        # Background thread suspend/resume, tolerant PM device action, USB reconnect work
+│   │   ├── Power_Hardware_Clocks.cpp # APB1/APB2 clock gating, 16 MHz HSI downscaling, PLL/HSE off, VOS3 scaling
+│   │   ├── Power_Hardware_GpioPeripherals.cpp # USB OTG pin release/restore, GPIOA-H analog sleep, ADC/DAC shutdown
+│   │   ├── Power_Hardware_StopPwr.cpp # STM32 STOP PWR/SYSCFG/DBGMCU config, PRIMASK interrupt masking, __WFI()
 │   │   ├── Power_Management_System.cpp # PowerManager core FSM, observer notification, reset cause logging
 │   │   ├── Power_RTC.cpp             # RTC Alarm A scheduling, DWT-verified flag clearing, EXTI line 17
 │   │   └── Power_StopState.cpp       # StopState suspend-to-RAM entry, 1 MHz 25s watchdog wake loop, exit recovery
@@ -168,14 +176,17 @@ HCE_task/
 │   │   ├── Fsm_classifier.cpp        # Exponential moving average & hysteresis state transitions
 │   │   ├── INA226_Driver.cpp         # INA226 register reads/writes with big-endian byte swapping
 │   │   ├── Kalman_Filter.cpp         # Covariance projection, Kalman gain, and [0%, 100%] SoC clamping
-│   │   ├── Smart_Battery_System.cpp  # SbsBattery polling, jump rejection, coulomb resync, cache publishing
+│   │   ├── Smart_Battery_Acquisition.cpp # INA226/thermistor init, exponential retry fetchers, polling & spike guards
+│   │   ├── Smart_Battery_System.cpp  # OCV-to-SoC interpolation, coulomb resync, cache getters, processFSM()
 │   │   └── Thermistor.cpp            # ADC channel setup, 8x oversampled reads, NTC LUT interpolation
+│   ├── USB_CDC_SHELL/
+│   │   ├── Usb_Cdc_Facade.cpp        # Interrupt-driven UART/CDC ring buffer and 32 B chunked TX transport
+│   │   ├── Usb_Shell_Commands.cpp    # CLI command parser and handlers (status, set_rate, log_dump, reboot)
+│   │   └── Usb_Shell_Runtime.cpp     # ShellPowerObserver and shell_thread execution loop
 │   ├── Device_State_Machine+Watchdog.cpp # Spinlock state transitions, thread health checks, IWDG feeding
-│   ├── Fault_Tolerant_I2C_Communication_Layer.cpp # I2C recovery strategies and 64-entry reliability-scored cache
 │   ├── Persistent_Configuration_System.cpp # FCB init, slot provisioning, and 1,000-cycle Flash endurance test
 │   ├── RTOS_Synchronization_Layer.cpp # Heart-rate producer/consumer threads and 1 Hz status workqueue
 │   ├── Static_Memory+MISRA_Compliance_Layer.cpp # 30s stack watermark monitor thread and static pool instantiation
-│   ├── USB_CDC_Virtual_COM_Shell_Interface.cpp # Interrupt-driven UART/CDC ring buffer and CLI command handlers
 │   ├── main.cpp                      # Boot sequence, USB DTR handshake, FCB config load, workqueue start
 │   └── qemu_sensor_mocks.c           # Emulated I2C/ADC sensors (INA226, LPS22HB, B3950 NTC, BME280 w/ 5s fault)
 ├── svd/
@@ -194,6 +205,18 @@ HCE_task/
 │   │   ├── test_Smart_Battery_System.cpp
 │   │   ├── test_battery_common.h
 │   │   └── test_battery_mocks.cpp
+│   ├── config/                       # Modular Persistent Configuration unit test suite (run_config_tests)
+│   │   ├── test_Config_Event_Logs.cpp
+│   │   ├── test_Config_Fcb_Core.cpp
+│   │   ├── test_Config_Slots_Endurance.cpp
+│   │   ├── test_config_common.h
+│   │   └── test_config_mocks.cpp
+│   ├── i2c/                          # Modular Fault-Tolerant I2C unit test suite (run_i2c_faults_tests)
+│   │   ├── test_I2C_Fallback_Cache.cpp
+│   │   ├── test_I2C_Recovery_Strategies.cpp
+│   │   ├── test_I2C_Transactions.cpp
+│   │   ├── test_i2c_common.h
+│   │   └── test_i2c_mocks.cpp
 │   ├── mocks/                        # Checked-in Zephyr OS & hardware peripheral mocks for reproducible CI/host builds
 │   │   ├── mock_globals.cpp          # Global mock state & deterministic fault injection variables
 │   │   └── include/zephyr/           # Stub headers (kernel, device, drivers, fs/fcb, kvss/nvs, logging, pm, storage, sys, usb)
@@ -219,12 +242,16 @@ HCE_task/
 │   │   ├── test_Thread_Trace.cpp
 │   │   ├── test_rtos_common.h
 │   │   └── test_rtos_mocks.cpp
-│   ├── test_I2C_Fault_Recovery.cpp   # Unit tests for I2C retry, bus reset, and fail-safe caching
-│   ├── test_config_store.cpp         # Unit tests for FCB persistence, rotation, and slot validation
+│   ├── usb_shell/                    # Modular USB CDC Shell unit test suite (run_usb_shell_tests)
+│   │   ├── test_Shell_LogDump_Reboot.cpp
+│   │   ├── test_Shell_Status_SetRate.cpp
+│   │   ├── test_Shell_Thread_Power.cpp
+│   │   ├── test_Usb_Cdc_Facade.cpp
+│   │   ├── test_usb_shell_common.h
+│   │   └── test_usb_shell_mocks.cpp
 │   ├── test_state_machine.cpp        # Unit tests for DeviceContext transitions and watchdog supervision
 │   ├── test_static_memory.cpp        # Unit tests for StaticPool exhaustion, bounds check, and stack monitor
-│   ├── test_synchronization.cpp      # Unit tests for mutex, semaphore, workqueue, and heart-rate buffer
-│   └── test_usb_shell.cpp            # Unit tests for USB CDC RX ring buffer and CLI command parsing
+│   └── test_synchronization.cpp      # Unit tests for mutex, semaphore, workqueue, and heart-rate buffer
 ├── CMakeLists.txt                    # Top-level Zephyr application build script
 ├── Kconfig                           # Custom Kconfig symbols (LOG_PREEMPTION_DELAY, SOC_MPS2_AN386, LOG_EXECUTION_CYCLES)
 ├── coverage_report.html              # Generated gcovr HTML coverage report (100% line & branch coverage)
@@ -285,7 +312,7 @@ west zephyr-export
 pip3 install --user -r ../zephyr/scripts/requirements.txt
 ```
 
-Ensure the [Zephyr SDK](https://www.google.com/search?q=https://github.com/zephyrproject-rtos/sdk-ng) is installed and configured (or execute inside the official `zephyrprojectrtos/ci:latest` Docker container).
+Ensure the [Zephyr SDK](https://github.com/zephyrproject-rtos/sdk-ng) is installed and configured (or execute inside the official `zephyrprojectrtos/ci:latest` Docker container).
 
 ## 8. Building, Flashing & Running QEMU Emulation
 
@@ -334,7 +361,7 @@ Connecting to the USB OTG FS port (`VID: 0x0483`, `PID: 0x5740`, product `"Medic
 
 | Command | Syntax | Behavior, Output Format & Safety Validation |
 | :--- | :--- | :--- |
-| `status` | `status` | Prints a JSON snapshot of system state, battery SoC (`%`), and all 5 provisioned infusion slots (`Slots 1-5`, enforced at compile time via `static_assert(InfusionDeviceConfig::MaxSlot - InfusionDeviceConfig::MinSlot + 1 <= StatusSnapshot::MaxTrackedSlots)`):<br>`{"sys_state":1,"battery_soc":85,"devices":[{"device_id":1001,"rate":50,"alarm_threshold":80},...]}` |
+| `status` | `status` | Prints a JSON snapshot of system state, battery SoC (`%`), and all 5 provisioned infusion slots (`Slots 1-5`, enforced at compile time via `static_assert(InfusionDeviceConfig::MaxSlot - InfusionDeviceConfig::MinSlot + 1 <= StatusSnapshot::MaxTrackedSlots)` in `src/USB_CDC_SHELL/Usb_Shell_Commands.cpp`):<br>`{"sys_state":1,"battery_soc":85,"devices":[{"device_id":1001,"rate":50,"alarm_threshold":80},...]}` |
 | `set_rate` | `set_rate <device_id> <rate 1-100>` | Validates and persists a new infusion rate (`1-100 mL/hr`) in Flash (`FCB`) for a provisioned device (`1001-1005` by default), returning `Success: Device <id> infusion rate set to <rate>%`. Rejects the command if: (1) the system is locked in `SAFE_HALT`/`FAULT`, (2) `<rate>` is outside `1-100`, (3) `<device_id>` is not provisioned, or (4) `<rate>` exceeds the slot's `alarm_threshold` (`80, 85, 90, 95, 100`). |
 | `log_dump` | `log_dump` | Iterates through persistent `ConfigStore::LogEntry` (`12 B` struct: `timestamp_ms`, `event_id`, `event_data`) records under `ConfigKey::FULL_CHARGE_LOG` in Flash FCB (yielding every 10 records via `k_yield()`), outputting `[%08lu] Event: %u, Data: %d` between `--- NVS System Log Dump ---` and `--- End of Logs ---` (or `No logs found.`). |
 | `reboot` | `reboot` | Transmits `Rebooting system...` and invokes `sys_reboot(SYS_REBOOT_COLD)` after a `100 ms` flush delay. |
@@ -349,12 +376,12 @@ The `tests/` directory contains 9 standalone C++20 **GoogleTest (`GTest`)** exec
 
 | Test Binary | Source Files (`tests/`) | Verified Functionality & Edge Cases |
 | :--- | :--- | :--- |
-| `run_pm_tests` | `power/test_power_mocks.cpp`<br>`power/test_Power_Management_System.cpp`<br>`power/test_Power_ActiveIdleStates.cpp`<br>`power/test_Power_StopState.cpp`<br>`power/test_Power_Integration.cpp`<br>`power/test_Power_Hardware.cpp`<br>`power/test_Power_Singleton.cpp` | `PM_STATE_ACTIVE` -> `PM_STATE_SUSPEND_TO_IDLE` -> `PM_STATE_SUSPEND_TO_RAM` FSM transitions, STM32 RCC clock scaling, USB OTG & GPIO sleep states, RTC Alarm A wakeups, observer callbacks, and 3-strike PM fault escalation. |
-| `run_usb_shell_tests` | `test_usb_shell.cpp` | ISR RX ring-buffer wrap/overflow, DTR handshake, `status`/`set_rate`/`log_dump`/`reboot` command parsing, alarm threshold rejection, and USB disconnect fault handling. |
-| `run_battery_tests` | `battery/test_battery_mocks.cpp`<br>`battery/test_Smart_Battery_System.cpp`<br>`battery/test_Smart_Battery_Fetch.cpp`<br>`battery/test_Smart_Battery_Poll.cpp`<br>`battery/test_Smart_Battery_Soc.cpp`<br>`battery/test_Smart_Battery_FSM.cpp`<br>`battery/test_Sensor_Drivers.cpp`<br>`battery/test_Bms_Comm_Thread.cpp`<br>`battery/test_Battery_Monitor_Thread.cpp`<br>`battery/test_Battery_Runtime.cpp` | INA226 endianness & register reads, NTC thermistor ADC oversampling & LUT interpolation, exponential backoff retries, 1D Kalman Filter SoC estimation, OCV resync, pack disconnect detection, and BMS watchdog cutoff/recovery. |
+| `run_pm_tests` | `power/test_power_mocks.cpp`<br>`power/test_Power_Management_System.cpp`<br>`power/test_Power_ActiveIdleStates.cpp`<br>`power/test_Power_StopState.cpp`<br>`power/test_Power_Integration.cpp`<br>`power/test_Power_Hardware.cpp`<br>`power/test_Power_Singleton.cpp` | `PM_STATE_ACTIVE` -> `PM_STATE_SUSPEND_TO_IDLE` -> `PM_STATE_SUSPEND_TO_RAM` FSM transitions, STM32 RCC clock scaling (`Power_Hardware_Clocks.cpp`), USB OTG & GPIO sleep states (`Power_Hardware_GpioPeripherals.cpp`), STOP `PWR`/`__WFI()` entry (`Power_Hardware_StopPwr.cpp`), RTC Alarm A wakeups, observer callbacks, and 3-strike PM fault escalation. |
+| `run_usb_shell_tests` | `usb_shell/test_usb_shell_mocks.cpp`<br>`usb_shell/test_Usb_Cdc_Facade.cpp`<br>`usb_shell/test_Shell_Status_SetRate.cpp`<br>`usb_shell/test_Shell_LogDump_Reboot.cpp`<br>`usb_shell/test_Shell_Thread_Power.cpp` | ISR RX ring-buffer wrap/overflow (`Usb_Cdc_Facade.cpp`), DTR handshake, `status`/`set_rate` (`test_Shell_Status_SetRate.cpp`) and `log_dump`/`reboot` (`test_Shell_LogDump_Reboot.cpp`) CLI parsing, alarm threshold rejection, `ShellPowerObserver` callbacks (`Usb_Shell_Runtime.cpp`), and USB disconnect fault handling. |
+| `run_battery_tests` | `battery/test_battery_mocks.cpp`<br>`battery/test_Smart_Battery_System.cpp`<br>`battery/test_Smart_Battery_Fetch.cpp`<br>`battery/test_Smart_Battery_Poll.cpp`<br>`battery/test_Smart_Battery_Soc.cpp`<br>`battery/test_Smart_Battery_FSM.cpp`<br>`battery/test_Sensor_Drivers.cpp`<br>`battery/test_Bms_Comm_Thread.cpp`<br>`battery/test_Battery_Monitor_Thread.cpp`<br>`battery/test_Battery_Runtime.cpp` | INA226 endianness & register reads, NTC thermistor ADC oversampling & LUT interpolation, exponential backoff retries (`Smart_Battery_Acquisition.cpp`), 1D Kalman Filter SoC estimation, OCV resync, pack disconnect detection, and BMS watchdog cutoff/recovery (`Smart_Battery_System.cpp`). |
 | `run_static_memory_tests` | `test_static_memory.cpp` | `StaticPool<T, N>` exhaustion, null/out-of-bounds pointer safety, double-free rejection, alignment guarantees, and `memory_monitor_thread` stack watermark reporting. |
-| `run_config_tests` | `test_config_store.cpp` | FCB mount/format on empty flash (`-ENOMSG`), abort on `SystemState::FAULT`, magic word validation (`0x12345678`), sector rotation on `-ENOSPC`, slot provisioning, and 1,000-cycle Flash endurance verification. |
-| `run_i2c_faults_tests` | `test_I2C_Fault_Recovery.cpp` | 8/16/24/64-bit register transfers, `RetryStrategy`, `BusResetStrategy` SCL recovery, `FailSafeStrategy` 64-entry cache fallback with reliability decay (`100 -> 50`), and bus error injection (`-EIO`, `-ETIMEDOUT`, `-EBUSY`). |
+| `run_config_tests` | `config/test_config_mocks.cpp`<br>`config/test_Config_Fcb_Core.cpp`<br>`config/test_Config_Slots_Endurance.cpp`<br>`config/test_Config_Event_Logs.cpp` | FCB mount/format on empty flash (`-ENOMSG`), abort on `SystemState::FAULT`, magic word validation (`0x12345678`), sector rotation on `-ENOSPC`, slot provisioning, 1,000-cycle Flash endurance verification, and `FULL_CHARGE_LOG` event iteration. |
+| `run_i2c_faults_tests` | `i2c/test_i2c_mocks.cpp`<br>`i2c/test_I2C_Transactions.cpp`<br>`i2c/test_I2C_Recovery_Strategies.cpp`<br>`i2c/test_I2C_Fallback_Cache.cpp` | 8/16/24/64-bit register transfers (`I2C_Manager.cpp`), `classify_and_recover`, `RetryStrategy`, `BusResetStrategy` SCL recovery (`I2C_Recovery_Strategies.cpp`), `FailSafeStrategy` 64-entry cache fallback with reliability decay (`100 -> 50` in `I2C_Fallback_Cache.cpp`), and bus error injection (`-EIO`, `-ETIMEDOUT`, `-EBUSY`). |
 | `run_state_machine_tests` | `test_state_machine.cpp` | Legal and illegal `SystemState` transitions (`INIT`, `RUNNING`, `FAULT`, `SAFE_HALT`), spinlock synchronization, and 9-thread heartbeat watchdog supervision (`daly_watchdog_feed_hook`). |
 | `run_sync_tests` | `test_synchronization.cpp` | `ZephyrSemaphore`, `ZephyrMutex`, `ZephyrWorkQueue`, `SharedHeartRateBuffer` producer/consumer synchronization, and 1 Hz `status_work` execution. |
 | `run_command_tests` | `rtos/test_rtos_mocks.cpp`<br>`rtos/test_Command_Core.cpp`<br>`rtos/test_System_Objects.cpp`<br>`rtos/test_Sensor_Read_Cmd.cpp`<br>`rtos/test_Compute_Cmd.cpp`<br>`rtos/test_Sensor_Math.cpp`<br>`rtos/test_Print_Commands.cpp`<br>`rtos/test_Producer_Thread.cpp`<br>`rtos/test_Consumer_Threads.cpp`<br>`rtos/test_Thread_Trace.cpp` | `ICommand` placement-new pool lifecycle, `PROCESSOR_Q`/`LOGGER_Q` routing, BME280/LPS22HB/PAV3015 compensation math, 3-strike sensor disconnect escalation, and 4096-entry lockless thread preemption trace logging. |
