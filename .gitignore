@@ -8,9 +8,11 @@ external/
 **/*.gcda
 **/*.gcno
 coverage_report/
+coverage_report.html
 qemu_m4_report.md
 .cache/
 .settings/
 .vscode/
+.DS_Store
 *.pyc
 *.swp

@@ -14,7 +14,7 @@ The firmware is engineered around five strict safety-critical and low-power desi
 - **Hardware Memory & Stack Isolation**: Enforces ARM MPU protection (`CONFIG_ARM_MPU=y`), hardware stack overflow guards (`CONFIG_HW_STACK_PROTECTION=y`), and compiler stack canaries (`CONFIG_STACK_CANARIES=y`).
 - **3-Tier Hardware Power Profile (`PM_STATE_ACTIVE` -> `PM_STATE_SUSPEND_TO_IDLE` -> `PM_STATE_SUSPEND_TO_RAM`)**: Autonomously transitions from **Active Mode** (`96 MHz` PLL, `> 50 mA` load) after `30 s` of inactivity to **Idle Mode** (`16 MHz` HSI, `VOS3`, `~5 mA` load) for `5 s`, and then into **Deep Sleep / STOP Mode** (`~234 µA` typical on main regulator, `60 s` total duration with `1 MHz` mid-STOP RTC wakeups every `25 s` to service the hardware watchdog).
 - **Multi-Tier Fault Recovery & Safe Halt**: Combines a 3-stage I2C fault recovery pipeline (exponential retry, SCL bus reset, and a 64-entry reliability-scored fallback cache) with a spinlock-guarded system state machine (`INIT`, `RUNNING`, `FAULT`, `SAFE_HALT`) and a 9-thread heartbeat watchdog supervisor (`IWDG`).
-- **100% Host Unit Test Coverage Gate**: Includes a 9-binary GoogleTest (`GTest`) suite organized into domain-specific test subdirectories (`tests/power/`, `tests/battery/`, `tests/rtos/`, `tests/usb_shell/`, `tests/i2c/`, and `tests/config/`) alongside standalone suites (`test_static_memory.cpp`, `test_state_machine.cpp`, `test_synchronization.cpp`), backed by checked-in Zephyr OS stubs (`tests/mocks/`), deterministic per-call fault injection, linker symbol wrapping (`--wrap`), and a strict `gcovr` gate requiring **100% line and 100% branch coverage** across `src/` (with pre-generated results in `coverage_report.html`).
+- **100% Host Unit Test Coverage Gate**: Includes a 9-binary GoogleTest (`GTest`) suite organized into domain-specific test subdirectories (`tests/power/`, `tests/battery/`, `tests/rtos/`, `tests/usb_shell/`, `tests/i2c/`, and `tests/config/`) alongside standalone suites (`test_static_memory.cpp`, `test_state_machine.cpp`, `test_synchronization.cpp`), backed by checked-in Zephyr OS stubs (`tests/mocks/`), deterministic per-call fault injection, linker symbol wrapping (`--wrap`), and a strict `gcovr` gate requiring **100% line and 100% branch coverage** across `src/` (with pre-generated results in `coverage_report/index.html`).
 
 ## 2. Core Subsystems & Architecture
 
@@ -403,15 +403,7 @@ cmake ..
 make -j$(nproc)
 
 # 2. Execute all unit test suites
-./run_pm_tests
-./run_usb_shell_tests
-./run_battery_tests
-./run_static_memory_tests
-./run_config_tests
-./run_i2c_faults_tests
-./run_state_machine_tests
-./run_sync_tests
-./run_command_tests
+ctest --output-on-failure
 cd ../..
 
 # 3. Enforce 100% line and 100% branch coverage across src/
@@ -419,7 +411,7 @@ chmod +x ./scripts/check_coverage.sh
 ./scripts/check_coverage.sh
 ```
 
-`scripts/check_coverage.sh` invokes `gcovr` with `--fail-under-line 100 --fail-under-branch 100` (excluding unreachable `default:` assert branches and mock headers) to guarantee zero untested codepaths, and outputs the HTML summary tracked in `coverage_report.html`.
+`scripts/check_coverage.sh` invokes `gcovr` with `--fail-under-line 100 --fail-under-branch 100` (excluding unreachable `default:` assert branches and mock headers) to guarantee zero untested codepaths, and outputs the HTML summary tracked in `coverage_report/index.html`.
 
 ## 11. Continuous Integration Pipeline (GitHub Actions)
 
@@ -433,4 +425,4 @@ Defined in `.github/workflows/main.yml` (`Zephyr Firmware CI`), the pipeline run
    - `QEMU-M4-Execution-Report` (`qemu_m4_report.md`)
    - `QEMU-Execution-Logs` (`zephyr.map`, `zephyr.dts`, and `.config` for both `build_nucleo` and `build_mps2`)
    - `Coverage-Dashboard` (`coverage_report/`)
-   - `Nucleo-Firmware` (`build_nucleo/zephyr/zephyr.hex`, `build_nucleo/zephyr/zephyr.bin`, and `firmware/zephyr.elf`)
+   - `Nucleo-Firmware` (`build_nucleo/zephyr/zephyr.hex`, `build_nucleo/zephyr/zephyr.bin`, and `build_nucleo/zephyr/zephyr.elf`)

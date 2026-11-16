@@ -16,6 +16,7 @@ on:
 env:
   # Zephyr version that west.yml must resolve to. Keep in sync with west.yml.
   EXPECTED_ZEPHYR_VERSION: "4.4.0"
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 jobs:
   build-test-qemu:
