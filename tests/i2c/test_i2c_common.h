@@ -13,6 +13,8 @@
 #include <string_view>
 
 extern int mock_i2c_err_code;
+extern int mock_i2c_transient_failures;
+extern int g_i2c_bus_recovery_attempts;
 extern uint8_t mock_read_data[8];
 extern const device* mock_dev;
 extern bool g_device_ready_override;
@@ -74,19 +76,23 @@ class I2CFaultRecoveryTestSuite : public ::testing::Test {
       SystemState saved_state_{};
 
       void SetUp() override {
-          saved_state_ = sys_context.getState();
-          forceSystemRunning();
-          g_i2c_force_errno = 0;
-          mock_i2c_err_code = 0;
-          for(int i=0; i<8; i++) mock_read_data[i] = 0;
-          resetI2CCacheForTests();
-          ensure_mutex_initialized();
-      }
+        saved_state_ = sys_context.getState();
+        forceSystemRunning();
+        g_i2c_force_errno = 0;
+        mock_i2c_err_code = 0;
+        mock_i2c_transient_failures = 0;
+        g_i2c_bus_recovery_attempts = 0;
+        for(int i=0; i<8; i++) mock_read_data[i] = 0;
+        resetI2CCacheForTests();
+        ensure_mutex_initialized();
+    }
 
-      void TearDown() override {
-          g_i2c_force_errno = 0;
-          mock_i2c_err_code = 0;
-          g_device_ready_override = true;
-          (void)trySetSystemState(saved_state_);
-      }
+    void TearDown() override {
+        g_i2c_force_errno = 0;
+        mock_i2c_err_code = 0;
+        mock_i2c_transient_failures = 0;
+        g_i2c_bus_recovery_attempts = 0;
+        g_device_ready_override = true;
+        (void)trySetSystemState(saved_state_);
+    }
 };

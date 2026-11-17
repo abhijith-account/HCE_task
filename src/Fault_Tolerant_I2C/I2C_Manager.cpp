@@ -1,16 +1,10 @@
-// I2C_Manager.cpp
-// I2CManager: the fault-tolerant bus transactions - readRegister / writeRegister / readWord / writeWord / read24Bit / read64Bit.
-// Each transaction: power-observer + SAFE_HALT/FAULT lock-out, device check, the I2C call, then on error classify the fault
-// (classify_i2c_error), pick a recovery strategy (I2C_Recovery_Strategies.cpp) and fall back to the cache (I2C_Fallback_Cache.cpp).
-// Also owns the I2C hardware handle and the global i2c_manager instance on target builds.
-
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/device.h>
 #include "Fault_Tolerant_I2C_Communication_Layer.h"
 #include "Static_Memory+MISRA_Compliance_Layer.h"
 #include "Power_Management_System.h"
-#include "Device_State_Machine+Watchdog.h" 
+#include "Device_State_Machine+Watchdog.h"
 #include <zephyr/sys/atomic.h>
 #include <cerrno>
 #include <cstdlib>
@@ -35,6 +29,38 @@ I2CManager i2c_manager(i2c_hardware);
 #endif
 
 namespace {
+    constexpr uint8_t MAX_I2C_ATTEMPTS = 3U;
+
+    enum class TransferOp : uint8_t { ReadByte, WriteByte, BurstRead };
+
+    int execute_transfer_once(TransferOp op, const device* dev, uint16_t addr,
+                              uint8_t reg, uint8_t* buf, uint32_t len, uint8_t write_val) {
+        if (op == TransferOp::ReadByte) {
+            return i2c_reg_read_byte(dev, addr, reg, buf);
+        }
+        if (op == TransferOp::WriteByte) {
+            return i2c_reg_write_byte(dev, addr, reg, write_val);
+        }
+        return i2c_burst_read(dev, addr, reg, buf, len);
+    }
+
+    int execute_with_retry(TransferOp op, const device* dev, uint16_t addr,
+                           uint8_t reg, uint8_t* buf, uint32_t len, uint8_t write_val,
+                           BusResetStrategy& reset_strategy, RetryStrategy& retry_strategy,
+                           I2CFault& out_fault) {
+        retry_strategy.resetBackoff();
+        for (uint8_t attempt = 0U; attempt < MAX_I2C_ATTEMPTS; ++attempt) {
+            const int err = execute_transfer_once(op, dev, addr, reg, buf, len, write_val);
+            if (err == 0) {
+                retry_strategy.resetBackoff();
+                out_fault = I2CFault::NONE;
+                return 0;
+            }
+            out_fault = classify_and_recover(err, dev, reset_strategy, retry_strategy);
+        }
+        return -EIO;
+    }
+
     class I2CPowerObserver final : public IPowerObserver {
     private:
         atomic_t is_sleeping{};
@@ -54,7 +80,7 @@ namespace {
             PowerManager::getInstance().registerObserver(&g_i2cPowerObserver);
         }
     }
-    
+
     constexpr uint32_t make_cache_key(uint16_t sensor_addr, uint8_t reg_addr) noexcept {
         return (static_cast<uint32_t>(sensor_addr) << 8U) | static_cast<uint32_t>(reg_addr);
     }
@@ -74,7 +100,7 @@ I2CManager::I2CManager(const device* i2c_dev) : i2c_dev(i2c_dev) {}
 
 Result<uint8_t> I2CManager::readRegister(uint16_t sensor_addr, uint8_t reg_addr) {
     const uint32_t cache_key = make_cache_key(sensor_addr, reg_addr);
-    if (is_bus_locked_out()||is_device_unavailable(i2c_dev)) {
+    if (is_bus_locked_out() || is_device_unavailable(i2c_dev)) {
         return Result<uint8_t>::Err(I2CFault::DEVICE_NOT_READY);
     }
 #ifdef IS_TEST_ENVIRONMENT
@@ -84,26 +110,28 @@ Result<uint8_t> I2CManager::readRegister(uint16_t sensor_addr, uint8_t reg_addr)
 #endif
 
     uint8_t data = 0U;
-    const int err = i2c_reg_read_byte(i2c_dev, sensor_addr, reg_addr, &data);
+    I2CFault fault = I2CFault::NONE;
+    const int err = execute_with_retry(TransferOp::ReadByte, i2c_dev, sensor_addr, reg_addr,
+                                       &data, 1U, 0U, reset_strategy, retry_strategy, fault);
 
     if (err == 0) {
         update_cache(cache_key, data);
         failsafe_strategy.updateLastGood(data);
-        return Result<uint8_t>::Ok(data);
+        return Result<uint8_t>::Ok(data, k_uptime_get());
     }
 
-    const I2CFault fault = classify_and_recover(err, i2c_dev, reset_strategy, retry_strategy);
-
     uint64_t cached_val = 0U;
-    if (get_cached_value(cache_key, &cached_val, 3000U)) {
-       failsafe_strategy.executeRecovery(i2c_dev);
-       return Result<uint8_t>::Ok(static_cast<uint8_t>(cached_val & 0xFFU));
+    CacheReadMeta meta{};
+    if (get_cached_value(cache_key, &cached_val, 3000U, meta)) {
+        failsafe_strategy.executeRecovery(i2c_dev);
+        return Result<uint8_t>::Degraded(static_cast<uint8_t>(cached_val & 0xFFU),
+                                         fault, meta.timestamp_ms, meta.reliability_score);
     }
     return Result<uint8_t>::Err(fault);
 }
 
 Result<bool> I2CManager::writeRegister(uint16_t sensor_addr, uint8_t reg_addr, uint8_t val) {
-    if (is_bus_locked_out()||is_device_unavailable(i2c_dev)) {
+    if (is_bus_locked_out() || is_device_unavailable(i2c_dev)) {
         return Result<bool>::Err(I2CFault::DEVICE_NOT_READY);
     }
 #ifdef IS_TEST_ENVIRONMENT
@@ -112,20 +140,20 @@ Result<bool> I2CManager::writeRegister(uint16_t sensor_addr, uint8_t reg_addr, u
     }
 #endif
 
-    const int err = i2c_reg_write_byte(i2c_dev, sensor_addr, reg_addr, val);
+    I2CFault fault = I2CFault::NONE;
+    const int err = execute_with_retry(TransferOp::WriteByte, i2c_dev, sensor_addr, reg_addr,
+                                       nullptr, 1U, val, reset_strategy, retry_strategy, fault);
 
     if (err == 0) {
-        return Result<bool>::Ok(true);
+        return Result<bool>::Ok(true, k_uptime_get());
     }
-
-    const I2CFault fault = classify_and_recover(err, i2c_dev, reset_strategy, retry_strategy);
 
     return Result<bool>::Err(fault);
 }
 
 Result<uint16_t> I2CManager::readWord(uint16_t sensor_addr, uint8_t reg_addr) {
     const uint32_t cache_key = make_cache_key(sensor_addr, reg_addr);
-    if (is_bus_locked_out()||is_device_unavailable(i2c_dev)) {
+    if (is_bus_locked_out() || is_device_unavailable(i2c_dev)) {
         return Result<uint16_t>::Err(I2CFault::DEVICE_NOT_READY);
     }
 #ifdef IS_TEST_ENVIRONMENT
@@ -134,21 +162,23 @@ Result<uint16_t> I2CManager::readWord(uint16_t sensor_addr, uint8_t reg_addr) {
     }
 #endif
     uint8_t buf[2] = {0U, 0U};
-    const int err = i2c_burst_read(i2c_dev, sensor_addr, reg_addr, buf, 2);
+    I2CFault fault = I2CFault::NONE;
+    const int err = execute_with_retry(TransferOp::BurstRead, i2c_dev, sensor_addr, reg_addr,
+                                       buf, 2U, 0U, reset_strategy, retry_strategy, fault);
 
     if (err == 0) {
         uint16_t val = static_cast<uint16_t>((static_cast<uint16_t>(buf[1]) << 8U) | static_cast<uint16_t>(buf[0]));
         update_cache(cache_key, val);
         failsafe_strategy.updateLastGood(val);
-        return Result<uint16_t>::Ok(val);
+        return Result<uint16_t>::Ok(val, k_uptime_get());
     }
 
-    const I2CFault fault = classify_and_recover(err, i2c_dev, reset_strategy, retry_strategy);
-
     uint64_t cached_val = 0U;
-    if (get_cached_value(cache_key, &cached_val, 3000U)) {
+    CacheReadMeta meta{};
+    if (get_cached_value(cache_key, &cached_val, 3000U, meta)) {
         failsafe_strategy.executeRecovery(i2c_dev);
-        return Result<uint16_t>::Ok(static_cast<uint16_t>(cached_val & 0xFFFFU));
+        return Result<uint16_t>::Degraded(static_cast<uint16_t>(cached_val & 0xFFFFU),
+                                          fault, meta.timestamp_ms, meta.reliability_score);
     }
     return Result<uint16_t>::Err(fault);
 }
@@ -164,7 +194,7 @@ Result<bool> I2CManager::writeWord(uint16_t sensor_addr, uint8_t reg_addr, uint1
 
 Result<uint32_t> I2CManager::read24Bit(uint16_t sensor_addr, uint8_t reg_addr) {
     const uint32_t cache_key = make_cache_key(sensor_addr, reg_addr);
-    if (is_bus_locked_out()||is_device_unavailable(i2c_dev)) {
+    if (is_bus_locked_out() || is_device_unavailable(i2c_dev)) {
         return Result<uint32_t>::Err(I2CFault::DEVICE_NOT_READY);
     }
 #ifdef IS_TEST_ENVIRONMENT
@@ -173,28 +203,30 @@ Result<uint32_t> I2CManager::read24Bit(uint16_t sensor_addr, uint8_t reg_addr) {
     }
 #endif
     uint8_t buf[3] = {0U, 0U, 0U};
-    const int err = i2c_burst_read(i2c_dev, sensor_addr, reg_addr, buf, 3);
+    I2CFault fault = I2CFault::NONE;
+    const int err = execute_with_retry(TransferOp::BurstRead, i2c_dev, sensor_addr, reg_addr,
+                                       buf, 3U, 0U, reset_strategy, retry_strategy, fault);
 
     if (err == 0) {
         uint32_t val = (static_cast<uint32_t>(buf[0]) << 16U) | (static_cast<uint32_t>(buf[1]) << 8U) | static_cast<uint32_t>(buf[2]);
         update_cache(cache_key, val);
         failsafe_strategy.updateLastGood(val);
-        return Result<uint32_t>::Ok(val);
+        return Result<uint32_t>::Ok(val, k_uptime_get());
     }
 
-    const I2CFault fault = classify_and_recover(err, i2c_dev, reset_strategy, retry_strategy);
-
     uint64_t cached_val = 0U;
-    if (get_cached_value(cache_key, &cached_val, 3000U)) {
+    CacheReadMeta meta{};
+    if (get_cached_value(cache_key, &cached_val, 3000U, meta)) {
         failsafe_strategy.executeRecovery(i2c_dev);
-        return Result<uint32_t>::Ok(static_cast<uint32_t>(cached_val & 0xFFFFFFU));
+        return Result<uint32_t>::Degraded(static_cast<uint32_t>(cached_val & 0xFFFFFFU),
+                                          fault, meta.timestamp_ms, meta.reliability_score);
     }
     return Result<uint32_t>::Err(fault);
 }
 
 Result<uint64_t> I2CManager::read64Bit(uint16_t sensor_addr, uint8_t reg_addr) {
     const uint32_t cache_key = make_cache_key(sensor_addr, reg_addr);
-    if (is_bus_locked_out()||is_device_unavailable(i2c_dev)) {
+    if (is_bus_locked_out() || is_device_unavailable(i2c_dev)) {
         return Result<uint64_t>::Err(I2CFault::DEVICE_NOT_READY);
     }
 #ifdef IS_TEST_ENVIRONMENT
@@ -203,7 +235,9 @@ Result<uint64_t> I2CManager::read64Bit(uint16_t sensor_addr, uint8_t reg_addr) {
     }
 #endif
     uint8_t buf[8] = {0U};
-    const int err = i2c_burst_read(i2c_dev, sensor_addr, reg_addr, buf, 8);
+    I2CFault fault = I2CFault::NONE;
+    const int err = execute_with_retry(TransferOp::BurstRead, i2c_dev, sensor_addr, reg_addr,
+                                       buf, 8U, 0U, reset_strategy, retry_strategy, fault);
 
     if (err == 0) {
         uint64_t val = (static_cast<uint64_t>(buf[0]) << 56U) | (static_cast<uint64_t>(buf[1]) << 48U) |
@@ -212,15 +246,14 @@ Result<uint64_t> I2CManager::read64Bit(uint16_t sensor_addr, uint8_t reg_addr) {
                        (static_cast<uint64_t>(buf[6]) << 8U)  | static_cast<uint64_t>(buf[7]);
         update_cache(cache_key, val);
         failsafe_strategy.updateLastGood(val);
-        return Result<uint64_t>::Ok(val);
+        return Result<uint64_t>::Ok(val, k_uptime_get());
     }
 
-    const I2CFault fault = classify_and_recover(err, i2c_dev, reset_strategy, retry_strategy);
-
     uint64_t cached_val = 0U;
-    if (get_cached_value(cache_key, &cached_val, 3000U)) {
+    CacheReadMeta meta{};
+    if (get_cached_value(cache_key, &cached_val, 3000U, meta)) {
         failsafe_strategy.executeRecovery(i2c_dev);
-        return Result<uint64_t>::Ok(cached_val);
+        return Result<uint64_t>::Degraded(cached_val, fault, meta.timestamp_ms, meta.reliability_score);
     }
     return Result<uint64_t>::Err(fault);
 }

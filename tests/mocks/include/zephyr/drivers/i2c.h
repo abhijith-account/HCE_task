@@ -8,4 +8,5 @@ int i2c_write_read(const struct device *dev, uint16_t addr, const void *write_bu
 int i2c_reg_read_byte(const struct device *dev, uint16_t dev_addr, uint8_t reg_addr, uint8_t *value);
 int i2c_reg_write_byte(const struct device *dev, uint16_t dev_addr, uint8_t reg_addr, uint8_t value);
 int i2c_burst_read(const struct device *dev, uint16_t dev_addr, uint8_t start_addr, uint8_t *buf, uint32_t num_bytes);
+int i2c_recover_bus(const struct device *dev);
 }

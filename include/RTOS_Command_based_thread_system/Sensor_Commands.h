@@ -23,10 +23,14 @@ class ComputeCmd final : public ICommand {
 private:
     SensorID sensor_id;
     uint8_t reg_addr;
+    bool is_degraded{false};
+    uint8_t reliability_score{100U};
     uint64_t raw_data;
+    int64_t timestamp_ms{0};
 
 public:
-    ComputeCmd(SensorID s_id, uint8_t r_addr, uint64_t data) noexcept;
+    ComputeCmd(SensorID s_id, uint8_t r_addr, uint64_t data,
+               bool degraded = false, uint8_t reliability = 100U, int64_t ts_ms = 0) noexcept;
     void execute() noexcept override;
 };
 

@@ -84,3 +84,51 @@ TEST_F(I2CFaultRecoveryTestSuite, BaseDestructor) {
     ptr->~I2CStrategy();
     pool.deallocate(mem);
 }
+
+TEST_F(I2CFaultRecoveryTestSuite, ExponentialBackoffDoublesAndCapsAtMax) {
+    RetryStrategy strategy;
+    EXPECT_EQ(strategy.getBackoffMs(), 10U);
+    strategy.executeRecovery(mock_dev);
+    EXPECT_EQ(strategy.getBackoffMs(), 20U);
+    strategy.executeRecovery(mock_dev);
+    EXPECT_EQ(strategy.getBackoffMs(), 40U);
+    strategy.executeRecovery(mock_dev);
+    EXPECT_EQ(strategy.getBackoffMs(), 80U);
+    strategy.executeRecovery(mock_dev);
+    EXPECT_EQ(strategy.getBackoffMs(), 80U);
+    strategy.resetBackoff();
+    EXPECT_EQ(strategy.getBackoffMs(), 10U);
+}
+
+TEST_F(I2CFaultRecoveryTestSuite, BusResetStrategyInvokesHardwareRecoverBus) {
+    BusResetStrategy strategy;
+    g_i2c_bus_recovery_attempts = 0;
+    strategy.executeRecovery(mock_dev);
+    EXPECT_EQ(g_i2c_bus_recovery_attempts, 1);
+}
+
+TEST_F(I2CFaultRecoveryTestSuite, TransientFaultRecoversOnRetryAndCacheMarksDegraded) {
+    I2CManager manager(mock_dev);
+    virtual_uptime = 1234U;
+    mock_read_data[0] = 0x5A;
+    mock_i2c_transient_failures = 2; // Fails attempt 0 (+10ms) & attempt 1 (+20ms), succeeds on attempt 2 at t=1264
+
+    auto live_res = manager.readRegister(0x10, 0x20);
+    EXPECT_TRUE(live_res.isOk());
+    EXPECT_FALSE(live_res.isDegraded());
+    EXPECT_EQ(live_res.unwrap(), 0x5A);
+    EXPECT_EQ(live_res.timestamp_ms, 1264);
+    EXPECT_EQ(live_res.reliability_score, 100U);
+
+    // Force permanent bus lockup: 3 attempts call i2c_recover_bus, then fallback returns Degraded
+    g_i2c_bus_recovery_attempts = 0;
+    mock_i2c_err_code = -ETIMEDOUT;
+    auto deg_res = manager.readRegister(0x10, 0x20);
+    EXPECT_TRUE(deg_res.isOk());
+    EXPECT_TRUE(deg_res.isDegraded());
+    EXPECT_EQ(deg_res.error, I2CFault::TIMEOUT);
+    EXPECT_EQ(deg_res.unwrap(), 0x5A);
+    EXPECT_EQ(deg_res.timestamp_ms, 1264);
+    EXPECT_EQ(deg_res.reliability_score, 90U);
+    EXPECT_EQ(g_i2c_bus_recovery_attempts, 3);
+}

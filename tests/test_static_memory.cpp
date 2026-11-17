@@ -136,6 +136,35 @@ TEST_F(StaticMemoryTestSuite,MemoryIsProperlyAligned){
     EXPECT_EQ(numeric_address%alignof(DummyPayload),0)<<"Memory returned by StaticPool is not correctly aligned for the payload type";
 }
 
+struct alignas(16) OverAlignedPayload {
+    uint64_t a;
+    uint64_t b;
+};
+
+TEST_F(StaticMemoryTestSuite, OverAlignedTypeAndRejectsInteriorAndDoubleFree) {
+    StaticPool<OverAlignedPayload, 2> pool;
+
+    void* ptr1 = pool.allocate();
+    ASSERT_NE(ptr1, nullptr);
+    EXPECT_EQ(reinterpret_cast<uintptr_t>(ptr1) % alignof(OverAlignedPayload), 0U);
+
+    void* interior_ptr = static_cast<uint8_t*>(ptr1) + 4U;
+    testing::internal::CaptureStdout();
+    pool.deallocate(interior_ptr);
+    std::string out_interior = testing::internal::GetCapturedStdout();
+    EXPECT_NE(out_interior.find("[ERR] Unaligned interior pointer passed to deallocate"), std::string::npos);
+
+    void* ptr2 = pool.allocate();
+    EXPECT_NE(ptr2, nullptr);
+    EXPECT_EQ(pool.allocate(), nullptr);
+
+    pool.deallocate(ptr1);
+    testing::internal::CaptureStdout();
+    pool.deallocate(ptr1);
+    std::string out_double = testing::internal::GetCapturedStdout();
+    EXPECT_NE(out_double.find("[ERR] Double-free detected in StaticPool"), std::string::npos);
+}
+
 bool run_thread_once=false;
 
 extern void memory_monitor_thread(void);

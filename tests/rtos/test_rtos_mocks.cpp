@@ -22,7 +22,7 @@ extern "C" {
                         uint8_t start_addr, uint8_t *buf, uint32_t num_bytes) {
         ++g_i2c_call_counter;
         if (g_i2c_force_errno != 0) return g_i2c_force_errno;
-        if (g_i2c_fail_on_call_n != 0 && g_i2c_call_counter == g_i2c_fail_on_call_n) {
+        if (g_i2c_fail_on_call_n != 0 && g_i2c_call_counter >= g_i2c_fail_on_call_n) {
             return g_i2c_fail_on_call_errno;
         }
         if (buf && num_bytes == 2) {

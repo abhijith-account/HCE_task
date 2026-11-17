@@ -10,12 +10,16 @@
 class PrintCmd final : public ICommand {
 private:
     SensorID sensor_id;
+    bool is_degraded{false};
+    uint8_t reliability_score{100U};
     float final_value;
+    int64_t timestamp_ms{0};
 
     [[nodiscard]] const char* getSensorName() const noexcept;
 
 public:
-    PrintCmd(SensorID s_id, float val) noexcept;
+    PrintCmd(SensorID s_id, float val, bool degraded = false,
+             uint8_t reliability = 100U, int64_t ts_ms = 0) noexcept;
     void execute() noexcept override;
 };
 
@@ -41,4 +45,5 @@ public:
 
 [[nodiscard]] bool printLPS22HBMeasurement(const LPS22HBData& data) noexcept;
 
-[[nodiscard]] bool printMeasurement(SensorID id, float value) noexcept;
+[[nodiscard]] bool printMeasurement(SensorID id, float value, bool degraded = false,
+                                    uint8_t reliability = 100U, int64_t ts_ms = 0) noexcept;

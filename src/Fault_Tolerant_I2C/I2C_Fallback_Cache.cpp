@@ -95,7 +95,7 @@ void update_cache(uint32_t key, uint64_t value, bool calibrated) {
     k_mutex_unlock(&cache_tracker_mutex);
 }
 
-bool get_cached_value(uint32_t key, uint64_t* out_val, uint32_t max_age_ms) {
+bool get_cached_value(uint32_t key, uint64_t* out_val, uint32_t max_age_ms, CacheReadMeta& out_meta) {
     if (out_val == nullptr) {
         return false;
     }
@@ -103,42 +103,43 @@ bool get_cached_value(uint32_t key, uint64_t* out_val, uint32_t max_age_ms) {
     ensure_mutex_initialized();
     k_mutex_lock(&cache_tracker_mutex, K_FOREVER);
     const int64_t now = k_uptime_get();
-    
+
     for (size_t i = 0; i < MAX_CACHED_REGISTERS; i++) {
-       if ((active_entries[i] != nullptr) && (active_entries[i]->key == key)) {
-          CacheEntry* const entry = active_entries[i];
+        if ((active_entries[i] != nullptr) && (active_entries[i]->key == key)) {
+            CacheEntry* const entry = active_entries[i];
 
-          // Check if data is stale - but don't print error logs while in SAFE_HALT
-          if ((now - entry->timestamp) > max_age_ms) {
-              if (sys_context.getState() == SystemState::RUNNING) {
-                  LOG_ERR("Fallback Rejected: Data Stale (>%d ms)", max_age_ms);
-              }
-              k_mutex_unlock(&cache_tracker_mutex);
-              return false;
-          }
+            // Check if data is stale - but don't print error logs while in SAFE_HALT
+            if ((now - entry->timestamp) > max_age_ms) {
+                if (sys_context.getState() == SystemState::RUNNING) {
+                    LOG_ERR("Fallback Rejected: Data Stale (>%d ms)", max_age_ms);
+                }
+                k_mutex_unlock(&cache_tracker_mutex);
+                return false;
+            }
 
-          if (entry->reliability_score < CACHE_RELIABILITY_MIN_FOR_FALLBACK) {
-              if (sys_context.getState() == SystemState::RUNNING) {
-                  LOG_ERR("Fallback Rejected: Reliability Score too low");
-              }
-              k_mutex_unlock(&cache_tracker_mutex);
-              return false;
-          }
+            if (entry->reliability_score < CACHE_RELIABILITY_MIN_FOR_FALLBACK) {
+                if (sys_context.getState() == SystemState::RUNNING) {
+                    LOG_ERR("Fallback Rejected: Reliability Score too low");
+                }
+                k_mutex_unlock(&cache_tracker_mutex);
+                return false;
+            }
+            if (!entry->is_calibrated) {
+                if (sys_context.getState() == SystemState::RUNNING) {
+                    LOG_ERR("Fallback Rejected: Data is uncalibrated.");
+                }
+                k_mutex_unlock(&cache_tracker_mutex);
+                return false;
+            }
 
-          if (!entry->is_calibrated) {
-              if (sys_context.getState() == SystemState::RUNNING) {
-                  LOG_ERR("Fallback Rejected: Data is uncalibrated.");
-              }
-              k_mutex_unlock(&cache_tracker_mutex);
-              return false;
-          }
+            entry->reliability_score -= CACHE_RELIABILITY_DECAY_PER_USE;
 
-          entry->reliability_score -= CACHE_RELIABILITY_DECAY_PER_USE;
-
-          *out_val = entry->raw_value;
-          k_mutex_unlock(&cache_tracker_mutex);
-          return true;
-       }
+            *out_val = entry->raw_value;
+            out_meta.timestamp_ms = entry->timestamp;
+            out_meta.reliability_score = entry->reliability_score;
+            k_mutex_unlock(&cache_tracker_mutex);
+            return true;
+        }
     }
     k_mutex_unlock(&cache_tracker_mutex);
     return false;

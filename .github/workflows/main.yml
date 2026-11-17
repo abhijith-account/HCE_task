@@ -69,8 +69,30 @@ jobs:
             g++ \
             lcov \
             gcovr \
+            cppcheck \
             libgtest-dev \
             binutils
+      
+      - name: Run Static Analysis (cppcheck)
+        run: |
+          cppcheck --enable=warning \
+            --error-exitcode=1 \
+            --std=c++20 \
+            --inline-suppr \
+            --suppress=missingIncludeSystem \
+            --suppress=missingInclude \
+            --suppress=unmatchedSuppression \
+            --suppress=syntaxError \
+            --suppress=unknownMacro \
+            -DIS_TEST_ENVIRONMENT \
+            -DCONFIG_BOARD_MPS2_AN386 \
+            -I tests/mocks/include \
+            -I include \
+            -I include/Power_Management_System \
+            -I include/RTOS_Command_based_thread_system \
+            -I include/Smart_Battery_System \
+            -i src/qemu_sensor_mocks.c \
+            src/
 
       - name: Cross Compile for STM32 ARM - nucleo_f446re
         run: |
@@ -79,24 +101,31 @@ jobs:
             --pristine
 
           echo ""
+          echo "===== VERIFYING RESOLVED ZEPHYR .config SAFETY CLAIMS ====="
+          grep -q "^CONFIG_HEAP_MEM_POOL_SIZE=0$" build_nucleo/zephyr/.config
+          grep -q "^CONFIG_STACK_CANARIES=y$" build_nucleo/zephyr/.config
+          grep -q "^CONFIG_ARM_MPU=y$" build_nucleo/zephyr/.config
+          grep -q "^CONFIG_HW_STACK_PROTECTION=y$" build_nucleo/zephyr/.config
+
+          echo ""
           echo "===== NUCLEO BUILD IMAGE ====="
-          ls -lh build_nucleo/zephyr/zephyr.elf || true
-          ls -lh build_nucleo/zephyr/zephyr.bin || true
-          ls -lh build_nucleo/zephyr/zephyr.map || true
+          ls -lh build_nucleo/zephyr/zephyr.elf
+          ls -lh build_nucleo/zephyr/zephyr.bin
+          ls -lh build_nucleo/zephyr/zephyr.map
 
       - name: Emulation Test via QEMU (Cortex-M4)
         run: |
           # 1. Compile the firmware with explicit build dir
-          west build -b mps2/an386 . --build-dir build_mps2 --pristine 
-          
+          west build -b mps2/an386 . --build-dir build_mps2 --pristine
+
           # 2. Initialize the full artifact report file
           echo "# Cortex-M4 Emulation Full Runtime Report" > qemu_m4_report.md
           echo '```text' >> qemu_m4_report.md
-          
+
           # 3. Execute the emulator targeting the specific build dir
           timeout 120s west build -d build_mps2 -t run >> qemu_m4_report.md 2>&1 || EXIT_CODE=$?
           echo '```' >> qemu_m4_report.md
-          
+
           # 4. Evaluate the QEMU exit code (124 means it successfully ran until timeout)
           if [ "${EXIT_CODE:-0}" -eq 124 ]; then
             echo "## Cortex-M4 QEMU Test Passed!" >> $GITHUB_STEP_SUMMARY
@@ -105,7 +134,7 @@ jobs:
           else
             echo "## Cortex-M4 QEMU Test FAILED (exit code $EXIT_CODE)!" >> $GITHUB_STEP_SUMMARY
           fi
-          
+
           echo "**Note:** The full execution log was ~25MB due to continuous RTOS loop output and exceeded GitHub's 1MB display limit." >> $GITHUB_STEP_SUMMARY
           echo "Please download the **QEMU-M4-Execution-Report** from the Artifacts menu to view the complete boot sequence." >> $GITHUB_STEP_SUMMARY
           echo "### Final Output Snippet (Last 50 Lines):" >> $GITHUB_STEP_SUMMARY
@@ -114,7 +143,13 @@ jobs:
           echo '```' >> $GITHUB_STEP_SUMMARY
 
           if [ "${EXIT_CODE:-0}" -eq 124 ]; then
-            echo "Firmware booted successfully and ran to timeout!"
+            echo "Verifying QEMU runtime milestones in qemu_m4_report.md..."
+            grep -q "Command-Based RTOS Booting" qemu_m4_report.md
+            grep -q "BME280 emulator simulating disconnect!" qemu_m4_report.md
+            grep -q "Falling back to Last-known-Good data" qemu_m4_report.md
+            grep -q "PM_STATE_SUSPEND_TO_IDLE" qemu_m4_report.md
+            grep -q "PM_STATE_SUSPEND_TO_RAM" qemu_m4_report.md
+            echo "Firmware booted, handled fault injection, and transitioned through STOP mode!"
             exit 0
           elif [ "${EXIT_CODE:-0}" -ne 0 ]; then
             echo "Firmware crashed with exit code $EXIT_CODE!"

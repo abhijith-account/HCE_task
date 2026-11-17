@@ -10,8 +10,8 @@ static_assert(alignof(MaxCommandSize) >= alignof(PrintCmd), "Alignment mismatch 
 static_assert(alignof(MaxCommandSize) >= alignof(PrintBME280Cmd), "Alignment mismatch on PrintBME280Cmd");
 static_assert(alignof(MaxCommandSize) >= alignof(PrintLPS22HBCmd), "Alignment mismatch on PrintLPS22HBCmd");
 
-bool printMeasurement(SensorID id, float value) noexcept {
-    if (!enqueueCommand<PrintCmd>(LOGGER_Q, id, value)) {
+bool printMeasurement(SensorID id, float value, bool degraded, uint8_t reliability, int64_t ts_ms) noexcept {
+    if (!enqueueCommand<PrintCmd>(LOGGER_Q, id, value, degraded, reliability, ts_ms)) {
         g_queueStats.loggerQueueFull++;
         LOG_ERR("[%s] Logger queue full. Metric dropped.", LogTags::PRINT);
         return false;
@@ -19,19 +19,20 @@ bool printMeasurement(SensorID id, float value) noexcept {
     return true;
 }
 
-PrintCmd::PrintCmd(SensorID s_id, float val) noexcept : sensor_id(s_id), final_value(val) {}
+PrintCmd::PrintCmd(SensorID s_id, float val, bool degraded, uint8_t reliability, int64_t ts_ms) noexcept
+    : sensor_id(s_id), is_degraded(degraded), reliability_score(reliability), final_value(val), timestamp_ms(ts_ms) {}
 
 struct SensorInfo {
     SensorID id{};
     const char* name{};
 };
 constexpr SensorInfo sensorTable[] = {
-    {SensorID::BME280,       "BME280(Temp C)"},
-    {SensorID::BME280_PRESS, "BME280(Press hPa)"},
-    {SensorID::BME280_HUM,   "BME280(Humidity %RH)"},
-    {SensorID::LPS22HB,      "LPS22HB(Press hPa)"},
-    {SensorID::LPS22HB_TEMP, "LPS22HB(Temp C)"},
-    {SensorID::PAV3015,      "PAV3015(Airflow m/s)"}
+    {SensorID::BME280,      "BME280(Temp C)"},
+    {SensorID::BME280_PRESS,"BME280(Press hPa)"},
+    {SensorID::BME280_HUM,  "BME280(Humidity %RH)"},
+    {SensorID::LPS22HB,     "LPS22HB(Press hPa)"},
+    {SensorID::LPS22HB_TEMP,"LPS22HB(Temp C)"},
+    {SensorID::PAV3015,     "PAV3015(Airflow m/s)"}
 };
 
 const char* PrintCmd::getSensorName() const noexcept {
@@ -42,15 +43,18 @@ const char* PrintCmd::getSensorName() const noexcept {
 }
 
 void PrintCmd::execute() noexcept {
-    LOG_INF("[%s] #%u: Metric: %s = %.2f", LogTags::PRINT, command_id, getSensorName(), static_cast<double>(final_value));
+    LOG_INF("[%s] #%u: Metric: %s = %.2f [degraded=%d rel=%u%% ts=%lld]",
+            LogTags::PRINT, command_id, getSensorName(), static_cast<double>(final_value),
+            static_cast<int>(is_degraded), reliability_score, static_cast<long long>(timestamp_ms));
 }
 
 PrintBME280Cmd::PrintBME280Cmd(const BME280Data& d) noexcept : data(d) {}
 
 void PrintBME280Cmd::execute() noexcept {
-    LOG_INF("[%s] #%u: Metric: BME280 Temp = %.2f C | Press = %.2f hPa | Hum = %.2f %%RH",
+    LOG_INF("[%s] #%u: Metric: BME280 Temp = %.2f C | Press = %.2f hPa | Hum = %.2f %%RH [degraded=%d rel=%u%% ts=%lld]",
             LogTags::PRINT, command_id,
-            static_cast<double>(data.temperature), static_cast<double>(data.pressure), static_cast<double>(data.humidity));
+            static_cast<double>(data.temperature), static_cast<double>(data.pressure), static_cast<double>(data.humidity),
+            static_cast<int>(data.degraded), data.reliability_score, static_cast<long long>(data.timestamp_ms));
 }
 
 bool printBME280Measurement(const BME280Data& data) noexcept {
@@ -65,9 +69,10 @@ bool printBME280Measurement(const BME280Data& data) noexcept {
 PrintLPS22HBCmd::PrintLPS22HBCmd(const LPS22HBData& d) noexcept : data(d) {}
 
 void PrintLPS22HBCmd::execute() noexcept {
-    LOG_INF("[%s] #%u: Metric: LPS22HB Temp = %.2f C | Press = %.2f hPa",
+    LOG_INF("[%s] #%u: Metric: LPS22HB Temp = %.2f C | Press = %.2f hPa [degraded=%d rel=%u%% ts=%lld]",
             LogTags::PRINT, command_id,
-            static_cast<double>(data.temperature), static_cast<double>(data.pressure));
+            static_cast<double>(data.temperature), static_cast<double>(data.pressure),
+            static_cast<int>(data.degraded), data.reliability_score, static_cast<long long>(data.timestamp_ms));
 }
 
 bool printLPS22HBMeasurement(const LPS22HBData& data) noexcept {

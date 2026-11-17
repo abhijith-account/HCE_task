@@ -30,12 +30,14 @@ Result<uint64_t> SensorReadCmd::readHardwareData() const noexcept {
 
         case ReadLength::Triple: {
             const auto res = SystemObjects::i2c().read24Bit(s_addr, reg_addr);
-            return res.isOk() ? Result<uint64_t>::Ok(res.unwrap()) : Result<uint64_t>::Err(res.error);
+            return res.isOk() ? Result<uint64_t>{res.unwrap(), res.error, true, res.degraded, res.timestamp_ms, res.reliability_score}
+                              : Result<uint64_t>::Err(res.error);
         }
 
         case ReadLength::Word: {
             const auto res = SystemObjects::i2c().readWord(s_addr, reg_addr);
-            return res.isOk() ? Result<uint64_t>::Ok(res.unwrap()) : Result<uint64_t>::Err(res.error);
+            return res.isOk() ? Result<uint64_t>{res.unwrap(), res.error, true, res.degraded, res.timestamp_ms, res.reliability_score}
+                              : Result<uint64_t>::Err(res.error);
         }
 
         default:
@@ -50,6 +52,9 @@ static uint64_t last_raw_pav = 0;
 
 void SensorReadCmd::execute() noexcept {
     uint64_t raw = 0;
+    bool is_degraded = false;
+    uint8_t reliability = 100U;
+    int64_t sample_ts = 0;
 
     static uint8_t bme_failures = 0;
     static uint8_t lps_failures = 0;
@@ -74,8 +79,11 @@ void SensorReadCmd::execute() noexcept {
             return;
         }
         raw = res.unwrap();
+        is_degraded = res.isDegraded();
+        reliability = res.reliability_score;
+        sample_ts = res.timestamp_ms;
         if (fail_counter) *fail_counter = 0;
-    } 
+    }
 #else
     const auto res = readHardwareData();
     if (!res.isOk()) {
@@ -86,6 +94,9 @@ void SensorReadCmd::execute() noexcept {
         return;
     }
     raw = res.unwrap();
+    is_degraded = res.isDegraded();
+    reliability = res.reliability_score;
+    sample_ts = res.timestamp_ms;
     if (fail_counter) *fail_counter = 0;
 #endif
 
@@ -114,7 +125,7 @@ void SensorReadCmd::execute() noexcept {
         }
     }
 
-    if (!enqueueCommand<ComputeCmd>(PROCESSOR_Q, sensor_id, reg_addr, raw)) {
+    if (!enqueueCommand<ComputeCmd>(PROCESSOR_Q, sensor_id, reg_addr, raw, is_degraded, reliability, sample_ts)) {
         logCommandError(LogTags::READ, command_id, "Compute queue full. Discarding raw data.");
     }
 }
@@ -128,11 +139,12 @@ void resetSensorReadCmdLastValsForTest() noexcept {
 }
 #endif
 
-ComputeCmd::ComputeCmd(SensorID s_id, uint8_t r_addr, uint64_t data) noexcept
-    : sensor_id(s_id), reg_addr(r_addr), raw_data(data) {}
+ComputeCmd::ComputeCmd(SensorID s_id, uint8_t r_addr, uint64_t data,
+                       bool degraded, uint8_t reliability, int64_t ts_ms) noexcept
+    : sensor_id(s_id), reg_addr(r_addr), is_degraded(degraded),
+      reliability_score(reliability), raw_data(data), timestamp_ms(ts_ms) {}
 
 void ComputeCmd::execute() noexcept {
-
     switch (sensor_id) {
         case SensorID::BME280: {
             BME280Data result{};
@@ -140,18 +152,25 @@ void ComputeCmd::execute() noexcept {
                 logCommandError(LogTags::COMPUTE, command_id, "BME280 calibration aborted. Math halting.");
                 return;
             }
+            result.degraded = is_degraded;
+            result.reliability_score = reliability_score;
+            result.timestamp_ms = timestamp_ms;
             (void)printBME280Measurement(result);
             break;
         }
         case SensorID::LPS22HB: {
             LPS22HBData result{};
             if (LPS22HBDriver::accumulate(reg_addr, raw_data, result)) {
+                result.degraded = is_degraded;
+                result.reliability_score = reliability_score;
+                result.timestamp_ms = timestamp_ms;
                 (void)printLPS22HBMeasurement(result);
             }
             break;
         }
         case SensorID::PAV3015: {
-            (void)printMeasurement(sensor_id, PAV3015Math::decodeAirflow(raw_data));
+            (void)printMeasurement(sensor_id, PAV3015Math::decodeAirflow(raw_data),
+                                   is_degraded, reliability_score, timestamp_ms);
             break;
         }
         default:

@@ -46,6 +46,9 @@ struct BME280Data {
     float temperature{0.0f};
     float pressure{0.0f};
     float humidity{0.0f};
+    bool degraded{false};
+    uint8_t reliability_score{100U};
+    int64_t timestamp_ms{0};
 };
 
 /* Pure math: no I/O, no RTOS dependency. */

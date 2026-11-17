@@ -9,6 +9,13 @@ extern int g_i2c_force_errno;
 
 namespace i2c_internal {
 
+struct CacheReadMeta {
+    int64_t timestamp_ms{0};
+    uint8_t reliability_score{0U};
+};
+
+inline CacheReadMeta g_default_cache_meta{};
+
 /* Map a negative Zephyr driver errno to an I2CFault enum value. */
 I2CFault classify_i2c_error(int err);
 
@@ -26,6 +33,7 @@ void update_cache(uint32_t key, uint64_t value, bool calibrated = true);
 
 /* Fallback read: succeeds only for a fresh (<= max_age_ms), reliable (score >= minimum) and calibrated entry,
  * and decays the entry's reliability on every successful use. */
-bool get_cached_value(uint32_t key, uint64_t* out_val, uint32_t max_age_ms);
+bool get_cached_value(uint32_t key, uint64_t* out_val, uint32_t max_age_ms,
+                      CacheReadMeta& out_meta = g_default_cache_meta);
 
 } // namespace i2c_internal
