@@ -111,7 +111,7 @@ bool get_cached_value(uint32_t key, uint64_t* out_val, uint32_t max_age_ms, Cach
             // Check if data is stale - but don't print error logs while in SAFE_HALT
             if ((now - entry->timestamp) > max_age_ms) {
                 if (sys_context.getState() == SystemState::RUNNING) {
-                    LOG_ERR("Fallback Rejected: Data Stale (>%d ms)", max_age_ms);
+                    LOG_ERR("Fallback Rejected: Data Stale (>%u ms)", max_age_ms);
                 }
                 k_mutex_unlock(&cache_tracker_mutex);
                 return false;
