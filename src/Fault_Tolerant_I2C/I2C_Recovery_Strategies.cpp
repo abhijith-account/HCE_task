@@ -79,8 +79,8 @@ void BusResetStrategy::executeRecovery(const device* i2c_dev) {
 
 void FailSafeStrategy::executeRecovery(const device*) {
     LOG_ERR("I2C Critical Failure. Falling back to Last-known-Good data: %llu",
-            static_cast<unsigned long long>(last_known_good_value.load()));
+            static_cast<unsigned long long>(last_known_good_value));
 }
 
-void FailSafeStrategy::updateLastGood(uint64_t val) { last_known_good_value.store(val); }
-uint64_t FailSafeStrategy::getLastGood() const { return last_known_good_value.load(); }
+void FailSafeStrategy::updateLastGood(uint64_t val) { last_known_good_value = val; }
+uint64_t FailSafeStrategy::getLastGood() const { return last_known_good_value; }

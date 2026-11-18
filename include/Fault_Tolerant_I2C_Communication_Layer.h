@@ -58,7 +58,7 @@ public:
 
 class FailSafeStrategy : public I2CStrategy {
 private:
-    std::atomic<uint64_t> last_known_good_value{0U};
+    uint64_t last_known_good_value{0U};
 public:
     void executeRecovery(const device* i2c_dev) override;
     void updateLastGood(uint64_t val);
