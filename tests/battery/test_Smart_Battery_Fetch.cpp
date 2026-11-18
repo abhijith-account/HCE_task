@@ -5,7 +5,7 @@
 #include "test_battery_common.h"
 
 TEST_F(SmartBatteryTestSuite, FetchWithRetry_ExactRetryCount) {
-    g_i2c_consecutive_failures = 3;
+    g_i2c_consecutive_failures = 9;
     auto res = battery.fetchBusVoltageRawWithRetry();
     EXPECT_TRUE(res.success);
     EXPECT_EQ(battery.getStats().retries, 3);
