@@ -70,20 +70,19 @@ static int init_ina226(const struct emul *target, const struct device *parent) {
 DT_FOREACH_STATUS_OKAY(ti_ina226, MOCK_INA226);
 
 static int bme280_transfer(const struct emul *target, struct i2c_msg *msgs, int num_msgs, int addr) {
-    static int64_t first_access_time = 0;
+    static int64_t first_read_f7_time = 0;
+    struct mock_sensor_data *data = (struct mock_sensor_data *)target->data;
 
-    if (first_access_time == 0) {
-        first_access_time = k_uptime_get();
-    }
-
-    if (k_uptime_get() - first_access_time > 35000) {
+    if (first_read_f7_time != 0 && (k_uptime_get() - first_read_f7_time > 35000)) {
         LOG_ERR("BME280 emulator simulating disconnect!");
         return -EIO;
     }
 
-    struct mock_sensor_data *data = (struct mock_sensor_data *)target->data;
     for (int i = 0; i < num_msgs; i++) {
         if (msgs[i].flags & I2C_MSG_READ) {
+            if (data->current_reg == 0xF7 && first_read_f7_time == 0) {
+                first_read_f7_time = k_uptime_get();
+            }
             for (uint32_t j = 0; j < msgs[i].len; j++) {
                 msgs[i].buf[j] = data->regs[(data->current_reg + j) & 0xFF];
             }
