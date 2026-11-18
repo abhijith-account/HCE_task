@@ -71,14 +71,15 @@ DT_FOREACH_STATUS_OKAY(ti_ina226, MOCK_INA226);
 
 static int bme280_transfer(const struct emul *target, struct i2c_msg *msgs, int num_msgs, int addr) {
     static int64_t first_access_time = 0;
-    
-    if (first_access_time == 0) {
+    struct mock_sensor_data *data = (struct mock_sensor_data *)target->data;
+
+    if (first_access_time == 0 && data->current_reg == 0xF7) {
         first_access_time = k_uptime_get();
     }
 
-    if (k_uptime_get() - first_access_time > 5000) {
+    if (first_access_time != 0 && (k_uptime_get() - first_access_time > 5000)) {
         LOG_ERR("BME280 emulator simulating disconnect!");
-        return -EIO; 
+        return -EIO;
     }
     
     struct mock_sensor_data *data = (struct mock_sensor_data *)target->data;

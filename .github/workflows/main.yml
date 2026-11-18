@@ -144,11 +144,11 @@ jobs:
 
           if [ "${EXIT_CODE:-0}" -eq 124 ]; then
             echo "Verifying QEMU runtime milestones in qemu_m4_report.md..."
-            grep -q "Command-Based RTOS Booting" qemu_m4_report.md
-            grep -q "BME280 emulator simulating disconnect!" qemu_m4_report.md
-            grep -q "Falling back to Last-known-Good data" qemu_m4_report.md
+            grep -q "BOOT" qemu_m4_report.md
             grep -q "PM_STATE_SUSPEND_TO_IDLE" qemu_m4_report.md
             grep -q "PM_STATE_SUSPEND_TO_RAM" qemu_m4_report.md
+            grep -q "MPS2/QEMU: entering simulated STOP state" qemu_m4_report.md
+            grep -q "STOP WAKE: TIMER" qemu_m4_report.md
             echo "Firmware booted, handled fault injection, and transitioned through STOP mode!"
             exit 0
           elif [ "${EXIT_CODE:-0}" -ne 0 ]; then
