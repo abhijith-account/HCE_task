@@ -16,6 +16,21 @@ struct CacheReadMeta {
 
 inline CacheReadMeta g_default_cache_meta{};
 
+#ifdef IS_TEST_ENVIRONMENT
+struct MockGpioPort {
+    uint32_t MODER{0U};
+    uint32_t OTYPER{0U};
+    uint32_t PUPDR{0U};
+    uint32_t BSRR{0U};
+    uint32_t bsrr_log[32]{0U};
+    uint32_t bsrr_count{0U};
+    bool rcc_gpiob_clk_enabled{false};
+};
+
+extern MockGpioPort g_mock_gpiob;
+void reset_mock_gpiob() noexcept;
+#endif
+
 /* Map a negative Zephyr driver errno to an I2CFault enum value. */
 I2CFault classify_i2c_error(int err);
 

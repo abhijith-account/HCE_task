@@ -23,8 +23,8 @@ extern "C" void daly_watchdog_feed_hook(void) {
 
 namespace {
 // Same helper as in Smart_Battery_Acquisition.cpp; kept file-local so no shared internal header is needed.
-    template <typename T>
-    constexpr T absolute(T val) { return (val < 0) ? -val : val; }
+template <typename T>
+constexpr T absolute(T val) { return (val < 0) ? -val : val; }
 }
 
 SbsBattery::SbsBattery(I2CManager* i2c_bus, DeviceContext* context, WatchdogFeedHook hook)
@@ -85,15 +85,16 @@ void SbsBattery::seedOrResyncCoulombCounter(uint16_t pack_mv, int32_t shunt_uv, 
     if (force_seed || full_charge || full_discharge || long_rest_resync) {
         const uint8_t ocv_soc_pct = estimateSocFromVoltage(pack_mv);
         accumulated_uAh = (static_cast<int64_t>(ocv_soc_pct) * BatteryLimits::NOMINAL_CAPACITY_MAH * 1000LL) / 100LL;
-        
+
         kf_soc_pct = static_cast<float>(ocv_soc_pct);
-        kf_p_covariance = 1.0f; 
-        
+        kf_p_covariance = 1.0f;
+
         soc_initialized = true;
     }
 }
 
-void SbsBattery::updateStateAndPublish(uint16_t pack_mv, int32_t current_ma, int16_t temp_tenths, int32_t shunt_uv) {
+void SbsBattery::updateStateAndPublish(uint16_t pack_mv, int32_t current_ma, int16_t temp_tenths, int32_t shunt_uv,
+                                       bool degraded, uint8_t reliability_score) {
     if (k_mutex_lock(&cache_mutex, K_MSEC(BatteryLimits::MUTEX_TIMEOUT_MS)) != 0) {
         atomic_inc(&stats.validation_errors);
         publishError(CommFault::MUTEX_TIMEOUT);
@@ -123,15 +124,15 @@ void SbsBattery::updateStateAndPublish(uint16_t pack_mv, int32_t current_ma, int
         const float z_measured_soc = static_cast<float>(estimateSocFromVoltage(static_cast<uint16_t>(estimated_ocv_mv)));
 
         // --- 3. KALMAN UPDATE (Sensor Fusion) ---
-        const float r_noise = (absolute(shunt_uv) < BatteryLimits::IDLE_SHUNT_UV_THRESHOLD) 
-                        ? BatteryLimits::KF_MEAS_NOISE_REST 
-                        : BatteryLimits::KF_MEAS_NOISE_ACTIVE;
+        const float r_noise = (absolute(shunt_uv) < BatteryLimits::IDLE_SHUNT_UV_THRESHOLD)
+                                  ? BatteryLimits::KF_MEAS_NOISE_REST
+                                  : BatteryLimits::KF_MEAS_NOISE_ACTIVE;
 
         KalmanFilter::update(kf_soc_pct, kf_p_covariance, z_measured_soc, r_noise);
 
         // Sync back to traditional Coulomb accumulator
         accumulated_uAh = static_cast<int64_t>((kf_soc_pct / 100.0f) * static_cast<float>(max_uAh));
-        
+
         last_poll_time_ms = now;
         seedOrResyncCoulombCounter(pack_mv, shunt_uv, false);
     }
@@ -148,6 +149,8 @@ void SbsBattery::updateStateAndPublish(uint16_t pack_mv, int32_t current_ma, int
 
     cache.capacity = MilliAmpHours{static_cast<uint32_t>(std::clamp(mah, int64_t{0}, static_cast<int64_t>(UINT32_MAX)))};
     cache.valid = true;
+    cache.degraded = degraded;
+    cache.reliability_score = reliability_score;
     cache.last_error = CommFault::NONE;
     cache.timestamp_ms = now;
 
@@ -184,32 +187,44 @@ static bool isCacheValid(const BmsCache& c) {
 
 result<Millivolts> SbsBattery::getVoltage() const {
     const BmsCache snapshot = getCacheSnapshot();
-    return isCacheValid(snapshot) ? result<Millivolts>::Ok(snapshot.voltage) : result<Millivolts>::Err(cacheFailureReason(snapshot));
+    return isCacheValid(snapshot)
+        ? result<Millivolts>::Ok(snapshot.voltage, static_cast<int64_t>(snapshot.timestamp_ms), snapshot.reliability_score, snapshot.degraded)
+        : result<Millivolts>::Err(cacheFailureReason(snapshot));
 }
 
 result<Milliamps> SbsBattery::getCurrent() const {
     const BmsCache snapshot = getCacheSnapshot();
-    return isCacheValid(snapshot) ? result<Milliamps>::Ok(snapshot.current) : result<Milliamps>::Err(cacheFailureReason(snapshot));
+    return isCacheValid(snapshot)
+        ? result<Milliamps>::Ok(snapshot.current, static_cast<int64_t>(snapshot.timestamp_ms), snapshot.reliability_score, snapshot.degraded)
+        : result<Milliamps>::Err(cacheFailureReason(snapshot));
 }
 
 result<Microvolts> SbsBattery::getShuntVoltage() const {
     const BmsCache snapshot = getCacheSnapshot();
-    return isCacheValid(snapshot) ? result<Microvolts>::Ok(snapshot.shunt_voltage) : result<Microvolts>::Err(cacheFailureReason(snapshot));
+    return isCacheValid(snapshot)
+        ? result<Microvolts>::Ok(snapshot.shunt_voltage, static_cast<int64_t>(snapshot.timestamp_ms), snapshot.reliability_score, snapshot.degraded)
+        : result<Microvolts>::Err(cacheFailureReason(snapshot));
 }
 
 result<Percent> SbsBattery::getStateOfCharge() const {
     const BmsCache snapshot = getCacheSnapshot();
-    return isCacheValid(snapshot) ? result<Percent>::Ok(snapshot.soc) : result<Percent>::Err(cacheFailureReason(snapshot));
+    return isCacheValid(snapshot)
+        ? result<Percent>::Ok(snapshot.soc, static_cast<int64_t>(snapshot.timestamp_ms), snapshot.reliability_score, snapshot.degraded)
+        : result<Percent>::Err(cacheFailureReason(snapshot));
 }
 
 result<Kelvin> SbsBattery::getTemperature() const {
     const BmsCache snapshot = getCacheSnapshot();
-    return isCacheValid(snapshot) ? result<Kelvin>::Ok(snapshot.temperature) : result<Kelvin>::Err(cacheFailureReason(snapshot));
+    return isCacheValid(snapshot)
+        ? result<Kelvin>::Ok(snapshot.temperature, static_cast<int64_t>(snapshot.timestamp_ms), snapshot.reliability_score, snapshot.degraded)
+        : result<Kelvin>::Err(cacheFailureReason(snapshot));
 }
 
 result<MilliAmpHours> SbsBattery::getCapacity() const {
     const BmsCache snapshot = getCacheSnapshot();
-    return isCacheValid(snapshot) ? result<MilliAmpHours>::Ok(snapshot.capacity) : result<MilliAmpHours>::Err(cacheFailureReason(snapshot));
+    return isCacheValid(snapshot)
+        ? result<MilliAmpHours>::Ok(snapshot.capacity, static_cast<int64_t>(snapshot.timestamp_ms), snapshot.reliability_score, snapshot.degraded)
+        : result<MilliAmpHours>::Err(cacheFailureReason(snapshot));
 }
 
 void SbsBattery::processFSM() {
@@ -223,7 +238,7 @@ void SbsBattery::processFSM() {
             current_state.store(BatteryFSM::IDLE);
         }
         FsmClassifier::reset();
-        return; 
+        return;
     }
 
     const int32_t shunt_uv = snapshot.shunt_voltage.value;
@@ -238,8 +253,8 @@ void SbsBattery::processFSM() {
 
         if (current_fsm_state != next_fsm_state) {
             LOG_INF("Battery state changed (%d -> %d)", (int)current_fsm_state, (int)next_fsm_state);
-        } 
-        
+        }
+
         current_state.store(next_fsm_state);
         const BatteryFSM active_state = current_state.load();
         if (active_state == BatteryFSM::CHARGING || active_state == BatteryFSM::CUTOFF|| active_state == BatteryFSM::IDLE|| active_state == BatteryFSM::DISCHARGING) {

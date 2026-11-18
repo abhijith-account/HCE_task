@@ -1,8 +1,11 @@
 // test_I2C_Recovery_Strategies.cpp
 // Tests for the recovery strategies (Fault_Tolerant_I2C_Communication_Layer.cpp): RetryStrategy, BusResetStrategy, FailSafeStrategy,
-// the I2CStrategy base / virtual destructors and StaticPool allocation of strategy objects. None of these touch I2CManager.
+// the I2CStrategy base / virtual destructors and StaticPool allocation of strategy objects.
 
 #include "test_i2c_common.h"
+#include "I2C_Internal.h"
+#include <thread>
+#include <vector>
 
 TEST_F(I2CFaultRecoveryTestSuite, FailSafeFallback) {
     FailSafeStrategy failsafe;
@@ -103,8 +106,25 @@ TEST_F(I2CFaultRecoveryTestSuite, ExponentialBackoffDoublesAndCapsAtMax) {
 TEST_F(I2CFaultRecoveryTestSuite, BusResetStrategyInvokesHardwareRecoverBus) {
     BusResetStrategy strategy;
     g_i2c_bus_recovery_attempts = 0;
+    i2c_internal::reset_mock_gpiob();
     strategy.executeRecovery(mock_dev);
     EXPECT_EQ(g_i2c_bus_recovery_attempts, 1);
+
+    /* Verify STM32 GPIOB 9-clock open-drain SCL waveform + STOP condition + AF4 restoration */
+    const auto& gpio = i2c_internal::g_mock_gpiob;
+    EXPECT_TRUE(gpio.rcc_gpiob_clk_enabled);
+    EXPECT_EQ(gpio.OTYPER & ((1U << 8) | (1U << 9)), (1U << 8) | (1U << 9));
+    EXPECT_EQ(gpio.PUPDR & ((3U << 16) | (3U << 18)), (1U << 16) | (1U << 18));
+    ASSERT_EQ(gpio.bsrr_count, 22U);
+    EXPECT_EQ(gpio.bsrr_log[0], (1U << 8) | (1U << 9));
+    for (uint32_t pulse = 0U; pulse < 9U; ++pulse) {
+        EXPECT_EQ(gpio.bsrr_log[1U + (pulse * 2U)], (1U << 24)); // PB8 SCL low
+        EXPECT_EQ(gpio.bsrr_log[2U + (pulse * 2U)], (1U << 8));  // PB8 SCL high
+    }
+    EXPECT_EQ(gpio.bsrr_log[19], (1U << 25)); // PB9 SDA low
+    EXPECT_EQ(gpio.bsrr_log[20], (1U << 8));  // PB8 SCL high
+    EXPECT_EQ(gpio.bsrr_log[21], (1U << 9));  // PB9 SDA high while SCL high (STOP)
+    EXPECT_EQ(gpio.MODER & ((3U << 16) | (3U << 18)), (2U << 16) | (2U << 18)); // AF4 restored
 }
 
 TEST_F(I2CFaultRecoveryTestSuite, TransientFaultRecoversOnRetryAndCacheMarksDegraded) {
@@ -131,4 +151,28 @@ TEST_F(I2CFaultRecoveryTestSuite, TransientFaultRecoversOnRetryAndCacheMarksDegr
     EXPECT_EQ(deg_res.timestamp_ms, 1264);
     EXPECT_EQ(deg_res.reliability_score, 90U);
     EXPECT_EQ(g_i2c_bus_recovery_attempts, 3);
+}
+
+TEST_F(I2CFaultRecoveryTestSuite, ConcurrentMultiThreadBusAndCacheStress) {
+    I2CManager shared_mgr(mock_dev);
+    mock_read_data[0] = 0x42;
+    mock_read_data[1] = 0x12;
+
+    std::vector<std::thread> workers;
+    for (int t = 0; t < 4; ++t) {
+        workers.emplace_back([&shared_mgr, t]() {
+            for (int iter = 0; iter < 50; ++iter) {
+                const uint8_t reg = static_cast<uint8_t>((t * 8) + (iter & 7));
+                auto r8 = shared_mgr.readRegister(0x40, reg);
+                EXPECT_TRUE(r8.isOk());
+                auto r16 = shared_mgr.readWord(0x40, reg);
+                EXPECT_TRUE(r16.isOk());
+                auto w16 = shared_mgr.writeWord(0x40, reg, 0x4527U);
+                EXPECT_TRUE(w16.isOk());
+            }
+        });
+    }
+    for (auto& w : workers) {
+        w.join();
+    }
 }

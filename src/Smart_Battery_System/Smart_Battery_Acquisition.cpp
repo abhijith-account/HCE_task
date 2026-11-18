@@ -6,7 +6,7 @@
 
 #include "Smart_Battery_System.h"
 #include "Persistent_Configuration_System.h"
-#include "Power_Management_System.h" 
+#include "Power_Management_System.h"
 #include "Retry_Policy.h"
 #include "Fsm_classifier.h"
 #include <zephyr/logging/log.h>
@@ -58,7 +58,7 @@ result<int16_t> SbsBattery::fetchI2cRegisterWithRetry(Result<int16_t> (INA226::D
 
     if (response.isOk()) {
         atomic_inc(&stats.reads);
-        return result<int16_t>::Ok(response.unwrap());
+        return result<int16_t>::Ok(response.unwrap(), response.timestamp_ms, response.reliability_score, response.degraded);
     }
     atomic_inc(&stats.i2c_faults);
     return result<int16_t>::Err(mapI2CFault(response.error));
@@ -90,7 +90,7 @@ result<int16_t> SbsBattery::fetchTemperatureTenthsWithRetry() {
 
     if (response.success) {
         atomic_inc(&stats.reads);
-        return result<int16_t>::Ok(response.value);
+        return result<int16_t>::Ok(response.value, k_uptime_get());
     }
     atomic_inc(&stats.thermistor_faults);
     return result<int16_t>::Err(CommFault::THERMISTOR_FAULT);
@@ -129,6 +129,8 @@ void SbsBattery::pollHardwareAndUpdateCache() {
             cache.shunt_voltage = Microvolts{0};
             cache.soc = Percent{0};
             cache.valid = true;
+            cache.degraded = false;
+            cache.reliability_score = 100U;
             cache.last_error = CommFault::NONE;
             cache.timestamp_ms = k_uptime_get_32();
 
@@ -185,8 +187,8 @@ void SbsBattery::pollHardwareAndUpdateCache() {
         const int32_t t_delta = absolute(static_cast<int32_t>(temp_tenths.value) - prev_temp_tenths_c);
 
         const bool jump_detected = (v_delta > BatteryLimits::MAX_VOLTAGE_DELTA_MV) ||
-                                    (c_delta > BatteryLimits::MAX_CURRENT_DELTA_MA) ||
-                                    (t_delta > BatteryLimits::MAX_TEMP_DELTA_TENTHS);
+                                   (c_delta > BatteryLimits::MAX_CURRENT_DELTA_MA) ||
+                                   (t_delta > BatteryLimits::MAX_TEMP_DELTA_TENTHS);
 
         if (jump_detected) {
             atomic_inc(&stats.validation_errors);
@@ -199,7 +201,13 @@ void SbsBattery::pollHardwareAndUpdateCache() {
     }
     consecutive_jump_rejects = 0U;
 
-    updateStateAndPublish(pack_mv, current_ma, temp_tenths.value, shunt_uv);
+    const bool sample_degraded = static_cast<bool>(
+        static_cast<uint8_t>(voltage_raw.degraded) |
+        static_cast<uint8_t>(shunt_raw.degraded) |
+        static_cast<uint8_t>(current_raw.degraded));
+
+    updateStateAndPublish(pack_mv, current_ma, temp_tenths.value, shunt_uv,
+                          sample_degraded, current_raw.reliability_score);
     atomic_inc(&stats.successful_publishes);
     feedWatchdog();
 }

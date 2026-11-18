@@ -3,6 +3,17 @@
 
 namespace INA226 {
 
+namespace {
+Result<int16_t> decodeBigEndianWord(const Result<uint16_t>& r) {
+    if (!r.isOk()) {
+        return Result<int16_t>::Err(r.error);
+    }
+    const uint16_t raw_val = r.unwrap();
+    const int16_t swapped = static_cast<int16_t>((raw_val << 8U) | (raw_val >> 8U));
+    return {swapped, r.error, true, r.degraded, r.timestamp_ms, r.reliability_score};
+}
+} // namespace
+
 Driver::Driver(I2CManager* i2c):i2c(i2c){}
 
 bool Driver::init(){
@@ -17,30 +28,15 @@ bool Driver::init(){
 }
 
 Result<int16_t> Driver::readBusVoltageRaw(){
-    const Result<uint16_t> r= i2c->readWord(I2C_ADDR, REG_BUS_VOLT);
-    if (!r.isOk()){
-        return Result<int16_t>::Err(r.error);
-    }
-    const uint16_t raw_val=r.unwrap();
-    return Result<int16_t>::Ok(static_cast<int16_t>((raw_val<<8)|(raw_val>>8)));
+    return decodeBigEndianWord(i2c->readWord(I2C_ADDR, REG_BUS_VOLT));
 }
 
 Result<int16_t> Driver::readShuntVoltageRaw(){
-    const Result<uint16_t> r=i2c->readWord(I2C_ADDR,REG_SHUNT_VOLT);
-    if (!r.isOk()){
-        return Result<int16_t>::Err(r.error);
-    }
-    const uint16_t raw_val=r.unwrap();
-    return Result<int16_t>::Ok(static_cast<int16_t>((raw_val<<8)|(raw_val>>8)));
+    return decodeBigEndianWord(i2c->readWord(I2C_ADDR, REG_SHUNT_VOLT));
 }
 
 Result<int16_t> Driver::readCurrentRaw(){
-    const Result<uint16_t> r=i2c->readWord(I2C_ADDR,REG_CURRENT);
-    if (!r.isOk()){
-        return Result<int16_t>::Err(r.error);
-    }
-    const uint16_t raw_val=r.unwrap();
-    return Result<int16_t>::Ok(static_cast<int16_t>((raw_val<<8)|(raw_val>>8)));
+    return decodeBigEndianWord(i2c->readWord(I2C_ADDR, REG_CURRENT));
 }
 
 }

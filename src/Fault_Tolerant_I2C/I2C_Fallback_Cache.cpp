@@ -10,7 +10,7 @@
 #include <zephyr/logging/log.h>
 #include "Fault_Tolerant_I2C_Communication_Layer.h"
 #include "Static_Memory+MISRA_Compliance_Layer.h"
-#include "Device_State_Machine+Watchdog.h" 
+#include "Device_State_Machine+Watchdog.h"
 #include <new>
 #include <cstdint>
 #include "I2C_Internal.h"
@@ -34,20 +34,16 @@ struct CacheEntry {
 static StaticPool<CacheEntry, MAX_CACHED_REGISTERS> cache_pool;
 static CacheEntry* active_entries[MAX_CACHED_REGISTERS] = {nullptr};
 
-static struct k_mutex cache_tracker_mutex;
-static bool cache_mutex_init = false;
+/* Statically initialized Zephyr mutex -- eliminates lazy first-access initialization races across threads. */
+K_MUTEX_DEFINE(cache_tracker_mutex);
 
 void ensure_mutex_initialized() {
-    if (!cache_mutex_init) {
-        k_mutex_init(&cache_tracker_mutex);
-        cache_mutex_init = true;
-    }
+    (void)k_mutex_init(&cache_tracker_mutex);
 }
 
 namespace i2c_internal {
 
 void update_cache(uint32_t key, uint64_t value, bool calibrated) {
-    ensure_mutex_initialized();
     k_mutex_lock(&cache_tracker_mutex, K_FOREVER);
     int64_t now = k_uptime_get();
 
@@ -100,7 +96,6 @@ bool get_cached_value(uint32_t key, uint64_t* out_val, uint32_t max_age_ms, Cach
         return false;
     }
 
-    ensure_mutex_initialized();
     k_mutex_lock(&cache_tracker_mutex, K_FOREVER);
     const int64_t now = k_uptime_get();
 
@@ -139,6 +134,7 @@ bool get_cached_value(uint32_t key, uint64_t* out_val, uint32_t max_age_ms, Cach
             out_meta.reliability_score = entry->reliability_score;
             k_mutex_unlock(&cache_tracker_mutex);
             return true;
+
         }
     }
     k_mutex_unlock(&cache_tracker_mutex);
@@ -149,6 +145,7 @@ bool get_cached_value(uint32_t key, uint64_t* out_val, uint32_t max_age_ms, Cach
 
 #ifdef IS_TEST_ENVIRONMENT
 void resetI2CCacheForTests() noexcept {
+    k_mutex_lock(&cache_tracker_mutex, K_FOREVER);
     for (size_t i = 0; i < MAX_CACHED_REGISTERS; i++) {
         if (active_entries[i] != nullptr) {
             active_entries[i]->~CacheEntry();
@@ -156,6 +153,7 @@ void resetI2CCacheForTests() noexcept {
             active_entries[i] = nullptr;
         }
     }
+    k_mutex_unlock(&cache_tracker_mutex);
 }
 
 static void* exhausted_blocks[MAX_CACHED_REGISTERS] = {nullptr};
