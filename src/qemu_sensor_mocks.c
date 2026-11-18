@@ -71,17 +71,17 @@ DT_FOREACH_STATUS_OKAY(ti_ina226, MOCK_INA226);
 
 static int bme280_transfer(const struct emul *target, struct i2c_msg *msgs, int num_msgs, int addr) {
     static int64_t first_access_time = 0;
-    struct mock_sensor_data *data = (struct mock_sensor_data *)target->data;
 
-    if (first_access_time == 0 && data->current_reg == 0xF7) {
+    if (first_access_time == 0) {
         first_access_time = k_uptime_get();
     }
 
-    if (first_access_time != 0 && (k_uptime_get() - first_access_time > 5000)) {
+    if (k_uptime_get() - first_access_time > 35000) {
         LOG_ERR("BME280 emulator simulating disconnect!");
         return -EIO;
     }
 
+    struct mock_sensor_data *data = (struct mock_sensor_data *)target->data;
     for (int i = 0; i < num_msgs; i++) {
         if (msgs[i].flags & I2C_MSG_READ) {
             for (uint32_t j = 0; j < msgs[i].len; j++) {
@@ -162,7 +162,7 @@ static int lps22hb_transfer(const struct emul *target, struct i2c_msg *msgs, int
 
     for (int i = 0; i < num_msgs; i++) {
         if (msgs[i].flags & I2C_MSG_READ) {
-            bool auto_inc = (data->current_reg & 0x80) != 0;
+            bool auto_inc = ((data->current_reg & 0x80) != 0) || ((data->regs[0x10] & 0x10) != 0);
             uint8_t base_reg = data->current_reg & 0x7F;
 
             for (uint32_t j = 0; j < msgs[i].len; j++) {
@@ -174,7 +174,7 @@ static int lps22hb_transfer(const struct emul *target, struct i2c_msg *msgs, int
         } else {
             if (msgs[i].len >= 1) {
                 data->current_reg = msgs[i].buf[0];
-                bool auto_inc = (data->current_reg & 0x80) != 0;
+                bool auto_inc = ((data->current_reg & 0x80) != 0) || ((data->regs[0x10] & 0x10) != 0);
                 uint8_t base_reg = data->current_reg & 0x7F;
 
                 for (uint32_t j = 1; j < msgs[i].len; j++) {
@@ -198,6 +198,7 @@ static int init_lps22hb(const struct emul *target, const struct device *parent) 
     }
 
     data->regs[0x0F] = 0xB1; /* WHO_AM_I */
+    data->regs[0x10] = 0x10; /* CTRL_REG1: IF_ADD_INC enabled by default */
 
     data->regs[0x28] = 0x00; /* PRESS_OUT_XL */
     data->regs[0x29] = 0x54; /* PRESS_OUT_L  */

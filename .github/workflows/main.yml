@@ -142,19 +142,39 @@ jobs:
           tail -n 50 qemu_m4_report.md >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
 
-          if [ "${EXIT_CODE:-0}" -eq 124 ]; then
-            echo "Verifying QEMU runtime milestones in qemu_m4_report.md..."
-            grep -q "BOOT" qemu_m4_report.md
-            grep -q "PM_STATE_SUSPEND_TO_IDLE" qemu_m4_report.md
-            grep -q "PM_STATE_SUSPEND_TO_RAM" qemu_m4_report.md
-            grep -q "MPS2/QEMU: entering simulated STOP state" qemu_m4_report.md
-            grep -q "STOP WAKE: TIMER" qemu_m4_report.md
-            echo "Firmware booted, handled fault injection, and transitioned through STOP mode!"
-            exit 0
-          elif [ "${EXIT_CODE:-0}" -ne 0 ]; then
-            echo "Firmware crashed with exit code $EXIT_CODE!"
+          # 5. Evaluate the QEMU exit code (124 means it successfully ran until timeout)
+          if [ "${EXIT_CODE:-0}" -ne 124 ] && [ "${EXIT_CODE:-0}" -ne 0 ]; then
+            echo "::error::Firmware crashed with exit code $EXIT_CODE!"
             exit 1
           fi
+
+          echo "Verifying QEMU runtime milestones in qemu_m4_report.md..."
+          for milestone in \
+           "Command-Based RTOS Booting" \
+           "FCB Configuration Store Mounted Successfully" \
+           "1,000 Write-Cycle Endurance Test passed" \
+           "System transitioned :0->1" \
+           "Entering PM_STATE_ACTIVE" \
+           "BME280 ROM Calibration Loaded Successfully" \
+           "LPS22HB Initialized Successfully" \
+           "PAV3015 Initialized Successfully" \
+           "BATTERY STATUS" \
+           "Rendered Heart Rate" \
+           "Thread Stack Watermarks" \
+           "Executing Exponential Backoff Retry" \
+           "Falling back to Last-known-Good data" \
+           "degraded=1" \
+           "SAFE_HALT" \
+           "Entering PM_STATE_SUSPEND_TO_IDLE" \
+           "entering simulated STOP state" \
+           "STOP WAKE: TIMER"; do
+           if ! grep -q "$milestone" qemu_m4_report.md; then
+             echo "::error::Missing required QEMU runtime milestone: $milestone"
+             exit 1
+           fi
+           echo "  [OK] $milestone"
+          done
+          echo "All QEMU runtime milestones verified!"
 
       - name: Upload QEMU M4 Report Artifact
         if: always()

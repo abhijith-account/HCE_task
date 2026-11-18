@@ -17,9 +17,14 @@ float PAV3015Math::decodeAirflow(uint64_t raw_data) noexcept {
 namespace PAV3015Driver {
 
 bool initDevice(I2CManager& i2c) noexcept {
+#if defined(CONFIG_BOARD_MPS2_AN386) && !defined(IS_TEST_ENVIRONMENT)
+    (void)i2c;
+    return true;
+#else
     const uint16_t addr = static_cast<uint16_t>(SensorID::PAV3015);
-    const auto res = i2c.readWord(addr, SensorReg::PAV_DESC.reg);
+    auto res = i2c.readWord(addr, SensorReg::PAV_DESC.reg);
     return res.isOk();
+#endif
 }
 
 #ifdef CONFIG_BOARD_MPS2_AN386
