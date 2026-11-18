@@ -10,23 +10,23 @@ TEST_F(SmartBatteryTestSuite, Threads_NullGuardsAndSkips) {
     auto backup = smart_battery;
 
     smart_battery = nullptr;
-    
+
     test_iterations_remaining = 1;
-    bms_comm_thread(); 
-    
+    bms_comm_thread();
+
     test_iterations_remaining = 0;
     battery_monitor_thread();
-    
+
     smart_battery = backup;
 
     test_iterations_remaining = 0;
     PowerManager::getInstance().notifyBeforeSleep();
-    
+
     std::thread waker([]() {
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
         PowerManager::getInstance().notifyAfterWakeup();
     });
-    
+
     bms_comm_thread();
     waker.join();
 
@@ -83,7 +83,7 @@ TEST_F(SmartBatteryTestSuite, ThreadLoops_SleepAwakeBranch_Robust) {
     battery_monitor_thread();
 
     PowerManager::getInstance().notifyBeforeSleep();
-    
+
     std::thread waker1([]() {
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
         PowerManager::getInstance().notifyAfterWakeup();
@@ -93,7 +93,7 @@ TEST_F(SmartBatteryTestSuite, ThreadLoops_SleepAwakeBranch_Robust) {
     waker1.join();
 
     PowerManager::getInstance().notifyBeforeSleep();
-    
+
     std::thread waker2([]() {
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
         PowerManager::getInstance().notifyAfterWakeup();
@@ -123,25 +123,25 @@ TEST_F(SmartBatteryTestSuite, ThreadLoops_FullBooleanConditionCoverage) {
     // 1. Sleeping = true, Charging = true -> (!isBatteryCharging()) false, no waiting
     battery.current_state.store(BatteryFSM::CHARGING);
     g_i2c_call_counter = 0;
-    g_sleep_on_i2c_call = 1;
+    g_sleep_on_i2c_call = 2;
     test_iterations_remaining = 1;
     bms_comm_thread();
     g_sleep_on_i2c_call = -1;
 
     test_iterations_remaining = 1;
-    battery_monitor_thread();          // sleeping + charging: does not block
+    battery_monitor_thread();       // sleeping + charging: does not block
 
     // 2. SAFE_HALT = true, Cutoff = true -> (!isBatteryInCutoff()) false, no waiting
     PowerManager::getInstance().notifyAfterWakeup();
     battery.current_state.store(BatteryFSM::CUTOFF);
     g_i2c_call_counter = 0;
-    g_set_safe_halt_on_i2c_call = 1;
+    g_set_safe_halt_on_i2c_call = 2;
     test_iterations_remaining = 1;
     bms_comm_thread();
     g_set_safe_halt_on_i2c_call = -1;
 
     test_iterations_remaining = 1;
-    battery_monitor_thread();          // SAFE_HALT + cutoff: does not block
+    battery_monitor_thread();       // SAFE_HALT + cutoff: does not block
 
     sys_context.requestTransition(SystemState::INIT);
     sys_context.requestTransition(SystemState::RUNNING);
@@ -150,11 +150,11 @@ TEST_F(SmartBatteryTestSuite, ThreadLoops_FullBooleanConditionCoverage) {
     PowerManager::getInstance().notifyAfterWakeup();
     battery.current_state.store(BatteryFSM::IDLE);
     g_i2c_call_counter = 0;
-    g_sleep_on_i2c_call = 1;
+    g_sleep_on_i2c_call = 2;
 
     std::thread waker([this]() {
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
-        battery.current_state.store(BatteryFSM::CHARGING);   // exits the wait loop
+        battery.current_state.store(BatteryFSM::CHARGING);  // exits the wait loop
     });
 
     test_iterations_remaining = 1;
@@ -162,6 +162,6 @@ TEST_F(SmartBatteryTestSuite, ThreadLoops_FullBooleanConditionCoverage) {
     waker.join();
     g_sleep_on_i2c_call = -1;
 
-    PowerManager::getInstance().notifyAfterWakeup();   // leave the observer awake for later tests
+    PowerManager::getInstance().notifyAfterWakeup();  // leave the observer awake for later tests
     smart_battery = backup;
 }

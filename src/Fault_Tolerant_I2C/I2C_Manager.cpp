@@ -31,7 +31,21 @@ I2CManager i2c_manager(i2c_hardware);
 namespace {
     constexpr uint8_t MAX_I2C_ATTEMPTS = 3U;
 
-    enum class TransferOp : uint8_t { ReadByte, WriteByte, BurstRead };
+    class I2CScopedLock {
+    public:
+        explicit I2CScopedLock(struct k_mutex* mutex) : m_mutex(mutex) {
+            (void)k_mutex_lock(m_mutex, K_FOREVER);
+        }
+        ~I2CScopedLock() {
+            (void)k_mutex_unlock(m_mutex);
+        }
+        I2CScopedLock(const I2CScopedLock&) = delete;
+        I2CScopedLock& operator=(const I2CScopedLock&) = delete;
+    private:
+        struct k_mutex* m_mutex;
+    };
+
+    enum class TransferOp : uint8_t { ReadByte, WriteByte, WriteWord, BurstRead };
 
     int execute_transfer_once(TransferOp op, const device* dev, uint16_t addr,
                               uint8_t reg, uint8_t* buf, uint32_t len, uint8_t write_val) {
@@ -40,6 +54,9 @@ namespace {
         }
         if (op == TransferOp::WriteByte) {
             return i2c_reg_write_byte(dev, addr, reg, write_val);
+        }
+        if (op == TransferOp::WriteWord) {
+            return i2c_write(dev, buf, len, addr);
         }
         return i2c_burst_read(dev, addr, reg, buf, len);
     }
@@ -94,11 +111,36 @@ namespace {
     bool is_device_unavailable(const device* i2c_dev) {
         return (i2c_dev == nullptr) || !device_is_ready(i2c_dev);
     }
+
+    Result<bool> execute_write_transaction(TransferOp op, const device* i2c_dev,
+                                           uint16_t sensor_addr, uint8_t reg_addr,
+                                           uint8_t* tx_buf, uint32_t len, uint8_t write_val,
+                                           BusResetStrategy& reset_strategy,
+                                           RetryStrategy& retry_strategy) {
+        if (is_bus_locked_out() || is_device_unavailable(i2c_dev)) {
+            return Result<bool>::Err(I2CFault::DEVICE_NOT_READY);
+        }
+#ifdef IS_TEST_ENVIRONMENT
+        if (g_i2c_force_errno != 0) {
+            return Result<bool>::Err(classify_i2c_error(g_i2c_force_errno));
+        }
+#endif
+        I2CFault fault = I2CFault::NONE;
+        const int err = execute_with_retry(op, i2c_dev, sensor_addr, reg_addr,
+                                           tx_buf, len, write_val, reset_strategy, retry_strategy, fault);
+        if (err == 0) {
+            return Result<bool>::Ok(true, k_uptime_get());
+        }
+        return Result<bool>::Err(fault);
+    }
 }
 
-I2CManager::I2CManager(const device* i2c_dev) : i2c_dev(i2c_dev) {}
+I2CManager::I2CManager(const device* i2c_dev) : i2c_dev(i2c_dev) {
+    (void)k_mutex_init(&bus_mutex);
+}
 
 Result<uint8_t> I2CManager::readRegister(uint16_t sensor_addr, uint8_t reg_addr) {
+    I2CScopedLock lock(&bus_mutex);
     const uint32_t cache_key = make_cache_key(sensor_addr, reg_addr);
     if (is_bus_locked_out() || is_device_unavailable(i2c_dev)) {
         return Result<uint8_t>::Err(I2CFault::DEVICE_NOT_READY);
@@ -131,27 +173,13 @@ Result<uint8_t> I2CManager::readRegister(uint16_t sensor_addr, uint8_t reg_addr)
 }
 
 Result<bool> I2CManager::writeRegister(uint16_t sensor_addr, uint8_t reg_addr, uint8_t val) {
-    if (is_bus_locked_out() || is_device_unavailable(i2c_dev)) {
-        return Result<bool>::Err(I2CFault::DEVICE_NOT_READY);
-    }
-#ifdef IS_TEST_ENVIRONMENT
-    if (g_i2c_force_errno != 0) {
-        return Result<bool>::Err(classify_i2c_error(g_i2c_force_errno));
-    }
-#endif
-
-    I2CFault fault = I2CFault::NONE;
-    const int err = execute_with_retry(TransferOp::WriteByte, i2c_dev, sensor_addr, reg_addr,
-                                       nullptr, 1U, val, reset_strategy, retry_strategy, fault);
-
-    if (err == 0) {
-        return Result<bool>::Ok(true, k_uptime_get());
-    }
-
-    return Result<bool>::Err(fault);
+    I2CScopedLock lock(&bus_mutex);
+    return execute_write_transaction(TransferOp::WriteByte, i2c_dev, sensor_addr, reg_addr,
+                                     nullptr, 1U, val, reset_strategy, retry_strategy);
 }
 
 Result<uint16_t> I2CManager::readWord(uint16_t sensor_addr, uint8_t reg_addr) {
+    I2CScopedLock lock(&bus_mutex);
     const uint32_t cache_key = make_cache_key(sensor_addr, reg_addr);
     if (is_bus_locked_out() || is_device_unavailable(i2c_dev)) {
         return Result<uint16_t>::Err(I2CFault::DEVICE_NOT_READY);
@@ -184,15 +212,18 @@ Result<uint16_t> I2CManager::readWord(uint16_t sensor_addr, uint8_t reg_addr) {
 }
 
 Result<bool> I2CManager::writeWord(uint16_t sensor_addr, uint8_t reg_addr, uint16_t val) {
-    uint8_t high = static_cast<uint8_t>((val >> 8) & 0xFF);
-    uint8_t low  = static_cast<uint8_t>(val & 0xFF);
-
-    Result<bool> res1 = writeRegister(sensor_addr, reg_addr, high);
-    if (!res1.isOk()) return res1;
-    return writeRegister(sensor_addr, reg_addr + 1, low);
+    I2CScopedLock lock(&bus_mutex);
+    uint8_t tx_buf[3] = {
+        reg_addr,
+        static_cast<uint8_t>((val >> 8U) & 0xFFU),
+        static_cast<uint8_t>(val & 0xFFU)
+    };
+    return execute_write_transaction(TransferOp::WriteWord, i2c_dev, sensor_addr, reg_addr,
+                                     tx_buf, 3U, 0U, reset_strategy, retry_strategy);
 }
 
 Result<uint32_t> I2CManager::read24Bit(uint16_t sensor_addr, uint8_t reg_addr) {
+    I2CScopedLock lock(&bus_mutex);
     const uint32_t cache_key = make_cache_key(sensor_addr, reg_addr);
     if (is_bus_locked_out() || is_device_unavailable(i2c_dev)) {
         return Result<uint32_t>::Err(I2CFault::DEVICE_NOT_READY);
@@ -225,6 +256,7 @@ Result<uint32_t> I2CManager::read24Bit(uint16_t sensor_addr, uint8_t reg_addr) {
 }
 
 Result<uint64_t> I2CManager::read64Bit(uint16_t sensor_addr, uint8_t reg_addr) {
+    I2CScopedLock lock(&bus_mutex);
     const uint32_t cache_key = make_cache_key(sensor_addr, reg_addr);
     if (is_bus_locked_out() || is_device_unavailable(i2c_dev)) {
         return Result<uint64_t>::Err(I2CFault::DEVICE_NOT_READY);

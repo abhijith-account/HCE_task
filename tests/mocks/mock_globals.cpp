@@ -36,8 +36,8 @@ int g_adc_read_force_errno = 0;
 
 // Fault-injection controls for host-side I2C tests. Default state matches the
 // original always-succeed mock behavior exactly.
-int g_i2c_force_errno = 0;            // 0 = success; set to a negative errno (e.g. -ETIMEDOUT, -EBUSY, -EAGAIN, -ENODEV) to force EVERY I2C call to fail
-bool g_device_ready_override = true;  // controls device_is_ready() return value
+int g_i2c_force_errno = 0; // 0 = success; set to a negative errno (e.g. -ETIMEDOUT, -EBUSY, -EAGAIN, -ENODEV) to force EVERY I2C call to fail
+bool g_device_ready_override = true; // controls device_is_ready() return value
 
 // Per-call-index fault injection, for covering long straight-line chains of
 // sequential I2C reads (e.g. calibration loaders) where each individual read
@@ -51,17 +51,17 @@ int g_i2c_call_counter = 0;
 int g_i2c_fail_on_call_n = 0;
 int g_i2c_bus_recovery_attempts = 0;
 int g_adc_sequence_init_dt_errno = 0;
-int g_i2c_fail_on_call_errno = -5;  // -EIO by default
+int g_i2c_fail_on_call_errno = -5; // -EIO by default
 extern __attribute__((weak)) const k_tid_t processor_tid = (k_tid_t)0x10;
-extern __attribute__((weak)) const k_tid_t producer_tid  = (k_tid_t)0x11;
-extern __attribute__((weak)) const k_tid_t logger_tid    = (k_tid_t)0x12;
-extern __attribute__((weak)) const k_tid_t battery_tid   = (k_tid_t)0x13;
-extern __attribute__((weak)) const k_tid_t shell_tid     = (k_tid_t)0x14;
-extern __attribute__((weak)) const k_tid_t bms_comm_tid  = (k_tid_t)0x15;
-extern __attribute__((weak)) const k_tid_t hr_prod_tid   = (k_tid_t)0x16;
+extern __attribute__((weak)) const k_tid_t producer_tid = (k_tid_t)0x11;
+extern __attribute__((weak)) const k_tid_t logger_tid = (k_tid_t)0x12;
+extern __attribute__((weak)) const k_tid_t battery_tid = (k_tid_t)0x13;
+extern __attribute__((weak)) const k_tid_t shell_tid = (k_tid_t)0x14;
+extern __attribute__((weak)) const k_tid_t bms_comm_tid = (k_tid_t)0x15;
+extern __attribute__((weak)) const k_tid_t hr_prod_tid = (k_tid_t)0x16;
 extern __attribute__((weak)) const k_tid_t disp_cons_tid = (k_tid_t)0x17;
-extern  __attribute__((weak)) const k_tid_t mem_mon_tid   = (k_tid_t)0x18;
-extern __attribute__((weak)) const k_tid_t trace_tid   = (k_tid_t)0x19;
+extern __attribute__((weak)) const k_tid_t mem_mon_tid = (k_tid_t)0x18;
+extern __attribute__((weak)) const k_tid_t trace_tid = (k_tid_t)0x19;
 __attribute__((weak)) atomic_t g_producer_alive = ATOMIC_INIT(1);
 __attribute__((weak)) atomic_t g_processor_alive = ATOMIC_INIT(1);
 __attribute__((weak)) atomic_t g_logger_alive = ATOMIC_INIT(1);
@@ -98,7 +98,7 @@ __attribute__((weak)) void uart_irq_tx_enable(const struct device *dev) {}
 __attribute__((weak)) void uart_irq_tx_disable(const struct device *dev) {}
 __attribute__((weak)) void uart_irq_rx_disable(const struct device *dev) {}
 __attribute__((weak)) int i2c_read(const struct device *dev, uint8_t *buf, uint32_t num_bytes, uint16_t addr) { return 0; }
-__attribute__((weak)) int i2c_write(const struct device *dev, const uint8_t *buf, uint32_t num_bytes, uint16_t addr) { return 0; }
+__attribute__((weak)) int i2c_write(const struct device *dev, const uint8_t *buf, uint32_t num_bytes, uint16_t addr) { (void)dev; (void)buf; (void)num_bytes; (void)addr; ++g_i2c_call_counter; if (g_i2c_force_errno != 0) { return g_i2c_force_errno; } if (g_i2c_fail_on_call_n != 0 && g_i2c_call_counter >= g_i2c_fail_on_call_n) { return g_i2c_fail_on_call_errno; } return 0; }
 __attribute__((weak)) int i2c_write_read(const struct device *dev, uint16_t addr, const void *write_buf, size_t num_write, void *read_buf, size_t num_read) { return 0; }
 __attribute__((weak)) int i2c_reg_read_byte(const struct device *dev, uint16_t dev_addr, uint8_t reg_addr, uint8_t *value) { ++g_i2c_call_counter; if (g_i2c_force_errno != 0) { return g_i2c_force_errno; } if (g_i2c_fail_on_call_n != 0 && g_i2c_call_counter >= g_i2c_fail_on_call_n) { return g_i2c_fail_on_call_errno; } if (value) { *value = 0; } return 0; }
 __attribute__((weak)) int i2c_reg_write_byte(const struct device *dev, uint16_t dev_addr, uint8_t reg_addr, uint8_t value) { ++g_i2c_call_counter; if (g_i2c_force_errno != 0) { return g_i2c_force_errno; } if (g_i2c_fail_on_call_n != 0 && g_i2c_call_counter >= g_i2c_fail_on_call_n) { return g_i2c_fail_on_call_errno; } return 0; }
