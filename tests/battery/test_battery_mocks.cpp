@@ -86,8 +86,6 @@ extern "C" {
     int i2c_write(const struct device *dev, const uint8_t *buf, uint32_t num_bytes, uint16_t addr) {
         (void)dev; (void)buf; (void)num_bytes; (void)addr;
         ++g_i2c_call_counter;
-        if (g_set_safe_halt_on_i2c_call > 0 && g_i2c_call_counter == g_set_safe_halt_on_i2c_call) {sys_context.requestTransition(SystemState::SAFE_HALT);}
-        if (g_sleep_on_i2c_call > 0 && g_i2c_call_counter == g_sleep_on_i2c_call) {PowerManager::getInstance().notifyBeforeSleep();}
         if (g_i2c_force_errno != 0) return g_i2c_force_errno;
         if (g_i2c_fail_on_call_n != 0 && g_i2c_call_counter >= g_i2c_fail_on_call_n) return g_i2c_fail_on_call_errno;
         if (g_i2c_fail_after_reads >= 0 && g_i2c_call_counter > g_i2c_fail_after_reads) return -EIO;
