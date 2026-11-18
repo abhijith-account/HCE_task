@@ -48,6 +48,12 @@ I2CFault classify_and_recover(int err, const device* i2c_dev, BusResetStrategy& 
 
 #if !defined(CONFIG_BOARD_MPS2_AN386)
 namespace {
+#ifdef IS_TEST_ENVIRONMENT
+inline void k_busy_wait(uint32_t usec_to_wait) noexcept {
+    (void)usec_to_wait;
+}
+#endif
+
 inline void gpiob_enable_clock() noexcept {
 #ifdef IS_TEST_ENVIRONMENT
     i2c_internal::g_mock_gpiob.rcc_gpiob_clk_enabled = true;
