@@ -81,8 +81,6 @@ static int bme280_transfer(const struct emul *target, struct i2c_msg *msgs, int 
         LOG_ERR("BME280 emulator simulating disconnect!");
         return -EIO;
     }
-    
-    struct mock_sensor_data *data = (struct mock_sensor_data *)target->data;
 
     for (int i = 0; i < num_msgs; i++) {
         if (msgs[i].flags & I2C_MSG_READ) {
