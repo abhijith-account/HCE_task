@@ -4,7 +4,6 @@
 #include <string.h>
 #include <errno.h>
 #include <stdio.h>
-#include <pthread.h>
 #include <sched.h>
 #define printk printf
 
@@ -36,13 +35,7 @@ bool k_is_in_isr(void);
 static inline unsigned int irq_lock(void) { return 0; }
 static inline void irq_unlock(unsigned int key) { (void)key; }
 
-struct k_mutex {
-#ifdef __cplusplus
-    pthread_mutex_t native = PTHREAD_RECURSIVE_MUTEX_INITIALIZER_NP;
-#else
-    pthread_mutex_t native;
-#endif
-};
+struct k_mutex { int locked; };
 struct k_sem { unsigned int count; unsigned int limit; };
 struct k_work { void (*handler)(struct k_work *); };
 struct k_work_delayable { struct k_work work; };
@@ -51,16 +44,7 @@ struct k_thread;
 
 #define K_FOREVER -1
 
-static inline int k_mutex_init(struct k_mutex *mutex) {
-    if (mutex) {
-        pthread_mutexattr_t attr;
-        pthread_mutexattr_init(&attr);
-        pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_RECURSIVE);
-        pthread_mutex_init(&mutex->native, &attr);
-        pthread_mutexattr_destroy(&attr);
-    }
-    return 0;
-}
+static inline int k_mutex_init(struct k_mutex *mutex) { (void)mutex; return 0; }
 extern int g_mutex_lock_force_errno;
 extern int g_mutex_lock_call_counter;
 extern int g_mutex_lock_fail_on_call_n;
@@ -76,17 +60,9 @@ static inline int k_mutex_lock(struct k_mutex *mutex, int timeout) {
         int target_n = __atomic_add_fetch(&g_mutex_lock_target_call_counter, 1, __ATOMIC_RELAXED);
         if (g_mutex_lock_target_fail_on_call_n != 0 && target_n == g_mutex_lock_target_fail_on_call_n) return -EAGAIN;
     }
-    if (mutex) {
-        pthread_mutex_lock(&mutex->native);
-    }
     return 0;
 }
-static inline int k_mutex_unlock(struct k_mutex *mutex) {
-    if (mutex) {
-        pthread_mutex_unlock(&mutex->native);
-    }
-    return 0;
-}
+static inline int k_mutex_unlock(struct k_mutex *mutex) { (void)mutex; return 0; }
 
 int k_sem_init(struct k_sem *sem, unsigned int initial, unsigned int limit);
 void k_sem_give(struct k_sem *sem);
@@ -117,7 +93,7 @@ int k_thread_stack_space_get(const void *thread, size_t *unused_ptr);
 struct k_msgq { size_t msg_size; uint32_t max_msgs; uint32_t num_msgs; void* buffer; };
 #define K_MSGQ_DEFINE(name, q_msg_size, q_max_msgs, q_align) static char __msgq_buf_##name[(q_msg_size) * (q_max_msgs)]; struct k_msgq name = { .msg_size = (q_msg_size), .max_msgs = (q_max_msgs), .num_msgs = 0, .buffer = __msgq_buf_##name };
 #define K_SEM_DEFINE(name, initial_count, count_limit) struct k_sem name = { .count = (initial_count), .limit = (count_limit) };
-#define K_MUTEX_DEFINE(name) struct k_mutex name = { PTHREAD_RECURSIVE_MUTEX_INITIALIZER_NP };
+#define K_MUTEX_DEFINE(name) struct k_mutex name = {0};
 #define K_TIMER_DEFINE(name, expiry_fn, stop_fn) struct k_timer name = {expiry_fn, nullptr};
 #define K_WORK_DELAYABLE_DEFINE(name, fn) struct k_work_delayable name = { { fn } };
 #define K_WORK_DEFINE(name, fn) struct k_work name = { fn };
