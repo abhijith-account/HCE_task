@@ -101,7 +101,7 @@ bool SbsBattery::updateStateAndPublish(uint16_t pack_mv, int32_t current_ma, int
     if (k_mutex_lock(&cache_mutex, K_MSEC(BatteryLimits::MUTEX_TIMEOUT_MS)) != 0) {
         atomic_inc(&stats.validation_errors);
         publishError(CommFault::MUTEX_TIMEOUT);
-        return;
+        return false;
     }
 
     const uint32_t now = k_uptime_get_32();

@@ -90,7 +90,6 @@ namespace {
     };
 
     I2CPowerObserver g_i2cPowerObserver;
-    atomic_t g_i2cObserverRegistered = ATOMIC_INIT(0);
 
     K_MUTEX_DEFINE(g_i2c_observer_registration_mutex);
 
