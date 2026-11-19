@@ -46,7 +46,7 @@ TEST_F(SmartBatteryTestSuite, FSM_DeepCoverage) {
 
     battery.cache.voltage.value = 0; battery.processFSM(); battery.cache.voltage.value = 10000;
 
-    battery.cache.shunt_voltage.value = 50000; 
+    battery.cache.shunt_voltage.value = 50000;
     battery.current_state.store(BatteryFSM::IDLE);
     battery.processFSM();
     EXPECT_EQ(battery.getState(), BatteryFSM::CHARGING);
@@ -231,7 +231,7 @@ TEST_F(SmartBatteryTestSuite, ProcessFSM_FullChargeAndRecoveryBranches) {
     battery.full_charge_logged.store(true);
     battery.processFSM();
 
-    // 2. Deadband coverage: 95% <= SOC < 100% (SOC = 97%)
+    // 2. Deadband coverage: 95% <= SOC < 100% (SOC = 97)
     battery.cache.soc.value = 97;
     battery.processFSM();
 
@@ -266,7 +266,7 @@ TEST_F(SmartBatteryTestSuite, ProcessFSM_HysteresisTransitions) {
         battery.cache.timestamp_ms = virtual_uptime;
         battery.cache.soc.value = 50;
 
-        battery.cache.voltage.value = 0;        // forces EMA reset
+        battery.cache.voltage.value = 0;      // forces EMA reset
         battery.processFSM();
 
         battery.cache.voltage.value = 10000;
@@ -277,12 +277,12 @@ TEST_F(SmartBatteryTestSuite, ProcessFSM_HysteresisTransitions) {
     };
     constexpr int32_t BIG = 100000;
 
-    EXPECT_EQ(run_case(BatteryFSM::CHARGING,      BIG), BatteryFSM::CHARGING);
-    EXPECT_EQ(run_case(BatteryFSM::CHARGING,     -BIG), BatteryFSM::DISCHARGING);
-    EXPECT_EQ(run_case(BatteryFSM::CHARGING,        0), BatteryFSM::IDLE);
-    EXPECT_EQ(run_case(BatteryFSM::DISCHARGING,  -BIG), BatteryFSM::DISCHARGING);
-    EXPECT_EQ(run_case(BatteryFSM::DISCHARGING,   BIG), BatteryFSM::CHARGING);
-    EXPECT_EQ(run_case(BatteryFSM::DISCHARGING,     0), BatteryFSM::IDLE);
+    EXPECT_EQ(run_case(BatteryFSM::CHARGING,     BIG), BatteryFSM::CHARGING);
+    EXPECT_EQ(run_case(BatteryFSM::CHARGING,    -BIG), BatteryFSM::DISCHARGING);
+    EXPECT_EQ(run_case(BatteryFSM::CHARGING,       0), BatteryFSM::IDLE);
+    EXPECT_EQ(run_case(BatteryFSM::DISCHARGING, -BIG), BatteryFSM::DISCHARGING);
+    EXPECT_EQ(run_case(BatteryFSM::DISCHARGING,  BIG), BatteryFSM::CHARGING);
+    EXPECT_EQ(run_case(BatteryFSM::DISCHARGING,    0), BatteryFSM::IDLE);
 }
 
 // Line 643: "active_state == CUTOFF" can only be true if another thread stores CUTOFF between
@@ -302,7 +302,7 @@ TEST_F(SmartBatteryTestSuite, ProcessFSM_ActiveStateReload_ConcurrentCutoff) {
     std::thread racer([this, &stop]() {
         while (!stop.load(std::memory_order_relaxed)) {
             battery.current_state.store(BatteryFSM::CUTOFF);
-            battery.current_state.store(static_cast<BatteryFSM>(0xFF));  // matches none of the 4 enumerators
+            battery.current_state.store(static_cast<BatteryFSM>(0xFF)); // matches none of the 4 enumerators
             battery.current_state.store(BatteryFSM::IDLE);
         }
     });
@@ -315,4 +315,37 @@ TEST_F(SmartBatteryTestSuite, ProcessFSM_ActiveStateReload_ConcurrentCutoff) {
     stop.store(true, std::memory_order_relaxed);
     racer.join();
     testing::internal::GetCapturedStdout();
+}
+
+TEST_F(SmartBatteryTestSuite, ProcessFSM_DegradedPolicyAllowsCutoffButBlocksRecoveryAndFullChargeLog) {
+    battery.cache.valid = true;
+    battery.cache.degraded = true;
+    battery.cache.reliability_score = 80U;
+    battery.cache.last_error = CommFault::NONE;
+    battery.cache.timestamp_ms = virtual_uptime;
+    battery.cache.voltage.value = 10000;
+    battery.cache.shunt_voltage.value = 0;
+
+    // 1. Fail-safe CUTOFF must still trigger on degraded data
+    battery.current_state.store(BatteryFSM::DISCHARGING);
+    battery.cache.soc.value = BatteryLimits::CUTOFF_SOC_PCT - 1;
+    battery.processFSM();
+    EXPECT_EQ(battery.getState(), BatteryFSM::CUTOFF);
+    EXPECT_EQ(sys_context.getState(), SystemState::SAFE_HALT);
+
+    // 2. Exiting CUTOFF/SAFE_HALT and full-charge NVS logging must be blocked while degraded == true
+    battery.full_charge_logged.store(false);
+    battery.cache.soc.value = 100U;
+    battery.processFSM();
+    EXPECT_EQ(battery.getState(), BatteryFSM::CUTOFF);
+    EXPECT_EQ(sys_context.getState(), SystemState::SAFE_HALT);
+    EXPECT_FALSE(battery.full_charge_logged.load());
+
+    // 3. Restoring live telemetry (degraded == false) permits recovery and full-charge logging
+    battery.cache.degraded = false;
+    battery.cache.reliability_score = 100U;
+    battery.processFSM();
+    EXPECT_EQ(battery.getState(), BatteryFSM::IDLE);
+    EXPECT_TRUE(battery.full_charge_logged.load());
+    sys_context.requestTransition(SystemState::RUNNING);
 }

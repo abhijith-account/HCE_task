@@ -107,6 +107,13 @@ void SbsBattery::updateStateAndPublish(uint16_t pack_mv, int32_t current_ma, int
     if (!soc_initialized) {
         seedOrResyncCoulombCounter(pack_mv, shunt_uv, true);
         last_poll_time_ms = now;
+    } else if (degraded) {
+        /* Degraded fallback policy: freeze coulomb integration and rest-resync timer on cached I2C data,
+         * and inflate Kalman error covariance P inversely with reliability_score. */
+        const float reliability_scale = 100.0f / static_cast<float>(reliability_score);
+        kf_p_covariance += BatteryLimits::KF_PROCESS_NOISE * reliability_scale;
+        rest_period_start_ms = 0U;
+        last_poll_time_ms = now;
     } else {
         const uint32_t delta_ms = now - last_poll_time_ms;
         const float dt_hours = static_cast<float>(delta_ms) / 3600000.0f;
@@ -188,43 +195,43 @@ static bool isCacheValid(const BmsCache& c) {
 result<Millivolts> SbsBattery::getVoltage() const {
     const BmsCache snapshot = getCacheSnapshot();
     return isCacheValid(snapshot)
-        ? result<Millivolts>::Ok(snapshot.voltage, static_cast<int64_t>(snapshot.timestamp_ms), snapshot.reliability_score, snapshot.degraded)
-        : result<Millivolts>::Err(cacheFailureReason(snapshot));
+               ? result<Millivolts>::Ok(snapshot.voltage, static_cast<int64_t>(snapshot.timestamp_ms), snapshot.reliability_score, snapshot.degraded)
+               : result<Millivolts>::Err(cacheFailureReason(snapshot));
 }
 
 result<Milliamps> SbsBattery::getCurrent() const {
     const BmsCache snapshot = getCacheSnapshot();
     return isCacheValid(snapshot)
-        ? result<Milliamps>::Ok(snapshot.current, static_cast<int64_t>(snapshot.timestamp_ms), snapshot.reliability_score, snapshot.degraded)
-        : result<Milliamps>::Err(cacheFailureReason(snapshot));
+               ? result<Milliamps>::Ok(snapshot.current, static_cast<int64_t>(snapshot.timestamp_ms), snapshot.reliability_score, snapshot.degraded)
+               : result<Milliamps>::Err(cacheFailureReason(snapshot));
 }
 
 result<Microvolts> SbsBattery::getShuntVoltage() const {
     const BmsCache snapshot = getCacheSnapshot();
     return isCacheValid(snapshot)
-        ? result<Microvolts>::Ok(snapshot.shunt_voltage, static_cast<int64_t>(snapshot.timestamp_ms), snapshot.reliability_score, snapshot.degraded)
-        : result<Microvolts>::Err(cacheFailureReason(snapshot));
+               ? result<Microvolts>::Ok(snapshot.shunt_voltage, static_cast<int64_t>(snapshot.timestamp_ms), snapshot.reliability_score, snapshot.degraded)
+               : result<Microvolts>::Err(cacheFailureReason(snapshot));
 }
 
 result<Percent> SbsBattery::getStateOfCharge() const {
     const BmsCache snapshot = getCacheSnapshot();
     return isCacheValid(snapshot)
-        ? result<Percent>::Ok(snapshot.soc, static_cast<int64_t>(snapshot.timestamp_ms), snapshot.reliability_score, snapshot.degraded)
-        : result<Percent>::Err(cacheFailureReason(snapshot));
+               ? result<Percent>::Ok(snapshot.soc, static_cast<int64_t>(snapshot.timestamp_ms), snapshot.reliability_score, snapshot.degraded)
+               : result<Percent>::Err(cacheFailureReason(snapshot));
 }
 
 result<Kelvin> SbsBattery::getTemperature() const {
     const BmsCache snapshot = getCacheSnapshot();
     return isCacheValid(snapshot)
-        ? result<Kelvin>::Ok(snapshot.temperature, static_cast<int64_t>(snapshot.timestamp_ms), snapshot.reliability_score, snapshot.degraded)
-        : result<Kelvin>::Err(cacheFailureReason(snapshot));
+               ? result<Kelvin>::Ok(snapshot.temperature, static_cast<int64_t>(snapshot.timestamp_ms), snapshot.reliability_score, snapshot.degraded)
+               : result<Kelvin>::Err(cacheFailureReason(snapshot));
 }
 
 result<MilliAmpHours> SbsBattery::getCapacity() const {
     const BmsCache snapshot = getCacheSnapshot();
     return isCacheValid(snapshot)
-        ? result<MilliAmpHours>::Ok(snapshot.capacity, static_cast<int64_t>(snapshot.timestamp_ms), snapshot.reliability_score, snapshot.degraded)
-        : result<MilliAmpHours>::Err(cacheFailureReason(snapshot));
+               ? result<MilliAmpHours>::Ok(snapshot.capacity, static_cast<int64_t>(snapshot.timestamp_ms), snapshot.reliability_score, snapshot.degraded)
+               : result<MilliAmpHours>::Err(cacheFailureReason(snapshot));
 }
 
 void SbsBattery::processFSM() {
@@ -249,7 +256,7 @@ void SbsBattery::processFSM() {
     if (current_fsm_state != BatteryFSM::CUTOFF) {
         const float shunt_ema = FsmClassifier::update(shunt_uv);
         next_fsm_state = FsmClassifier::classify(current_fsm_state, shunt_ema,
-                                                 BatteryLimits::IDLE_SHUNT_UV_THRESHOLD);
+                                                   BatteryLimits::IDLE_SHUNT_UV_THRESHOLD);
 
         if (current_fsm_state != next_fsm_state) {
             LOG_INF("Battery state changed (%d -> %d)", (int)current_fsm_state, (int)next_fsm_state);
@@ -260,6 +267,25 @@ void SbsBattery::processFSM() {
         if (active_state == BatteryFSM::CHARGING || active_state == BatteryFSM::CUTOFF|| active_state == BatteryFSM::IDLE|| active_state == BatteryFSM::DISCHARGING) {
             PowerManager::getInstance().reportActivity();
         }
+    }
+
+    if (soc_pct < BatteryLimits::CUTOFF_SOC_PCT) {
+        if (current_fsm_state != BatteryFSM::CUTOFF) {
+            if (sys_context != nullptr) {
+                LOG_WRN("Battery Critically Low. Requesting SAFE_HALT state.");
+                sys_context->requestTransition(SystemState::SAFE_HALT);
+            }
+            current_state.store(BatteryFSM::CUTOFF);
+        }
+        return;
+    }
+
+    /* Fail-safe asymmetry: safety CUTOFF is enforced above even on degraded cache data,
+     * but exiting CUTOFF/SAFE_HALT or committing a full-charge event to NVS requires live telemetry. */
+    if (snapshot.degraded) {
+        LOG_WRN("BMS FSM holding recovery/NVS actions on degraded cache sample (reliability=%u%%).",
+                static_cast<unsigned int>(snapshot.reliability_score));
+        return;
     }
 
     if (soc_pct >= 100U) {
@@ -273,15 +299,7 @@ void SbsBattery::processFSM() {
         full_charge_logged.store(false);
     }
 
-    if (soc_pct < BatteryLimits::CUTOFF_SOC_PCT) {
-        if (current_fsm_state != BatteryFSM::CUTOFF) {
-            if (sys_context != nullptr) {
-                LOG_WRN("Battery Critically Low. Requesting SAFE_HALT state.");
-                sys_context->requestTransition(SystemState::SAFE_HALT);
-            }
-            current_state.store(BatteryFSM::CUTOFF);
-        }
-    } else if (soc_pct > BatteryLimits::REENABLE_SOC_PCT) {
+    if (soc_pct > BatteryLimits::REENABLE_SOC_PCT) {
         if (current_fsm_state == BatteryFSM::CUTOFF) {
             if (sys_context != nullptr && sys_context->getState() == SystemState::SAFE_HALT) {
                 LOG_INF("Battery recovered to %u%%. System safe to restart.", soc_pct);
