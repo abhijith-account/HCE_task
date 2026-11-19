@@ -324,9 +324,16 @@ TEST_F(SmartBatteryTestSuite, ProcessFSM_DegradedPolicyAllowsCutoffButBlocksReco
     battery.cache.last_error = CommFault::NONE;
     battery.cache.timestamp_ms = virtual_uptime;
     battery.cache.voltage.value = 10000;
-    battery.cache.shunt_voltage.value = 0;
+
+    // 0. Degraded shunt sample must NOT change the IDLE/CHARGING/DISCHARGING classifier
+    battery.current_state.store(BatteryFSM::IDLE);
+    battery.cache.soc.value = 50U;
+    battery.cache.shunt_voltage.value = 50000;
+    battery.processFSM();
+    EXPECT_EQ(battery.getState(), BatteryFSM::IDLE);
 
     // 1. Fail-safe CUTOFF must still trigger on degraded data
+    battery.cache.shunt_voltage.value = 0;
     battery.current_state.store(BatteryFSM::DISCHARGING);
     battery.cache.soc.value = BatteryLimits::CUTOFF_SOC_PCT - 1;
     battery.processFSM();

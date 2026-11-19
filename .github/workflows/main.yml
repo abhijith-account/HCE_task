@@ -16,7 +16,6 @@ on:
 env:
   # Zephyr version that west.yml must resolve to. Keep in sync with west.yml.
   EXPECTED_ZEPHYR_VERSION: "4.4.0"
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 jobs:
   build-test-qemu:
@@ -28,7 +27,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Initialize Zephyr workspace
         run: |
@@ -178,7 +177,7 @@ jobs:
 
       - name: Upload QEMU M4 Report Artifact
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: QEMU-M4-Execution-Report
           path: qemu_m4_report.md
@@ -186,7 +185,7 @@ jobs:
 
       - name: Upload QEMU execution logs
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: QEMU-Execution-Logs
           path: |
@@ -225,14 +224,14 @@ jobs:
 
       - name: Upload coverage report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: Coverage-Dashboard
           path: coverage_report/
           if-no-files-found: ignore
           
       - name: Upload Nucleo Artifacts for Deployment
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: Nucleo-Firmware
           path: |

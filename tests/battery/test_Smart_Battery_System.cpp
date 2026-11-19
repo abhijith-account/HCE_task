@@ -6,20 +6,21 @@
 #include "test_battery_common.h"
 
 TEST_F(SmartBatteryTestSuite, NotifySystemWakeup_Edges) {
-    battery.cache.timestamp_ms = 0;
+    battery.cache.valid = true;
+    battery.cache.last_error = CommFault::NONE;
+    battery.cache.timestamp_ms = 1234U;
+    virtual_uptime = 5000U;
     battery.notifySystemWakeup();
-    EXPECT_EQ(battery.cache.timestamp_ms, virtual_uptime);
-
-    battery.cache.valid = false;
-    battery.cache.timestamp_ms = 0;
-    battery.notifySystemWakeup();
-    EXPECT_EQ(battery.cache.timestamp_ms, 0);
+    EXPECT_FALSE(battery.cache.valid);
+    EXPECT_EQ(battery.cache.last_error, CommFault::CACHE_INVALID);
+    EXPECT_EQ(battery.cache.timestamp_ms, 1234U); // Must not forge a fresh post-wakeup timestamp
 
     g_mutex_lock_force_errno = -EAGAIN;
     testing::internal::CaptureStdout();
     battery.notifySystemWakeup();
-    const auto out = testing::internal::GetCapturedStdout();
+    auto out = testing::internal::GetCapturedStdout();
     EXPECT_NE(out.find("Could not lock cache_mutex"), std::string::npos);
+    g_mutex_lock_force_errno = 0;
 }
 
 TEST_F(SmartBatteryTestSuite, PublishError_NullContext) {

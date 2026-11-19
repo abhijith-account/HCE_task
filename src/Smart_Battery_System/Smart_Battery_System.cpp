@@ -50,7 +50,10 @@ void SbsBattery::notifySystemWakeup() {
         const uint32_t now = k_uptime_get_32();
         last_valid_comm_time = now;
         last_poll_time_ms = now;
-        if (cache.valid) cache.timestamp_ms = now;
+        /* Invalidate pre-sleep cache instead of stamping current uptime so stale
+         * pre-sleep readings cannot appear fresh before a post-wakeup poll succeeds. */
+        cache.valid = false;
+        cache.last_error = CommFault::CACHE_INVALID;
         k_mutex_unlock(&cache_mutex);
     } else {
         LOG_WRN("Could not lock cache_mutex during system wakeup.");
@@ -257,23 +260,6 @@ void SbsBattery::processFSM() {
     const int32_t shunt_uv = snapshot.shunt_voltage.value;
     const uint8_t soc_pct = snapshot.soc.value;
     const BatteryFSM current_fsm_state = current_state.load();
-    BatteryFSM next_fsm_state = current_fsm_state;
-
-    if (current_fsm_state != BatteryFSM::CUTOFF) {
-        const float shunt_ema = FsmClassifier::update(shunt_uv);
-        next_fsm_state = FsmClassifier::classify(current_fsm_state, shunt_ema,
-                                                   BatteryLimits::IDLE_SHUNT_UV_THRESHOLD);
-
-        if (current_fsm_state != next_fsm_state) {
-            LOG_INF("Battery state changed (%d -> %d)", (int)current_fsm_state, (int)next_fsm_state);
-        }
-
-        current_state.store(next_fsm_state);
-        const BatteryFSM active_state = current_state.load();
-        if (active_state == BatteryFSM::CHARGING || active_state == BatteryFSM::CUTOFF|| active_state == BatteryFSM::IDLE|| active_state == BatteryFSM::DISCHARGING) {
-            PowerManager::getInstance().reportActivity();
-        }
-    }
 
     if (soc_pct < BatteryLimits::CUTOFF_SOC_PCT) {
         if (current_fsm_state != BatteryFSM::CUTOFF) {
@@ -287,11 +273,28 @@ void SbsBattery::processFSM() {
     }
 
     /* Fail-safe asymmetry: safety CUTOFF is enforced above even on degraded cache data,
-     * but exiting CUTOFF/SAFE_HALT or committing a full-charge event to NVS requires live telemetry. */
+     * but operating-state classification, CUTOFF recovery, and full-charge NVS logging
+     * all require live (non-degraded) telemetry. */
     if (snapshot.degraded) {
-        LOG_WRN("BMS FSM holding recovery/NVS actions on degraded cache sample (reliability=%u%%).",
+        LOG_WRN("BMS FSM holding state classification/recovery on degraded cache sample (reliability=%u%%).",
                 static_cast<unsigned int>(snapshot.reliability_score));
         return;
+    }
+
+    if (current_fsm_state != BatteryFSM::CUTOFF) {
+        const float shunt_ema = FsmClassifier::update(shunt_uv);
+        const BatteryFSM next_fsm_state = FsmClassifier::classify(current_fsm_state, shunt_ema,
+                                                                  BatteryLimits::IDLE_SHUNT_UV_THRESHOLD);
+
+        if (current_fsm_state != next_fsm_state) {
+            LOG_INF("Battery state changed (%d -> %d)", (int)current_fsm_state, (int)next_fsm_state);
+        }
+
+        current_state.store(next_fsm_state);
+        const BatteryFSM active_state = current_state.load();
+        if (active_state == BatteryFSM::CHARGING || active_state == BatteryFSM::CUTOFF || active_state == BatteryFSM::IDLE || active_state == BatteryFSM::DISCHARGING) {
+            PowerManager::getInstance().reportActivity();
+        }
     }
 
     if (soc_pct >= 100U) {
