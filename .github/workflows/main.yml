@@ -51,7 +51,7 @@ jobs:
           PATCH=$(awk -F' = ' '/^PATCHLEVEL/ {print $2}' "$ZEPHYR_DIR/VERSION")
           ACTUAL="$MAJOR.$MINOR.$PATCH"
 
-          echo "Expected Zephyr: $EXPECTED_ZEPHYR_VERSION, actual: $ACTUAL"
+          echo "Expected Zephyr: $EXPECTED_ZEPHYR_VERSION, actual:$ACTUAL"
           if [ "$ACTUAL" != "$EXPECTED_ZEPHYR_VERSION" ]; then
             echo "::error::Zephyr version mismatch. Check 'revision' in west.yml."
             exit 1
@@ -71,7 +71,7 @@ jobs:
             cppcheck \
             libgtest-dev \
             binutils
-      
+
       - name: Run Static Analysis (cppcheck)
         run: |
           cppcheck --enable=warning \
@@ -125,8 +125,7 @@ jobs:
           timeout 120s west build -d build_mps2 -t run >> qemu_m4_report.md 2>&1 || EXIT_CODE=$?
           echo '```' >> qemu_m4_report.md
 
-
-	  # 4. Report non-timeout crashes immediately; pass banner is emitted only after QEMU_TEST_COMPLETE and all milestones pass
+          # 4. Report non-timeout crashes immediately; pass banner is emitted only after QEMU_TEST_COMPLETE and all milestones pass
           if [ "${EXIT_CODE:-0}" -ne 124 ] && [ "${EXIT_CODE:-0}" -ne 0 ]; then
             echo "## Cortex-M4 QEMU Test FAILED (exit code $EXIT_CODE)!" >> $GITHUB_STEP_SUMMARY
           fi
@@ -146,33 +145,33 @@ jobs:
 
           echo "Verifying QEMU runtime milestones in qemu_m4_report.md..."
           for milestone in \
-           "Command-Based RTOS Booting" \
-           "FCB Configuration Store Mounted Successfully" \
-           "1,000 Write-Cycle Endurance Test passed" \
-           "System transitioned :0->1" \
-           "Entering PM_STATE_ACTIVE" \
-           "BME280 ROM Calibration Loaded Successfully" \
-           "LPS22HB Initialized Successfully" \
-           "PAV3015 Initialized Successfully" \
-           "BATTERY STATUS" \
-           "Rendered Heart Rate" \
-           "Thread Stack Watermarks" \
-           "Executing Exponential Backoff Retry" \
-           "Falling back to Last-known-Good data" \
-           "degraded=1" \
-           "SAFE_HALT" \
-           "Entering PM_STATE_SUSPEND_TO_IDLE" \
-           "entering simulated STOP state" \
-           "STOP WAKE: TIMER" \
-           "QEMU_TEST_COMPLETE"; do
+            "Command-Based RTOS Booting" \
+            "FCB Configuration Store Mounted Successfully" \
+            "1,000 Write-Cycle Endurance Test passed" \
+            "System transitioned :0->1" \
+            "Entering PM_STATE_ACTIVE" \
+            "BME280 ROM Calibration Loaded Successfully" \
+            "LPS22HB Initialized Successfully" \
+            "PAV3015 Initialized Successfully" \
+            "BATTERY STATUS" \
+            "Rendered Heart Rate" \
+            "Thread Stack Watermarks" \
+            "Executing Exponential Backoff Retry" \
+            "Falling back to Last-known-Good data" \
+            "degraded=1" \
+            "SAFE_HALT" \
+            "Entering PM_STATE_SUSPEND_TO_IDLE" \
+            "entering simulated STOP state" \
+            "STOP WAKE: TIMER" \
+            "QEMU_TEST_COMPLETE"; do
             if ! grep -q "$milestone" qemu_m4_report.md; then
               echo "::error::Missing required QEMU runtime milestone: $milestone"
               exit 1
             fi
             echo "  [OK] $milestone"
-           done
-           echo "All QEMU runtime milestones verified!"
-           echo "## Cortex-M4 QEMU Test Passed (All Milestones & QEMU_TEST_COMPLETE Verified)!" >> $GITHUB_STEP_SUMMARY
+          done
+          echo "All QEMU runtime milestones verified!"
+          echo "## Cortex-M4 QEMU Test Passed (All Milestones & QEMU_TEST_COMPLETE Verified)!" >> $GITHUB_STEP_SUMMARY
 
       - name: Upload QEMU M4 Report Artifact
         if: always()
@@ -195,7 +194,7 @@ jobs:
             build_mps2/zephyr/zephyr.dts
             build_mps2/zephyr/.config
           if-no-files-found: ignore
-          
+
       - name: Build and run host unit tests
         run: |
           mkdir -p tests/build
@@ -228,7 +227,7 @@ jobs:
           name: Coverage-Dashboard
           path: coverage_report/
           if-no-files-found: ignore
-          
+
       - name: Upload Nucleo Artifacts for Deployment
         uses: actions/upload-artifact@v7
         with:
