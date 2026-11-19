@@ -518,7 +518,7 @@ void StopState::exit(PowerManager& pm) {
     LOG_INF("Exiting PM_STATE_SUSPEND_TO_RAM -> %s (wake: %s, ~%u ms in STOP)",s_transition_target_name,stop_wake_reason_str(s_stop_wake_reason),static_cast<unsigned int>(s_elapsed_sleep_time_us / 1000U));
 
     #ifndef IS_TEST_ENVIRONMENT
-        const bool completed_timer_wake = (s_stop_wake_reason == StopWakeReason::WAKE_TIMER);
+        const bool completed_timer_wake = (s_stop_wake_reason == StopWakeReason::WAKE_RTC);
     #endif
         s_stop_wake_reason = StopWakeReason::WAKE_NONE;
 
