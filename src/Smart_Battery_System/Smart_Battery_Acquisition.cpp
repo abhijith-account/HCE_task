@@ -206,16 +206,10 @@ void SbsBattery::pollHardwareAndUpdateCache() {
         static_cast<uint8_t>(voltage_raw.degraded) |
         static_cast<uint8_t>(shunt_raw.degraded) |
         static_cast<uint8_t>(current_raw.degraded));
-    const uint8_t min_reliability = std::min({
-        voltage_raw.reliability_score,
-        shunt_raw.reliability_score,
-        current_raw.reliability_score
-    });
-    const int64_t oldest_sample_ts = std::min({
-        voltage_raw.timestamp_ms,
-        shunt_raw.timestamp_ms,
-        current_raw.timestamp_ms
-    });
+    const uint8_t min_reliability = std::min(voltage_raw.reliability_score,
+                                             std::min(shunt_raw.reliability_score, current_raw.reliability_score));
+    const int64_t oldest_sample_ts = std::min(voltage_raw.timestamp_ms,
+                                              std::min(shunt_raw.timestamp_ms, current_raw.timestamp_ms));
 
     updateStateAndPublish(pack_mv, current_ma, temp_tenths.value, shunt_uv,
                           sample_degraded, min_reliability, oldest_sample_ts);
