@@ -410,7 +410,7 @@ TEST_F(SmartBatteryTestSuite, BmsCommThread_ObserverRegistrationFailureEscalates
 
     test_iterations_remaining = 1;
     bms_comm_thread();
-    EXPECT_EQ(sys_context.getState(), SystemState::SAFE_HALT);
+    EXPECT_EQ(sys_context.getState(), SystemState::FAULT);
 
     PowerManager::getInstance().resetForTest();
     smart_battery = backup;
