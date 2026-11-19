@@ -14,9 +14,16 @@ TEST_F(SmartBatteryTestSuite, NotifySystemWakeup_Edges) {
     battery.notifySystemWakeup();
     EXPECT_FALSE(battery.cache.valid);
     EXPECT_EQ(battery.cache.last_error, CommFault::CACHE_INVALID);
-    EXPECT_EQ(battery.cache.timestamp_ms, 1234U);       // Pre-sleep acquisition timestamp preserved
-    EXPECT_EQ(battery.last_valid_comm_time, 1234U);     // Watchdog comm baseline not artificially extended
-    EXPECT_EQ(battery.last_poll_time_ms, 5000U);        // Integration dt baseline reset for wakeup
+    EXPECT_EQ(battery.cache.timestamp_ms, 1234U);   // Pre-sleep acquisition timestamp preserved
+    EXPECT_EQ(battery.last_valid_comm_time, 1234U); // Watchdog comm baseline not artificially extended
+    EXPECT_EQ(battery.last_poll_time_ms, 5000U);    // Integration dt baseline reset for wakeup
+
+    g_mutex_lock_force_errno = -EAGAIN;
+    testing::internal::CaptureStdout();
+    battery.notifySystemWakeup();
+    auto out = testing::internal::GetCapturedStdout();
+    EXPECT_NE(out.find("Could not lock cache_mutex"), std::string::npos);
+    g_mutex_lock_force_errno = 0;
 }
 
 TEST_F(SmartBatteryTestSuite, PublishError_NullContext) {
