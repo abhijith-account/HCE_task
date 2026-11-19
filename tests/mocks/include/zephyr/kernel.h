@@ -4,6 +4,8 @@
 #include <string.h>
 #include <errno.h>
 #include <stdio.h>
+#include <pthread.h>
+#include <sched.h>
 #define printk printf
 
 typedef int32_t k_timeout_t;
@@ -34,7 +36,7 @@ bool k_is_in_isr(void);
 static inline unsigned int irq_lock(void) { return 0; }
 static inline void irq_unlock(unsigned int key) { (void)key; }
 
-struct k_mutex { int locked; };
+struct k_mutex { int locked; uintptr_t owner; int count; };
 struct k_sem { unsigned int count; unsigned int limit; };
 struct k_work { void (*handler)(struct k_work *); };
 struct k_work_delayable { struct k_work work; };
@@ -43,15 +45,55 @@ struct k_thread;
 
 #define K_FOREVER -1
 
-static inline int k_mutex_init(struct k_mutex *mutex) { return 0; }
+static inline int k_mutex_init(struct k_mutex *mutex) {
+    if (mutex) {
+        __atomic_store_n(&mutex->count, 0, __ATOMIC_RELAXED);
+        __atomic_store_n(&mutex->owner, (uintptr_t)0, __ATOMIC_RELAXED);
+        __atomic_store_n(&mutex->locked, 0, __ATOMIC_RELEASE);
+    }
+    return 0;
+}
 extern int g_mutex_lock_force_errno;
 extern int g_mutex_lock_call_counter;
 extern int g_mutex_lock_fail_on_call_n;
 extern void* g_mutex_lock_target_ptr;
 extern int g_mutex_lock_target_call_counter;
 extern int g_mutex_lock_target_fail_on_call_n;
-static inline int k_mutex_lock(struct k_mutex *mutex, int timeout) { ++g_mutex_lock_call_counter; if (g_mutex_lock_force_errno != 0) return g_mutex_lock_force_errno; if (g_mutex_lock_fail_on_call_n != 0 && g_mutex_lock_call_counter == g_mutex_lock_fail_on_call_n) return -EAGAIN; if (g_mutex_lock_target_ptr != nullptr && (void*)mutex == g_mutex_lock_target_ptr) { ++g_mutex_lock_target_call_counter; if (g_mutex_lock_target_fail_on_call_n != 0 && g_mutex_lock_target_call_counter == g_mutex_lock_target_fail_on_call_n) return -EAGAIN; } return 0; }
-static inline int k_mutex_unlock(struct k_mutex *mutex) { return 0; }
+static inline int k_mutex_lock(struct k_mutex *mutex, int timeout) {
+    (void)timeout;
+    int call_n = __atomic_add_fetch(&g_mutex_lock_call_counter, 1, __ATOMIC_RELAXED);
+    if (g_mutex_lock_force_errno != 0) return g_mutex_lock_force_errno;
+    if (g_mutex_lock_fail_on_call_n != 0 && call_n == g_mutex_lock_fail_on_call_n) return -EAGAIN;
+    if (g_mutex_lock_target_ptr != nullptr && (void*)mutex == g_mutex_lock_target_ptr) {
+        int target_n = __atomic_add_fetch(&g_mutex_lock_target_call_counter, 1, __ATOMIC_RELAXED);
+        if (g_mutex_lock_target_fail_on_call_n != 0 && target_n == g_mutex_lock_target_fail_on_call_n) return -EAGAIN;
+    }
+    if (mutex) {
+        uintptr_t self = (uintptr_t)pthread_self();
+        if (__atomic_load_n(&mutex->owner, __ATOMIC_RELAXED) == self) {
+            mutex->count++;
+            return 0;
+        }
+        while (__atomic_exchange_n(&mutex->locked, 1, __ATOMIC_ACQUIRE) != 0) {
+            sched_yield();
+        }
+        __atomic_store_n(&mutex->owner, self, __ATOMIC_RELAXED);
+        mutex->count = 1;
+    }
+    return 0;
+}
+static inline int k_mutex_unlock(struct k_mutex *mutex) {
+    if (mutex) {
+        if (mutex->count > 1) {
+            mutex->count--;
+            return 0;
+        }
+        mutex->count = 0;
+        __atomic_store_n(&mutex->owner, (uintptr_t)0, __ATOMIC_RELAXED);
+        __atomic_store_n(&mutex->locked, 0, __ATOMIC_RELEASE);
+    }
+    return 0;
+}
 
 int k_sem_init(struct k_sem *sem, unsigned int initial, unsigned int limit);
 void k_sem_give(struct k_sem *sem);

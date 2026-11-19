@@ -157,3 +157,35 @@ TEST_F(SmartBatteryTestSuite, DegradedAggregationUsesMinimumReliabilityAndOldest
     EXPECT_EQ(deg_v.reliability_score, 60U);  // Minimum across V (60), Shunt (90), Current (90)
     EXPECT_EQ(deg_v.timestamp_ms, 2000);      // Original cached timestamp, not 2500 ms publication time
 }
+
+TEST_F(SmartBatteryTestSuite, ConcurrentPollAndGettersStress) {
+    g_i2c_mock_v_val = 10000;
+    g_i2c_mock_i_val = 0;
+    g_adc_mock_mv_val = 1650;
+    battery.pollHardwareAndUpdateCache();
+
+    std::thread poller([this]() {
+        for (int i = 0; i < 40; ++i) {
+            battery.pollHardwareAndUpdateCache();
+        }
+    });
+
+    std::thread readers[3];
+    for (int r = 0; r < 3; ++r) {
+        readers[r] = std::thread([this]() {
+            for (int i = 0; i < 40; ++i) {
+                auto v = battery.getVoltage();
+                auto c = battery.getCurrent();
+                auto s = battery.getStateOfCharge();
+                EXPECT_TRUE(v.success);
+                EXPECT_TRUE(c.success);
+                EXPECT_TRUE(s.success);
+            }
+        });
+    }
+
+    poller.join();
+    for (int r = 0; r < 3; ++r) {
+        readers[r].join();
+    }
+}

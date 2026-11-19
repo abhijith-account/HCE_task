@@ -47,11 +47,10 @@ void SbsBattery::feedWatchdog() const {
 
 void SbsBattery::notifySystemWakeup() {
     if (k_mutex_lock(&cache_mutex, K_NO_WAIT) == 0) {
-        const uint32_t now = k_uptime_get_32();
-        last_valid_comm_time = now;
-        last_poll_time_ms = now;
-        /* Invalidate pre-sleep cache instead of stamping current uptime so stale
-         * pre-sleep readings cannot appear fresh before a post-wakeup poll succeeds. */
+        /* Reset only the coulomb-counting integration baseline across sleep.
+         * Do NOT refresh cache.timestamp_ms or last_valid_comm_time: pre-sleep data
+         * must remain invalid until a fresh post-wakeup sensor read succeeds. */
+        last_poll_time_ms = k_uptime_get_32();
         cache.valid = false;
         cache.last_error = CommFault::CACHE_INVALID;
         k_mutex_unlock(&cache_mutex);
