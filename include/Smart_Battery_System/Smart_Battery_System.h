@@ -66,6 +66,7 @@ private:
     static constexpr uint32_t WATCHDOG_MUTEX_FAILURE_THRESHOLD = 5U;
 
     BmsCache cache{};
+    std::atomic<bool> cache_requires_live_refresh{false};
     AtomicCommStatistics stats{};
 
     bool soc_initialized{false};

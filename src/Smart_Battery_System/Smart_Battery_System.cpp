@@ -173,16 +173,22 @@ bool SbsBattery::updateStateAndPublish(uint16_t pack_mv, int32_t current_ma, int
 
     consecutive_mutex_failures = 0U;
     if (!degraded) {
-      consecutive_comm_failures = 0U;
-      last_valid_comm_time = now;
+        consecutive_comm_failures = 0U;
+        last_valid_comm_time = now;
+        cache_requires_live_refresh.store(false, std::memory_order_release);
     }
-    k_mutex_unlock(&cache_mutex);
 
+    k_mutex_unlock(&cache_mutex);
     return true;
 }
 
 BmsCache SbsBattery::getCacheSnapshot() const {
     BmsCache snapshot{};
+    if (cache_requires_live_refresh.load(std::memory_order_acquire)) {
+        snapshot.valid = false;
+        snapshot.last_error = CommFault::MUTEX_TIMEOUT;
+        return snapshot;
+    }
     if (k_mutex_lock(&cache_mutex, K_MSEC(BatteryLimits::MUTEX_TIMEOUT_MS)) == 0) {
         snapshot = cache;
         k_mutex_unlock(&cache_mutex);

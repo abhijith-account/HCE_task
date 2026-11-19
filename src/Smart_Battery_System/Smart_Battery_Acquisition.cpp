@@ -138,22 +138,35 @@ void SbsBattery::pollHardwareAndUpdateCache() {
     }
 
     if (is_disconnected) {
-        if (k_mutex_lock(&cache_mutex, K_MSEC(BatteryLimits::MUTEX_TIMEOUT_MS)) == 0) {
-            cache.voltage = Millivolts{0};
-            cache.current = Milliamps{0};
-            cache.shunt_voltage = Microvolts{0};
-            cache.soc = Percent{0};
-            cache.valid = true;
-            cache.degraded = false;
-            cache.reliability_score = 100U;
-            cache.last_error = CommFault::NONE;
-            cache.timestamp_ms = k_uptime_get_32();
-
-            consecutive_comm_failures = 0U;
-            consecutive_mutex_failures = 0U;
-            last_valid_comm_time = cache.timestamp_ms;
-            k_mutex_unlock(&cache_mutex);
+        if (k_mutex_lock(&cache_mutex, K_MSEC(BatteryLimits::MUTEX_TIMEOUT_MS)) != 0) {
+            /* Physical disconnection detected, but cache could not be updated:
+             * fail closed so consumers never read pre-disconnect stale cache data. */
+            cache_requires_live_refresh.store(true, std::memory_order_release);
+            current_state.store(BatteryFSM::IDLE);
+            soc_initialized = false;
+            consecutive_jump_rejects = 0U;
+            FsmClassifier::reset();
+            publishError(CommFault::MUTEX_TIMEOUT);
+            feedWatchdog();
+            return;
         }
+
+        cache.voltage = Millivolts{0};
+        cache.current = Milliamps{0};
+        cache.shunt_voltage = Microvolts{0};
+        cache.soc = Percent{0};
+        cache.valid = true;
+        cache.degraded = false;
+        cache.reliability_score = 100U;
+        cache.last_error = CommFault::NONE;
+        cache.timestamp_ms = k_uptime_get_32();
+
+        consecutive_comm_failures = 0U;
+        consecutive_mutex_failures = 0U;
+        last_valid_comm_time = cache.timestamp_ms;
+        cache_requires_live_refresh.store(false, std::memory_order_release);
+        k_mutex_unlock(&cache_mutex);
+
         current_state.store(BatteryFSM::IDLE);
         soc_initialized = false;
         consecutive_jump_rejects = 0U;

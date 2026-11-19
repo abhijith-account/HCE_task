@@ -25,10 +25,10 @@ TEST_F(SmartBatteryTestSuite, JumpReject_ThresholdReached) {
     battery.cache.timestamp_ms = virtual_uptime;
     
     g_i2c_mock_v_val = 8000;
-    g_i2c_mock_i_val = 0; 
+    g_i2c_mock_i_val = 8000;
     g_adc_mock_mv_val = 1650; 
 
-    battery.cache.current.value = -8001; 
+    battery.cache.current.value = -700;
 
     battery.pollHardwareAndUpdateCache();
     EXPECT_EQ(battery.consecutive_jump_rejects, 1);
@@ -66,18 +66,40 @@ TEST_F(SmartBatteryTestSuite, JumpDetection_CurrentOnly)
 {
     battery.cache.valid = true;
     battery.cache.last_error = CommFault::NONE;
+    battery.cache.timestamp_ms = virtual_uptime;
 
     battery.cache.voltage.value = 10000;
-    battery.cache.current.value = -8001;
+    battery.cache.current.value = -700;
     battery.cache.temperature.value = Thermistor::KELVIN_OFFSET_TENTHS + 250;
 
     g_i2c_mock_v_val = 8000;
-    g_i2c_mock_i_val = 0;
+    g_i2c_mock_i_val = 8000; // 8000 * 25 uA = +200 mA -> delta = 900 mA (> 800 mA)
     g_adc_mock_mv_val = 1650;
 
     battery.pollHardwareAndUpdateCache();
 
-    EXPECT_GT(battery.consecutive_jump_rejects,0);
+    EXPECT_EQ(battery.consecutive_jump_rejects, 1U);
+}
+
+TEST_F(SmartBatteryTestSuite, JumpDetection_NormalCurrentStepAccepted)
+{
+    battery.cache.valid = true;
+    battery.cache.last_error = CommFault::NONE;
+    battery.cache.timestamp_ms = virtual_uptime;
+
+    battery.cache.voltage.value = 10000;
+    battery.cache.current.value = 0;
+    battery.cache.temperature.value = Thermistor::KELVIN_OFFSET_TENTHS + 250;
+
+    g_i2c_mock_v_val = 8000;
+    g_i2c_mock_i_val = 8000; // 0 mA -> +200 mA (delta = 200 mA <= 800 mA)
+    g_adc_mock_mv_val = 1650;
+
+    battery.pollHardwareAndUpdateCache();
+
+    EXPECT_EQ(battery.consecutive_jump_rejects, 0U);
+    EXPECT_TRUE(battery.cache.valid);
+    EXPECT_EQ(battery.cache.current.value, 200);
 }
 
 TEST_F(SmartBatteryTestSuite, JumpDetection_TemperatureOnly)
@@ -401,4 +423,37 @@ TEST_F(SmartBatteryTestSuite, DegradedLowVoltageDoesNotDisconnectOrTriggerJumpVa
     EXPECT_TRUE(battery.soc_initialized);                         // SoC estimator not reset
     EXPECT_EQ(battery.consecutive_jump_rejects, 0U);              // Jump validation bypassed on degraded sample
     EXPECT_EQ(battery.getStats().successful_publishes, publishes_before); // Degraded sample not counted as live publish
+}
+
+TEST_F(SmartBatteryTestSuite, Disconnect_MutexFailureDoesNotExposeStaleCache) {
+    battery.current_state.store(BatteryFSM::CHARGING);
+    battery.soc_initialized = true;
+    battery.cache.valid = true;
+    battery.cache.last_error = CommFault::NONE;
+    battery.cache.timestamp_ms = virtual_uptime;
+    battery.cache.voltage.value = 10000;
+
+    g_i2c_mock_v_val = 0;
+    g_mutex_lock_force_errno = -EAGAIN;
+    battery.pollHardwareAndUpdateCache();
+    g_mutex_lock_force_errno = 0;
+
+    EXPECT_EQ(battery.getState(), BatteryFSM::IDLE);
+    EXPECT_FALSE(battery.soc_initialized);
+
+    const BmsCache stale_snap = battery.getCacheSnapshot();
+    EXPECT_FALSE(stale_snap.valid);
+    EXPECT_EQ(stale_snap.last_error, CommFault::MUTEX_TIMEOUT);
+
+    // Recovery: a subsequent live poll clears cache_requires_live_refresh and re-seeds SoC
+    g_i2c_mock_v_val = 8000; // 10000 mV
+    g_i2c_mock_i_val = 8000; // +200 mA
+    g_adc_mock_mv_val = 1650;
+    battery.pollHardwareAndUpdateCache();
+
+    EXPECT_TRUE(battery.soc_initialized);
+    const BmsCache live_snap = battery.getCacheSnapshot();
+    EXPECT_TRUE(live_snap.valid);
+    EXPECT_EQ(live_snap.last_error, CommFault::NONE);
+    EXPECT_EQ(live_snap.voltage.value, 10000U);
 }

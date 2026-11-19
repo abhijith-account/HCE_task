@@ -95,6 +95,7 @@ protected:
         g_sleep_on_i2c_call = -1;
 
         battery.cache = BmsCache{};
+        battery.cache_requires_live_refresh.store(false);
         battery.cache.valid = true;
         battery.cache.last_error = CommFault::NONE;
         battery.cache.timestamp_ms = k_uptime_get_32();

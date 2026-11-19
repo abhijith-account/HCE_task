@@ -27,7 +27,7 @@ struct BatteryLimits {
     static constexpr int32_t MAX_VALID_CURRENT_MA = 800;
 
     static constexpr uint16_t MAX_VOLTAGE_DELTA_MV = 2000U;
-    static constexpr int32_t MAX_CURRENT_DELTA_MA = 8000;
+    static constexpr int32_t MAX_CURRENT_DELTA_MA = 800;
     static constexpr int16_t MAX_TEMP_DELTA_TENTHS = 200;
 
     static constexpr uint8_t MAX_CONSECUTIVE_JUMP_REJECTS = 3U;
@@ -41,6 +41,10 @@ struct BatteryLimits {
     static constexpr float KF_MEAS_NOISE_REST = 2.0f;           
     static constexpr float KF_MEAS_NOISE_ACTIVE = 50.0f;
 };
+static_assert(
+    BatteryLimits::MAX_CURRENT_DELTA_MA > 0 &&
+    BatteryLimits::MAX_CURRENT_DELTA_MA < (2 * BatteryLimits::MAX_VALID_CURRENT_MA),
+    "Current jump threshold is unreachable");
 
 /* Open-circuit-voltage -> state-of-charge curve for the 3S pack. */
 namespace CurveFitting {
