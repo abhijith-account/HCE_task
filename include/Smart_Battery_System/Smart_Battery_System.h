@@ -82,7 +82,7 @@ private:
     uint8_t estimateSocFromVoltage(uint16_t pack_mv) const;
 
     void seedOrResyncCoulombCounter(uint16_t pack_mv, int32_t shunt_uv, bool force_seed);
-    void updateStateAndPublish(uint16_t pack_mv, int32_t current_ma, int16_t temp_tenths, int32_t shunt_uv,
+    bool updateStateAndPublish(uint16_t pack_mv, int32_t current_ma, int16_t temp_tenths, int32_t shunt_uv,
                                bool degraded = false, uint8_t reliability_score = 100U,
                                int64_t sample_timestamp_ms = 0);
 

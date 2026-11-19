@@ -559,3 +559,32 @@ TEST_F(I2CFaultRecoveryTestSuite, WriteWordLockedOutWhenFault) {
     walkBackToRunning();
     ASSERT_EQ(sys_context.getState(), SystemState::RUNNING);
 }
+
+TEST_F(I2CFaultRecoveryTestSuite, ObserverRegistrationFailureLocksOutBusAndRetries) {
+    extern void resetI2CObserverRegistrationForTests() noexcept;
+
+    struct DummyObs final : public IPowerObserver {
+        void beforeSleep() override {}
+        void afterWakeup() override {}
+        void sleepAborted() override {}
+    };
+    DummyObs fillers[8];
+
+    PowerManager::getInstance().resetForTest();
+    resetI2CObserverRegistrationForTests();
+    for (auto& f : fillers) {
+        ASSERT_TRUE(PowerManager::getInstance().registerObserver(&f));
+    }
+
+    I2CManager mgr(mock_dev);
+    auto blocked = mgr.readRegister(0x10, 0x20);
+    EXPECT_FALSE(blocked.isOk());
+    EXPECT_EQ(blocked.error, I2CFault::DEVICE_NOT_READY);
+
+    // Free observer slots and verify subsequent call retries registration and succeeds
+    PowerManager::getInstance().resetForTest();
+    mock_read_data[0] = 0x33;
+    auto recovered = mgr.readRegister(0x10, 0x20);
+    EXPECT_TRUE(recovered.isOk());
+    EXPECT_EQ(recovered.unwrap(), 0x33);
+}

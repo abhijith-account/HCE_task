@@ -390,3 +390,28 @@ TEST_F(SmartBatteryTestSuite, BmsCommThread_InitEscalation_SafeHaltRaisedConcurr
     g_i2c_force_errno = 0;
     smart_battery = backup;
 }
+
+TEST_F(SmartBatteryTestSuite, BmsCommThread_ObserverRegistrationFailureEscalatesFault) {
+    extern SbsBattery* smart_battery;
+    auto backup = smart_battery;
+    smart_battery = &battery;
+
+    struct DummyObs final : public IPowerObserver {
+        void beforeSleep() override {}
+        void afterWakeup() override {}
+        void sleepAborted() override {}
+    };
+    DummyObs fillers[8];
+
+    PowerManager::getInstance().resetForTest();
+    for (auto& f : fillers) {
+        ASSERT_TRUE(PowerManager::getInstance().registerObserver(&f));
+    }
+
+    test_iterations_remaining = 1;
+    bms_comm_thread();
+    EXPECT_EQ(sys_context.getState(), SystemState::SAFE_HALT);
+
+    PowerManager::getInstance().resetForTest();
+    smart_battery = backup;
+}

@@ -92,10 +92,30 @@ namespace {
     I2CPowerObserver g_i2cPowerObserver;
     atomic_t g_i2cObserverRegistered = ATOMIC_INIT(0);
 
-    void ensure_power_observer_registered() {
-        if (atomic_cas(&g_i2cObserverRegistered, 0, 1)) {
-            PowerManager::getInstance().registerObserver(&g_i2cPowerObserver);
+    K_MUTEX_DEFINE(g_i2c_observer_registration_mutex);
+
+    bool g_i2cObserverRegistered = false;
+
+    bool ensure_power_observer_registered() {
+
+        k_mutex_lock(
+            &g_i2c_observer_registration_mutex,
+            K_FOREVER
+        );
+
+        if (!g_i2cObserverRegistered) {
+
+            g_i2cObserverRegistered =
+                PowerManager::getInstance().registerObserver(
+                    &g_i2cPowerObserver
+                );
         }
+
+        const bool registered = g_i2cObserverRegistered;
+
+        k_mutex_unlock(&g_i2c_observer_registration_mutex);
+
+        return registered;
     }
 
     constexpr uint32_t make_cache_key(uint16_t sensor_addr, uint8_t reg_addr) noexcept {
@@ -103,9 +123,17 @@ namespace {
     }
 
     bool is_bus_locked_out() {
-        ensure_power_observer_registered();
+
+        if (!ensure_power_observer_registered()) {
+            LOG_ERR("I2C observer unavailable; refusing bus access");
+            return true;
+        }
+
         const SystemState st = sys_context.getState();
-        return g_i2cPowerObserver.isSleeping() || (st == SystemState::FAULT) || (st == SystemState::SAFE_HALT);
+
+        return g_i2cPowerObserver.isSleeping() ||
+               (st == SystemState::FAULT) ||
+               (st == SystemState::SAFE_HALT);
     }
 
     bool is_device_unavailable(const device* i2c_dev) {
@@ -289,3 +317,10 @@ Result<uint64_t> I2CManager::read64Bit(uint16_t sensor_addr, uint8_t reg_addr) {
     }
     return Result<uint64_t>::Err(fault);
 }
+#ifdef IS_TEST_ENVIRONMENT
+void resetI2CObserverRegistrationForTests() noexcept {
+    k_mutex_lock(&g_i2c_observer_registration_mutex, K_FOREVER);
+    g_i2cObserverRegistered = false;
+    k_mutex_unlock(&g_i2c_observer_registration_mutex);
+}
+#endif

@@ -370,3 +370,35 @@ TEST_F(SmartBatteryTestSuite, PollHardware_ThermistorFailure_PublishesThermistor
     EXPECT_EQ(battery.getStats().retries, 4U);            // MAX_RETRIES (3) + 1 attempts, one on_retry per failed attempt
     EXPECT_EQ(battery.getStats().successful_publishes, 0U);
 }
+
+TEST_F(SmartBatteryTestSuite, DegradedLowVoltageDoesNotDisconnectOrTriggerJumpValidation) {
+    extern void resetI2CCacheForTests();
+    extern void test_update_cache(uint32_t key, uint64_t value, bool calibrated);
+    resetI2CCacheForTests();
+
+    // Seed healthy live state first
+    battery.soc_initialized = true;
+    battery.cache.valid = true;
+    battery.cache.last_error = CommFault::NONE;
+    battery.cache.timestamp_ms = virtual_uptime;
+    battery.cache.voltage.value = 12000U;
+    battery.current_state.store(BatteryFSM::CHARGING);
+
+    // Put a low/jumping voltage (5000 raw -> 6250 mV < PACK_MIN) into the fallback cache
+    const uint32_t v_key = (static_cast<uint32_t>(INA226::I2C_ADDR) << 8U) | INA226::REG_BUS_VOLT;
+    const uint32_t s_key = (static_cast<uint32_t>(INA226::I2C_ADDR) << 8U) | INA226::REG_SHUNT_VOLT;
+    const uint32_t c_key = (static_cast<uint32_t>(INA226::I2C_ADDR) << 8U) | INA226::REG_CURRENT;
+    test_update_cache(v_key, 0x8813U, true); // 5000 big-endian -> 6250 mV
+    test_update_cache(s_key, 0x0000U, true);
+    test_update_cache(c_key, 0x0000U, true);
+
+    const uint32_t publishes_before = battery.getStats().successful_publishes;
+    g_i2c_consecutive_failures = 30;
+    battery.pollHardwareAndUpdateCache();
+    g_i2c_consecutive_failures = 0;
+
+    EXPECT_EQ(battery.getState(), BatteryFSM::CHARGING);          // Not falsely disconnected to IDLE
+    EXPECT_TRUE(battery.soc_initialized);                         // SoC estimator not reset
+    EXPECT_EQ(battery.consecutive_jump_rejects, 0U);              // Jump validation bypassed on degraded sample
+    EXPECT_EQ(battery.getStats().successful_publishes, publishes_before); // Degraded sample not counted as live publish
+}

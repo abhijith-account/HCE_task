@@ -95,7 +95,7 @@ void SbsBattery::seedOrResyncCoulombCounter(uint16_t pack_mv, int32_t shunt_uv, 
     }
 }
 
-void SbsBattery::updateStateAndPublish(uint16_t pack_mv, int32_t current_ma, int16_t temp_tenths, int32_t shunt_uv,
+bool SbsBattery::updateStateAndPublish(uint16_t pack_mv, int32_t current_ma, int16_t temp_tenths, int32_t shunt_uv,
                                        bool degraded, uint8_t reliability_score,
                                        int64_t sample_timestamp_ms) {
     if (k_mutex_lock(&cache_mutex, K_MSEC(BatteryLimits::MUTEX_TIMEOUT_MS)) != 0) {
@@ -113,7 +113,7 @@ void SbsBattery::updateStateAndPublish(uint16_t pack_mv, int32_t current_ma, int
             LOG_WRN("Refusing to seed uninitialized SoC estimator from degraded cache sample.");
             k_mutex_unlock(&cache_mutex);
             publishError(CommFault::CACHE_INVALID);
-            return;
+            return false;
         }
         /* Degraded fallback policy: freeze coulomb integration and rest-resync timer on cached I2C data,
          * and inflate Kalman error covariance P inversely with reliability_score. */
@@ -171,9 +171,14 @@ void SbsBattery::updateStateAndPublish(uint16_t pack_mv, int32_t current_ma, int
     cache.last_error = CommFault::NONE;
     cache.timestamp_ms = degraded ? static_cast<uint32_t>(sample_timestamp_ms) : now;
 
-    consecutive_comm_failures = 0U;
     consecutive_mutex_failures = 0U;
-    last_valid_comm_time = now;
+    if (!degraded) {
+      consecutive_comm_failures = 0U;
+      last_valid_comm_time = now;
+    }
+    k_mutex_unlock(&cache_mutex);
+
+    return true;
 }
 
 BmsCache SbsBattery::getCacheSnapshot() const {
@@ -248,10 +253,12 @@ void SbsBattery::processFSM() {
         return;
     }
 
-    if (snapshot.voltage.value < BatteryLimits::MIN_VALID_VOLTAGE_MV) {
+    if (!snapshot.degraded && snapshot.voltage.value < BatteryLimits::MIN_VALID_VOLTAGE_MV) {
+
         if (current_state.load() != BatteryFSM::IDLE) {
             current_state.store(BatteryFSM::IDLE);
         }
+
         FsmClassifier::reset();
         return;
     }

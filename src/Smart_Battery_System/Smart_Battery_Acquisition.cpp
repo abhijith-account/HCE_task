@@ -109,17 +109,31 @@ void SbsBattery::pollHardwareAndUpdateCache() {
     const BmsCache snapshot = getCacheSnapshot();
     const bool was_connected = snapshot.valid && (snapshot.voltage.value >= BatteryLimits::MIN_VALID_VOLTAGE_MV);
 
-    // Disconnect detection logic
-    bool is_disconnected = (pack_mv_32 < BatteryLimits::MIN_VALID_VOLTAGE_MV);
+    bool is_disconnected = false;
 
-    if (was_connected) {
-        const int32_t v_drop = static_cast<int32_t>(snapshot.voltage.value) - static_cast<int32_t>(pack_mv_32);
-        if ((v_drop > BatteryLimits::MAX_VOLTAGE_DELTA_MV) && (pack_mv_32 < BatteryLimits::PACK_MIN_VOLTAGE_MV)) {
-            is_disconnected = true;
-        }
-    } else {
-        if (pack_mv_32 < BatteryLimits::PACK_MIN_VOLTAGE_MV) {
-            is_disconnected = true;
+    /* Only live voltage measurements can establish disconnection. */
+    if (!voltage_raw.degraded) {
+
+        is_disconnected =
+            (pack_mv_32 < BatteryLimits::MIN_VALID_VOLTAGE_MV);
+
+        if (was_connected) {
+
+            const int32_t v_drop =
+                static_cast<int32_t>(snapshot.voltage.value) -
+                static_cast<int32_t>(pack_mv_32);
+
+            if ((v_drop > BatteryLimits::MAX_VOLTAGE_DELTA_MV) &&
+                (pack_mv_32 < BatteryLimits::PACK_MIN_VOLTAGE_MV)) {
+
+                is_disconnected = true;
+            }
+
+        } else {
+
+            if (pack_mv_32 < BatteryLimits::PACK_MIN_VOLTAGE_MV) {
+                is_disconnected = true;
+            }
         }
     }
 
@@ -180,8 +194,18 @@ void SbsBattery::pollHardwareAndUpdateCache() {
         publishError(temp_tenths.error);
         return;
     }
+    
+    const bool sample_degraded = static_cast<bool>(
+        static_cast<uint8_t>(voltage_raw.degraded) |
+        static_cast<uint8_t>(shunt_raw.degraded) |
+        static_cast<uint8_t>(current_raw.degraded));
+        
+    const uint8_t min_reliability = std::min(voltage_raw.reliability_score,
+                                             std::min(shunt_raw.reliability_score, current_raw.reliability_score));
+    const int64_t oldest_sample_ts = std::min(voltage_raw.timestamp_ms,
+                                              std::min(shunt_raw.timestamp_ms, current_raw.timestamp_ms));
 
-    if (snapshot.timestamp_ms != 0 && (snapshot.valid || snapshot.last_error == CommFault::VALIDATION_ERROR) && was_connected) {
+    if (!sample_degraded && snapshot.timestamp_ms != 0 && (snapshot.valid || snapshot.last_error == CommFault::VALIDATION_ERROR) && was_connected) {
         const int32_t v_delta = absolute(static_cast<int32_t>(pack_mv) - static_cast<int32_t>(snapshot.voltage.value));
         const int32_t c_delta = absolute(current_ma - snapshot.current.value);
         const int32_t prev_temp_tenths_c = static_cast<int32_t>(snapshot.temperature.value) - Thermistor::KELVIN_OFFSET_TENTHS;
@@ -202,18 +226,20 @@ void SbsBattery::pollHardwareAndUpdateCache() {
     }
     consecutive_jump_rejects = 0U;
 
-    const bool sample_degraded = static_cast<bool>(
-        static_cast<uint8_t>(voltage_raw.degraded) |
-        static_cast<uint8_t>(shunt_raw.degraded) |
-        static_cast<uint8_t>(current_raw.degraded));
-    const uint8_t min_reliability = std::min(voltage_raw.reliability_score,
-                                             std::min(shunt_raw.reliability_score, current_raw.reliability_score));
-    const int64_t oldest_sample_ts = std::min(voltage_raw.timestamp_ms,
-                                              std::min(shunt_raw.timestamp_ms, current_raw.timestamp_ms));
+    const bool published = updateStateAndPublish(
+        pack_mv,
+        current_ma,
+        temp_tenths.value,
+        shunt_uv,
+        sample_degraded,
+        min_reliability,
+        oldest_sample_ts
+    );
 
-    updateStateAndPublish(pack_mv, current_ma, temp_tenths.value, shunt_uv,
-                          sample_degraded, min_reliability, oldest_sample_ts);
-    atomic_inc(&stats.successful_publishes);
+    if (published && !sample_degraded) {
+        atomic_inc(&stats.successful_publishes);
+    }
+
     feedWatchdog();
 }
 

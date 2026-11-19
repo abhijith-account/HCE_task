@@ -129,8 +129,30 @@ void bms_comm_thread(void) {
         atomic_set(&g_bms_comm_alive, 1);
     }
 
+    const bool observer_registered =
+    PowerManager::getInstance().registerObserver(
+        &g_bmsPowerObserver
+    );
+
+    if (!observer_registered) {
+
+        LOG_ERR("BMS power observer registration failed");
+
+        sys_context.triggerFault(
+            "BMS Power Observer Registration Failure"
+        );
+
+        k_sem_give(&bms_objects_ready_sem);
+
+        while (THREAD_LOOP_CONDITION) {
+            k_msleep(1000);
+            atomic_set(&g_bms_comm_alive, 1);
+        }
+
+        return;
+    }
+
     k_sem_give(&bms_objects_ready_sem);
-    PowerManager::getInstance().registerObserver(&g_bmsPowerObserver);
     smart_battery->notifySystemWakeup(); 
     k_msleep(250);
 

@@ -100,3 +100,30 @@ TEST_F(SmartBatteryTestSuite, UpdateStateAndPublish_ActiveShunt_UsesActiveNoise)
     battery.updateStateAndPublish(11000, -500, 250, -50000);
     EXPECT_TRUE(battery.cache.valid);
 }
+
+TEST_F(SmartBatteryTestSuite, UpdateStateAndPublish_ReleasesMutexAndPreservesCommHealthOnDegraded) {
+    battery.soc_initialized = true;
+    battery.last_poll_time_ms = virtual_uptime;
+    battery.last_valid_comm_time = 1000U;
+    battery.consecutive_comm_failures = 1U;
+    virtual_uptime = 2000U;
+
+    // 1. Live publish returns true, updates last_valid_comm_time, and releases cache_mutex for another thread
+    ASSERT_TRUE(battery.updateStateAndPublish(11000, 0, 250, 0, false, 100U, 2000));
+    EXPECT_EQ(battery.last_valid_comm_time, 2000U);
+    EXPECT_EQ(battery.consecutive_comm_failures, 0U);
+
+    BmsCache worker_snap{};
+    std::thread reader([this, &worker_snap]() {
+        worker_snap = battery.getCacheSnapshot();
+    });
+    reader.join();
+    EXPECT_TRUE(worker_snap.valid);
+
+    // 2. Degraded publish returns true but must NOT reset consecutive_comm_failures or advance last_valid_comm_time
+    battery.consecutive_comm_failures = 1U;
+    virtual_uptime = 3000U;
+    ASSERT_TRUE(battery.updateStateAndPublish(11000, 0, 250, 0, true, 80U, 2000));
+    EXPECT_EQ(battery.last_valid_comm_time, 2000U);
+    EXPECT_EQ(battery.consecutive_comm_failures, 1U);
+}
