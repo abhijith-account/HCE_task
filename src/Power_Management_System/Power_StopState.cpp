@@ -517,18 +517,26 @@ void StopState::exit(PowerManager& pm) {
 
     LOG_INF("Exiting PM_STATE_SUSPEND_TO_RAM -> %s (wake: %s, ~%u ms in STOP)",s_transition_target_name,stop_wake_reason_str(s_stop_wake_reason),static_cast<unsigned int>(s_elapsed_sleep_time_us / 1000U));
 
-    s_stop_wake_reason = StopWakeReason::WAKE_NONE;
+    #ifndef IS_TEST_ENVIRONMENT
+        const bool completed_timer_wake = (s_stop_wake_reason == StopWakeReason::WAKE_TIMER);
+    #endif
+        s_stop_wake_reason = StopWakeReason::WAKE_NONE;
 
-    (void)pm_device_resume_tolerant(pm.getUartDev(), "UART");
-    (void)pm_device_resume_tolerant(pm.getI2cDev(), "I2C");
-    (void)pm_device_resume_tolerant(pm.getAdcDev(), "ADC");
+        (void)pm_device_resume_tolerant(pm.getUartDev(), "UART");
+        (void)pm_device_resume_tolerant(pm.getI2cDev(), "I2C");
+        (void)pm_device_resume_tolerant(pm.getAdcDev(), "ADC");
 
-    resume_background_threads();
+        resume_background_threads();
 
-    pm_policy_state_lock_put(PM_STATE_SUSPEND_TO_IDLE, PM_ALL_SUBSTATES);
+        pm_policy_state_lock_put(PM_STATE_SUSPEND_TO_IDLE, PM_ALL_SUBSTATES);
 
-    LOG_INF("MPS2/QEMU STOP exit");
-    return;
+        LOG_INF("MPS2/QEMU STOP exit");
+    #ifndef IS_TEST_ENVIRONMENT
+        if (completed_timer_wake) {
+            LOG_INF("QEMU_TEST_COMPLETE");
+        }
+    #endif
+        return;
 
 #else
     if (!sleep_prepared) {

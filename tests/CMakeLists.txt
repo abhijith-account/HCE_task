@@ -185,5 +185,3 @@ target_link_options(run_usb_shell_tests PRIVATE -Wl,--wrap=snprintf)
 target_link_options(run_static_memory_tests PRIVATE -Wl,--wrap=k_thread_stack_space_get)
 
 target_compile_definitions(run_pm_tests PRIVATE CONFIG_BOARD_MPS2_AN386)
-target_compile_definitions(run_usb_shell_tests PRIVATE INA226_TEST_BYPASS_STATIC_ASSERT)
-target_compile_definitions(run_battery_tests PRIVATE INA226_TEST_BYPASS_STATIC_ASSERT)

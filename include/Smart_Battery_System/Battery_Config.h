@@ -13,7 +13,7 @@ struct BatteryLimits {
     static constexpr uint16_t PACK_MIN_VOLTAGE_MV = 8700U;
     static constexpr uint16_t PACK_MAX_VOLTAGE_MV = 12600U;
     static constexpr uint32_t NOMINAL_CAPACITY_MAH = 2000U;
-    static constexpr uint32_t MAX_CHARGE_CURRENT_MA = 2000U;
+    static constexpr uint32_t MAX_CHARGE_CURRENT_MA = 800U;
     static constexpr uint32_t MAX_DISCHARGE_CURRENT_MA = 800U;
     static constexpr int32_t REST_CURRENT_THRESHOLD_MA = 50; 
 

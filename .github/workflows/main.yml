@@ -125,12 +125,9 @@ jobs:
           timeout 120s west build -d build_mps2 -t run >> qemu_m4_report.md 2>&1 || EXIT_CODE=$?
           echo '```' >> qemu_m4_report.md
 
-          # 4. Evaluate the QEMU exit code (124 means it successfully ran until timeout)
-          if [ "${EXIT_CODE:-0}" -eq 124 ]; then
-            echo "## Cortex-M4 QEMU Test Passed!" >> $GITHUB_STEP_SUMMARY
-          elif [ "${EXIT_CODE:-0}" -eq 0 ]; then
-            echo "## Cortex-M4 QEMU Test Passed!" >> $GITHUB_STEP_SUMMARY
-          else
+
+	  # 4. Report non-timeout crashes immediately; pass banner is emitted only after QEMU_TEST_COMPLETE and all milestones pass
+          if [ "${EXIT_CODE:-0}" -ne 124 ] && [ "${EXIT_CODE:-0}" -ne 0 ]; then
             echo "## Cortex-M4 QEMU Test FAILED (exit code $EXIT_CODE)!" >> $GITHUB_STEP_SUMMARY
           fi
 
@@ -166,14 +163,16 @@ jobs:
            "SAFE_HALT" \
            "Entering PM_STATE_SUSPEND_TO_IDLE" \
            "entering simulated STOP state" \
-           "STOP WAKE: TIMER"; do
-           if ! grep -q "$milestone" qemu_m4_report.md; then
-             echo "::error::Missing required QEMU runtime milestone: $milestone"
-             exit 1
-           fi
-           echo "  [OK] $milestone"
-          done
-          echo "All QEMU runtime milestones verified!"
+           "STOP WAKE: TIMER" \
+           "QEMU_TEST_COMPLETE"; do
+            if ! grep -q "$milestone" qemu_m4_report.md; then
+              echo "::error::Missing required QEMU runtime milestone: $milestone"
+              exit 1
+            fi
+            echo "  [OK] $milestone"
+           done
+           echo "All QEMU runtime milestones verified!"
+           echo "## Cortex-M4 QEMU Test Passed (All Milestones & QEMU_TEST_COMPLETE Verified)!" >> $GITHUB_STEP_SUMMARY
 
       - name: Upload QEMU M4 Report Artifact
         if: always()

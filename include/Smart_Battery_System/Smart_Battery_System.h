@@ -16,11 +16,12 @@
 #include "Battery_Types.h"
 #include "Battery_Config.h"
 
-#ifdef INA226_TEST_BYPASS_STATIC_ASSERT
-static_assert(INA226::MAX_MEASURABLE_CURRENT_UA >= (BatteryLimits::MAX_DISCHARGE_CURRENT_MA * 1000U),
-    "INA226 shunt cannot measure the pack's rated discharge current -- "
-    "see the HARDWARE MISMATCH comment on INA226::R_SHUNT_MILLIOHMS");
-#endif
+static_assert(BatteryLimits::MAX_CHARGE_CURRENT_MA <= static_cast<uint32_t>(BatteryLimits::MAX_VALID_CURRENT_MA),
+    "Charge current exceeds software validation limit");
+static_assert(BatteryLimits::MAX_DISCHARGE_CURRENT_MA <= static_cast<uint32_t>(BatteryLimits::MAX_VALID_CURRENT_MA),
+    "Discharge current exceeds software validation limit");
+static_assert(static_cast<uint64_t>(BatteryLimits::MAX_VALID_CURRENT_MA) * 1000ULL <= INA226::MAX_MEASURABLE_CURRENT_UA,
+    "INA226 shunt measurement range is insufficient");
 
 using WatchdogFeedHook = void (*)();
 
