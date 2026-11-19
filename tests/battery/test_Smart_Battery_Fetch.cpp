@@ -98,3 +98,62 @@ TEST_F(SmartBatteryTestSuite, DegradedI2CFallbackPropagatesMetadataThroughDriver
     EXPECT_TRUE(deg_shunt.isDegraded());
     EXPECT_TRUE(deg_soc.isDegraded());
 }
+
+TEST_F(SmartBatteryTestSuite, DegradedFirstPollDoesNotSeedUninitializedSoc) {
+    extern void resetI2CCacheForTests();
+    extern void test_update_cache(uint32_t key, uint64_t value, bool calibrated);
+    resetI2CCacheForTests();
+
+    virtual_uptime = 1000U;
+    // Pre-populate the I2C fallback cache directly (simulating another consumer or prior run)
+    // while SbsBattery itself has soc_initialized == false.
+    const uint32_t v_key = (static_cast<uint32_t>(INA226::I2C_ADDR) << 8U) | INA226::REG_BUS_VOLT;
+    const uint32_t s_key = (static_cast<uint32_t>(INA226::I2C_ADDR) << 8U) | INA226::REG_SHUNT_VOLT;
+    const uint32_t c_key = (static_cast<uint32_t>(INA226::I2C_ADDR) << 8U) | INA226::REG_CURRENT;
+    test_update_cache(v_key, 0x1027U, true); // 10000 raw big-endian -> 12500 mV
+    test_update_cache(s_key, 0x0000U, true);
+    test_update_cache(c_key, 0x0000U, true);
+
+    battery.soc_initialized = false;
+    battery.cache.valid = false;
+    g_adc_mock_mv_val = 1650;
+
+    virtual_uptime = 1500U;
+    g_i2c_consecutive_failures = 30;
+    battery.pollHardwareAndUpdateCache();
+    g_i2c_consecutive_failures = 0;
+
+    EXPECT_FALSE(battery.soc_initialized);
+    EXPECT_FALSE(battery.cache.valid);
+    EXPECT_EQ(battery.cache.last_error, CommFault::CACHE_INVALID);
+}
+
+TEST_F(SmartBatteryTestSuite, DegradedAggregationUsesMinimumReliabilityAndOldestTimestamp) {
+    extern void resetI2CCacheForTests();
+    extern void test_set_reliability(uint32_t key, uint8_t score);
+    resetI2CCacheForTests();
+
+    // 1. Live poll at t = 2000 ms seeds soc_initialized and populates I2C cache at t = 2000 ms
+    virtual_uptime = 2000U;
+    g_i2c_mock_v_val = 10000;
+    g_i2c_mock_i_val = 0;
+    g_adc_mock_mv_val = 1650;
+    battery.pollHardwareAndUpdateCache();
+
+    // Lower bus-voltage reliability below shunt/current (70 -> decays to 60 on fallback,
+    // while shunt & current stay at 100 -> 90).
+    const uint32_t v_key = (static_cast<uint32_t>(INA226::I2C_ADDR) << 8U) | INA226::REG_BUS_VOLT;
+    test_set_reliability(v_key, 70U);
+
+    // 2. Advance uptime to t = 2500 ms and force degraded fallback across all 3 registers
+    virtual_uptime = 2500U;
+    g_i2c_consecutive_failures = 30;
+    battery.pollHardwareAndUpdateCache();
+    g_i2c_consecutive_failures = 0;
+
+    auto deg_v = battery.getVoltage();
+    ASSERT_TRUE(deg_v.success);
+    EXPECT_TRUE(deg_v.isDegraded());
+    EXPECT_EQ(deg_v.reliability_score, 60U);  // Minimum across V (60), Shunt (90), Current (90)
+    EXPECT_EQ(deg_v.timestamp_ms, 2000);      // Original cached timestamp, not 2500 ms publication time
+}

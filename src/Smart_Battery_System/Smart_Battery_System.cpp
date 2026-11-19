@@ -94,7 +94,8 @@ void SbsBattery::seedOrResyncCoulombCounter(uint16_t pack_mv, int32_t shunt_uv, 
 }
 
 void SbsBattery::updateStateAndPublish(uint16_t pack_mv, int32_t current_ma, int16_t temp_tenths, int32_t shunt_uv,
-                                       bool degraded, uint8_t reliability_score) {
+                                       bool degraded, uint8_t reliability_score,
+                                       int64_t sample_timestamp_ms) {
     if (k_mutex_lock(&cache_mutex, K_MSEC(BatteryLimits::MUTEX_TIMEOUT_MS)) != 0) {
         atomic_inc(&stats.validation_errors);
         publishError(CommFault::MUTEX_TIMEOUT);
@@ -104,15 +105,22 @@ void SbsBattery::updateStateAndPublish(uint16_t pack_mv, int32_t current_ma, int
     const uint32_t now = k_uptime_get_32();
     const int64_t max_uAh = static_cast<int64_t>(BatteryLimits::NOMINAL_CAPACITY_MAH) * 1000LL;
 
-    if (!soc_initialized) {
-        seedOrResyncCoulombCounter(pack_mv, shunt_uv, true);
-        last_poll_time_ms = now;
-    } else if (degraded) {
+    if (degraded) {
+        if (!soc_initialized) {
+            /* Refuse to seed an uninitialized SoC estimator from stale cached voltage. */
+            LOG_WRN("Refusing to seed uninitialized SoC estimator from degraded cache sample.");
+            k_mutex_unlock(&cache_mutex);
+            publishError(CommFault::CACHE_INVALID);
+            return;
+        }
         /* Degraded fallback policy: freeze coulomb integration and rest-resync timer on cached I2C data,
          * and inflate Kalman error covariance P inversely with reliability_score. */
         const float reliability_scale = 100.0f / static_cast<float>(reliability_score);
         kf_p_covariance += BatteryLimits::KF_PROCESS_NOISE * reliability_scale;
         rest_period_start_ms = 0U;
+        last_poll_time_ms = now;
+    } else if (!soc_initialized) {
+        seedOrResyncCoulombCounter(pack_mv, shunt_uv, true);
         last_poll_time_ms = now;
     } else {
         const uint32_t delta_ms = now - last_poll_time_ms;
@@ -159,13 +167,11 @@ void SbsBattery::updateStateAndPublish(uint16_t pack_mv, int32_t current_ma, int
     cache.degraded = degraded;
     cache.reliability_score = reliability_score;
     cache.last_error = CommFault::NONE;
-    cache.timestamp_ms = now;
+    cache.timestamp_ms = degraded ? static_cast<uint32_t>(sample_timestamp_ms) : now;
 
     consecutive_comm_failures = 0U;
     consecutive_mutex_failures = 0U;
     last_valid_comm_time = now;
-
-    k_mutex_unlock(&cache_mutex);
 }
 
 BmsCache SbsBattery::getCacheSnapshot() const {
