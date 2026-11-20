@@ -35,38 +35,13 @@ struct TraceEventMirror {          // same layout as TraceEvent in the .cpp
     uint8_t type;                  // 0 = SWITCH_IN, 1 = SWITCH_OUT
 };
 
+extern void test_poke_recent_invalid_trace_events(struct k_thread* invalid_thread) noexcept;
+
 bool pokeInvalidTraceEvents(struct k_thread* x) {
-    constexpr size_t S    = sizeof(TraceEventMirror);
-    constexpr size_t TOFF = offsetof(TraceEventMirror, thread);
-    constexpr size_t YOFF = offsetof(TraceEventMirror, type);
-    constexpr uint8_t kPattern[5] = {1, 0, 0, 1, 0};   // OUT, IN, IN, OUT, IN
-
-    auto thr = [](uintptr_t a) { return *reinterpret_cast<struct k_thread* const*>(a); };
-    auto typ = [](uintptr_t a) { return *reinterpret_cast<const uint8_t*>(a); };
-
-    std::ifstream maps("/proc/self/maps");
-    std::string line;
-    while (std::getline(maps, line)) {
-        unsigned long lo = 0, hi = 0;
-        char perms[8] = {};
-        if (std::sscanf(line.c_str(), "%lx-%lx %7s", &lo, &hi, perms) != 3) continue;
-        if (perms[0] != 'r' || perms[1] != 'w') continue;
-        if (line.find("[vvar]") != std::string::npos || line.find("[vsyscall]") != std::string::npos) continue;
-        if (hi - lo > (256UL << 20)) continue;
-
-        for (uintptr_t p = lo; p + 5 * S + YOFF + 1 <= hi; p += alignof(TraceEventMirror)) {
-            bool match = true;
-            for (size_t i = 0; i < 5 && match; ++i) {
-                match = (thr(p + i * S + TOFF) == x) && (typ(p + i * S + YOFF) == kPattern[i]);
-            }
-            if (!match) continue;
-            *reinterpret_cast<volatile uint8_t*>(p + 1 * S + YOFF) = 2;                       // invalid type
-            *reinterpret_cast<struct k_thread* volatile*>(p + 3 * S + TOFF) =
-                reinterpret_cast<struct k_thread*>(static_cast<uintptr_t>(0xDEAD0));          // invalid thread
-            return true;
-        }
-    }
-    return false;
+    (void)x;
+    test_poke_recent_invalid_trace_events(
+        reinterpret_cast<struct k_thread*>(static_cast<uintptr_t>(0xDEAD0)));
+    return true;
 }
 
 std::atomic<bool> g_trace_thread_done{false};

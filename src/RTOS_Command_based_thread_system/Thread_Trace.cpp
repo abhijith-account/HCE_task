@@ -146,3 +146,13 @@ extern "C" void trace_logger_thread(void *arg1, void *arg2, void *arg3) {
 extern const k_tid_t trace_tid;
 // Define the thread with the lowest priority to avoid starving your compute loops
 K_THREAD_DEFINE(trace_tid, 1024, trace_logger_thread, NULL, NULL, NULL, K_LOWEST_APPLICATION_THREAD_PRIO, 0, 0);
+
+#ifdef IS_TEST_ENVIRONMENT
+void test_poke_recent_invalid_trace_events(struct k_thread* invalid_thread) noexcept {
+    const uint32_t head = g_trace_head;
+    const uint32_t slot1 = (head - 4U) % TRACE_BUFFER_SIZE;
+    const uint32_t slot3 = (head - 2U) % TRACE_BUFFER_SIZE;
+    g_trace_buffer[slot1].type = static_cast<TraceType>(2U);
+    g_trace_buffer[slot3].thread = invalid_thread;
+}
+#endif
