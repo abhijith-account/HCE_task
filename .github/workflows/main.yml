@@ -221,11 +221,17 @@ jobs:
 
           python3 -c '
           import json, subprocess, sys
-          db = json.load(open("tests/build/tidy_db/compile_commands.json"))
-          files = sorted({e["file"] for e in db if "/src/" in e["file"] and e["file"].endswith(".cpp")})
-          if not files:
+          db_path = "tests/build/tidy_db/compile_commands.json"
+          db = json.load(open(db_path))
+          unique = {}
+          for e in db:
+              if "/src/" in e["file"] and e["file"].endswith(".cpp"):
+                  unique.setdefault(e["file"], e)
+          if not unique:
               print("::error::No C++ source files found in compile_commands.json", file=sys.stderr)
               sys.exit(1)
+          json.dump(list(unique.values()), open(db_path, "w"), indent=2)
+          files = sorted(unique.keys())
           print(f"Running clang-tidy on {len(files)} source files...", flush=True)
           cmd = [
               "clang-tidy",
