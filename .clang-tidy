@@ -1,0 +1,19 @@
+---
+Checks: >-
+  -*,
+  bugprone-narrowing-conversions,
+  bugprone-implicit-widening-of-multiplication-result,
+  bugprone-signed-char-misuse,
+  bugprone-misplaced-widening-cast,
+  cppcoreguidelines-init-variables,
+  cppcoreguidelines-pro-type-member-init,
+  cppcoreguidelines-prefer-member-initializer,
+  bugprone-exception-escape,
+  bugprone-empty-catch,
+  bugprone-throw-keyword-missing,
+  cert-err58-cpp,
+  cert-err60-cpp,
+  cert-err61-cpp
+WarningsAsErrors: '*'
+HeaderFilterRegex: '^.*/(include|src)/.*'
+FormatStyle: none

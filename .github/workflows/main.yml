@@ -69,6 +69,7 @@ jobs:
             lcov \
             gcovr \
             cppcheck \
+            clang-tidy \
             libgtest-dev \
             binutils
 
@@ -199,7 +200,7 @@ jobs:
         run: |
           mkdir -p tests/build
           cd tests/build
-          cmake ..
+          cmake -DCMAKE_EXPORT_COMPILE_COMMANDS=ON ..
           make -j$(nproc)
           ./run_pm_tests
           ./run_usb_shell_tests
@@ -210,6 +211,27 @@ jobs:
           ./run_state_machine_tests
           ./run_sync_tests
           ./run_command_tests
+
+      - name: Run clang-tidy (MISRA-C++ subset: M5-0, M8-5, M15-0)
+        run: |
+          clang-tidy --version
+          mkdir -p tests/build/tidy_db
+          sed 's/-fprofile-update=atomic//g' \
+            tests/build/compile_commands.json > tests/build/tidy_db/compile_commands.json
+
+          mapfile -t SRC_FILES < <(python3 -c 'import json; db = json.load(open("tests/build/tidy_db/compile_commands.json")); print("\n".join(sorted({e["file"] for e in db if "/src/" in e["file"] and e["file"].endswith(".cpp")})))')
+
+          if [ "${#SRC_FILES[@]}" -eq 0 ]; then
+            echo "::error::No C++ source files found in compile_commands.json"
+            exit 1
+          fi
+
+          echo "Running clang-tidy on ${#SRC_FILES[@]} source files..."
+          clang-tidy \
+            -p tests/build/tidy_db \
+            --config-file=.clang-tidy \
+            --extra-arg=-Wno-unknown-warning-option \
+            "${SRC_FILES[@]}"
 
       - name: Enforce coverage
         run: |

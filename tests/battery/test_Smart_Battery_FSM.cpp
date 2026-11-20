@@ -356,3 +356,17 @@ TEST_F(SmartBatteryTestSuite, ProcessFSM_DegradedPolicyAllowsCutoffButBlocksReco
     EXPECT_TRUE(battery.full_charge_logged.load());
     sys_context.requestTransition(SystemState::RUNNING);
 }
+
+TEST_F(SmartBatteryTestSuite, ProcessFSM_DegradedLowVoltageDoesNotForceIdle) {
+    battery.cache.valid = true;
+    battery.cache.degraded = true;
+    battery.cache.reliability_score = 70U;
+    battery.cache.last_error = CommFault::NONE;
+    battery.cache.timestamp_ms = virtual_uptime;
+    battery.cache.voltage.value = 0U; // Below MIN_VALID_VOLTAGE_MV, but degraded
+    battery.cache.soc.value = 50U;
+    battery.current_state.store(BatteryFSM::CHARGING);
+
+    battery.processFSM();
+    EXPECT_EQ(battery.getState(), BatteryFSM::CHARGING);
+}
