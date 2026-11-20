@@ -39,7 +39,7 @@ namespace {
     private:
         atomic_t is_sleeping{};
     public:
-        BmsPowerObserver() { atomic_set(&is_sleeping, 0); }
+        BmsPowerObserver() noexcept { atomic_set(&is_sleeping, 0); }
         void beforeSleep() override { atomic_set(&is_sleeping, 1); }
         void afterWakeup() override {
             atomic_set(&is_sleeping, 0);
@@ -57,7 +57,7 @@ namespace {
     SbsBattery static_smart_battery(&i2c_manager, &sys_context);
 #endif
 
-    void initializeBmsObjects() {
+    void initializeBmsObjects() noexcept {
         if (!bms_objects_initialized) {
 #ifndef IS_TEST_ENVIRONMENT
             smart_battery = &static_smart_battery;
@@ -71,7 +71,7 @@ namespace {
 bool isBmsObserverSleepingForTest() { return g_bmsPowerObserver.isSleeping(); }
 #endif
 
-SbsBattery* getSmartBatteryInstance() {
+SbsBattery* getSmartBatteryInstance() noexcept {
     initializeBmsObjects();
     return smart_battery;
 }

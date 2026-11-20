@@ -27,7 +27,7 @@ atomic_t g_disp_cons_alive = ATOMIC_INIT(1);
 SharedHeartRateBuffer hr_buffer;
 ZephyrSemaphore display_sem(0,10);
 
-ZephyrSemaphore::ZephyrSemaphore(unsigned int initial,unsigned int limit){
+ZephyrSemaphore::ZephyrSemaphore(unsigned int initial,unsigned int limit) noexcept {
     k_sem_init(&sem,initial,limit);
 }
 
@@ -39,7 +39,7 @@ int ZephyrSemaphore::take(k_timeout_t timeout){
     return k_sem_take(&sem,timeout);
 }
 
-ZephyrMutex::ZephyrMutex(){
+ZephyrMutex::ZephyrMutex() noexcept {
     k_mutex_init(&mutex);
 }
 
@@ -59,7 +59,7 @@ void ZephyrWorkQueue::execute_callback(struct k_work *w){
     }
 }
 
-ZephyrWorkQueue::ZephyrWorkQueue(void (*cb)()):callback(cb){
+ZephyrWorkQueue::ZephyrWorkQueue(void (*cb)()) noexcept : callback(cb) {
     k_work_init_delayable(&work,execute_callback);
 }
 
@@ -76,7 +76,7 @@ namespace {
     private:
         atomic_t is_sleeping{};
     public:
-        SyncPowerObserver() { atomic_set(&is_sleeping, 0); }
+        SyncPowerObserver() noexcept { atomic_set(&is_sleeping, 0); }
         
         void beforeSleep() override {
             atomic_set(&is_sleeping, 1);

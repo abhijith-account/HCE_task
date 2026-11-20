@@ -12,7 +12,7 @@ class StaticPool {
         struct k_mutex pool_mutex{};
 
     public:
-        StaticPool() {
+        StaticPool() noexcept {
             in_use.fill(false);
             k_mutex_init(&pool_mutex);
         }

@@ -10,9 +10,9 @@ enum class I2CFault { NONE, NACK, TIMEOUT, BUS_BUSY, ARBITRATION_LOST, DEVICE_NO
 
 template <typename T>
 struct Result {
-    T value;
-    I2CFault error;
-    bool success;
+    T value{};
+    I2CFault error{I2CFault::NONE};
+    bool success{false};
     bool degraded{false};
     int64_t timestamp_ms{0};
     uint8_t reliability_score{100U};

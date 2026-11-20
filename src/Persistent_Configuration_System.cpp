@@ -13,13 +13,13 @@ LOG_MODULE_REGISTER(CONFIG_SYS, LOG_LEVEL_INF);
 #define NVS_PARTITION_DEVICE FIXED_PARTITION_DEVICE(NVS_PARTITION)
 
 ConfigStore ConfigStore::instance;
-ConfigStore::ConfigStore() : initialized(false) {}
+ConfigStore::ConfigStore() noexcept : initialized(false) {}
 ConfigStore& ConfigStore::getInstance() {
     return instance;
 }
 
 bool ConfigStore::init() {
-    const struct flash_area *fap;
+    const struct flash_area *fap = nullptr;
     
     int rc = flash_area_open(DT_FIXED_PARTITION_ID(DT_NODELABEL(storage_partition)), &fap);
     if (rc != 0) {
@@ -184,12 +184,12 @@ uint32_t ConfigStore::getStoredLogCount() const noexcept {
         return 0;
     }
     
-    struct fcb_entry loc;
+    struct fcb_entry loc{};
     loc.fe_sector = nullptr;
     loc.fe_elem_off = 0;
     
     uint32_t count = 0;
-    FcbRecordHeader header;
+    FcbRecordHeader header{};
     
     // fcb_getnext requires a non-const fcb_instance pointer
     auto* non_const_fcb = const_cast<struct fcb*>(&fcb_instance);
@@ -214,12 +214,12 @@ bool ConfigStore::getLogEntry(uint32_t index, LogEntry& out_entry) const noexcep
         return false;
     }
     
-    struct fcb_entry loc;
+    struct fcb_entry loc{};
     loc.fe_sector = nullptr;
     loc.fe_elem_off = 0;
     
     uint32_t current_index = 0;
-    FcbRecordHeader header;
+    FcbRecordHeader header{};
     auto* non_const_fcb = const_cast<struct fcb*>(&fcb_instance);
     
     while (fcb_getnext(non_const_fcb, &loc) == 0) {

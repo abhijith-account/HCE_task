@@ -33,7 +33,7 @@ namespace {
     private:
         atomic_t is_sleeping{};
     public:
-        ShellPowerObserver() { atomic_set(&is_sleeping, 0); }
+        ShellPowerObserver() noexcept { atomic_set(&is_sleeping, 0); }
         void beforeSleep() override { atomic_set(&is_sleeping, 1); }
         void afterWakeup() override { atomic_set(&is_sleeping, 0); }
         void sleepAborted() override { atomic_set(&is_sleeping, 0); }

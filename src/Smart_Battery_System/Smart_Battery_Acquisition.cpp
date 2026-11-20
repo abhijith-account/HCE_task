@@ -55,7 +55,7 @@ result<int16_t> SbsBattery::fetchI2cRegisterWithRetry(Result<int16_t> (INA226::D
         [](const Result<int16_t>& r) { return r.isOk(); },
         [this]() { feedWatchdog(); },
         [this]() { atomic_inc(&stats.retries); },
-        [](uint32_t ms) { k_msleep(ms); });
+        [](uint32_t ms) { k_msleep(static_cast<int32_t>(ms)); });
 
     if (response.isOk()) {
         atomic_inc(&stats.reads);

@@ -63,7 +63,7 @@ bool WatchdogTimer::isInitialized() const{
     return channel_id >= 0;
 }
 
-DeviceContext::DeviceContext() : current_state(SystemState::INIT), wdt{} {}
+DeviceContext::DeviceContext() noexcept : current_state(SystemState::INIT), wdt{} {}
 
 bool DeviceContext::isLegalTransition(SystemState from, SystemState to){
     if (from == to){

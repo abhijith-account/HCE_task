@@ -96,7 +96,7 @@ private:
     float kf_p_covariance{1.0f};
 };
 
-SbsBattery* getSmartBatteryInstance();
+SbsBattery* getSmartBatteryInstance() noexcept;
 #ifndef IS_TEST_ENVIRONMENT
 I2CManager* getI2cBusManagerInstance();
 #endif

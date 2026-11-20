@@ -7,7 +7,7 @@ class ZephyrSemaphore {
   private:
     struct k_sem sem{};
   public:
-    ZephyrSemaphore(unsigned int initial,unsigned int limit);
+    ZephyrSemaphore(unsigned int initial,unsigned int limit) noexcept;
     void give();
     int take(k_timeout_t timeout);
 };
@@ -16,7 +16,7 @@ class ZephyrMutex{
   private:
       struct k_mutex mutex{};
   public:
-      ZephyrMutex();
+      ZephyrMutex() noexcept;
       void lock();
       void unlock();
 };
@@ -27,7 +27,7 @@ class ZephyrWorkQueue {
       void (*callback)(){nullptr};
       static void execute_callback(struct k_work *w);
   public:
-      explicit ZephyrWorkQueue(void (*cb)());
+      explicit ZephyrWorkQueue(void (*cb)()) noexcept;
       void schedule(k_timeout_t delay);
       void cancel();
 };

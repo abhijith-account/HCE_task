@@ -18,7 +18,7 @@ class ThreadSystemPowerObserver final : public IPowerObserver {
 private:
     atomic_t is_sleeping{};
 public:
-    ThreadSystemPowerObserver() { atomic_set(&is_sleeping, 0); }
+    ThreadSystemPowerObserver() noexcept { atomic_set(&is_sleeping, 0); }
     void beforeSleep() override { atomic_set(&is_sleeping, 1); }
     void afterWakeup() override { atomic_set(&is_sleeping, 0); }
     void sleepAborted() override { atomic_set(&is_sleeping, 0); }

@@ -15,8 +15,13 @@ float LPS22HBMath::decodePressure(uint64_t raw_data) noexcept {
     const uint8_t byte1 = (raw_data >> 16) & 0xFF;
     const uint8_t byte2 = (raw_data >> 8) & 0xFF;
     const uint8_t byte3 = raw_data & 0xFF;
-    int32_t press_raw = static_cast<int32_t>((byte3 << 16) | (byte2 << 8) | byte1);
-    if (press_raw & 0x00800000) press_raw |= 0xFF000000;
+    uint32_t raw_u32 = (static_cast<uint32_t>(byte3) << 16U) |
+                       (static_cast<uint32_t>(byte2) << 8U) |
+                       static_cast<uint32_t>(byte1);
+    if ((raw_u32 & 0x00800000U) != 0U) {
+        raw_u32 |= 0xFF000000U;
+    }
+    const auto press_raw = static_cast<int32_t>(raw_u32);
     return static_cast<float>(press_raw) / LPS22HBConst::PRESS_DIV;
 }
 

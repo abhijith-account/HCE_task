@@ -52,7 +52,7 @@ class ConfigStore {
 
         static ConfigStore instance;
 
-        ConfigStore();
+        ConfigStore() noexcept;
         ~ConfigStore()=default;
 
         ConfigStore(const ConfigStore&)=delete;
@@ -110,7 +110,7 @@ class ConfigStore {
                 return false;
             }
 
-            struct fcb_entry loc;
+            struct fcb_entry loc{};
             loc.fe_sector = nullptr;
             loc.fe_elem_off = 0;
 

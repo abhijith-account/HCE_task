@@ -38,7 +38,7 @@ class DeviceContext : public IPowerObserver {
         WatchdogTimer wdt;
         static bool isLegalTransition(SystemState from, SystemState to);
     public:
-        DeviceContext();
+        DeviceContext() noexcept;
         SystemState getState() const;
         bool requestTransition(SystemState next_state);
         bool initWatchdog(uint32_t timeout_ms);

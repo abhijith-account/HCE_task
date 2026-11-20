@@ -17,8 +17,7 @@ LOG_MODULE_REGISTER(USB_CLI, LOG_LEVEL_INF);
 
 bool g_usb_connected = false;
 
-UsbCdcFacade::UsbCdcFacade() noexcept {
-    dev = DEVICE_DT_GET(DT_ALIAS(cdc_acm_uart0));
+UsbCdcFacade::UsbCdcFacade() noexcept : dev(DEVICE_DT_GET(DT_ALIAS(cdc_acm_uart0))) {
     __ASSERT(dev != nullptr, "CDC ACM device missing from devicetree");
 }
 
@@ -92,7 +91,7 @@ void UsbCdcFacade::uartInterruptHandler(const device* dev, void* user_data) {
     uart_irq_update(dev);
     if (uart_irq_rx_ready(dev)) {
         bool discard_rest_of_burst = false;
-        uint8_t c;
+        uint8_t c=0U;
         while (uart_fifo_read(dev, &c, 1) == 1) {
             if (c == '\b' || c == 0x7F) {
                 const std::size_t head = self->rx_head.load(std::memory_order_relaxed);
