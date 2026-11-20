@@ -235,7 +235,8 @@ jobs:
               *files,
           ]
           sys.exit(subprocess.run(cmd).returncode)
-
+          '
+          
       - name: Enforce coverage
         run: |
           if [ -f ./scripts/check_coverage.sh ]; then
