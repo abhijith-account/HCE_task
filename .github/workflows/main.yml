@@ -212,7 +212,7 @@ jobs:
           ./run_sync_tests
           ./run_command_tests
 
-      - name: Run clang-tidy (MISRA-C++ subset: M5-0, M8-5, M15-0)
+      - name: "Run clang-tidy (MISRA-C++ subset - M5-0, M8-5, M15-0)"
         run: |
           clang-tidy --version
           mkdir -p tests/build/tidy_db
