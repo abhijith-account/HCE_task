@@ -23,7 +23,7 @@ jobs:
     # CHANGE (optional but recommended): replace ":latest" with a fixed CI image tag/digest
     # whose bundled Zephyr SDK matches what Zephyr 4.4.0 requires
     # (see SDK_VERSION in the zephyr repo at tag v4.4.0).
-    container: zephyrprojectrtos/ci@sha256:<paste-digest-from-run-157>
+    container: zephyrprojectrtos/ci:v0.29.1@sha256:39abd5064c084749e368d3fea5923044832785e583d0d8d5a8d09478e7b2ec4d
 
     steps:
       - name: Checkout repository
