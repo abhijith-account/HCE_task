@@ -174,7 +174,7 @@ set(ALL_TEST_TARGETS
 foreach(test_target IN LISTS ALL_TEST_TARGETS)
     target_include_directories(${test_target} PRIVATE ${MOCK_DIR} ../include)
     target_link_libraries(${test_target} PRIVATE GTest::gtest_main pthread)
-    target_compile_options(${test_target} PRIVATE --coverage -fprofile-update=atomic)
+    target_compile_options(${test_target} PRIVATE -Wall -Wextra --coverage -fprofile-update=atomic)
     target_link_options(${test_target} PRIVATE --coverage)
     target_compile_definitions(${test_target} PRIVATE IS_TEST_ENVIRONMENT)
     add_test(NAME ${test_target} COMMAND ${test_target})

@@ -421,14 +421,16 @@ chmod +x ./scripts/check_coverage.sh
 
 ## 11. Continuous Integration Pipeline (GitHub Actions)
 
-Defined in `.github/workflows/main.yml` (`Zephyr Firmware CI`), the pipeline runs inside `zephyrprojectrtos/ci:latest` and executes six mandatory verification stages:
+Defined in `.github/workflows/main.yml` (`Zephyr Firmware CI`), the pipeline runs inside a digest-pinned `zephyrprojectrtos/ci` container and executes eight mandatory verification stages:
 
-1. **Zephyr Version Pin Check**: Initializes `west` and verifies that `zephyr/VERSION` matches `EXPECTED_ZEPHYR_VERSION=4.4.0`.
-2. **Static Analysis (`cppcheck`)**: Scans `src/` and `include/` under `--std=c++20 --enable=warning,performance,portability --error-exitcode=1`.
+1. **Zephyr Version Pin Check**: Initializes `west` against `west.yml` (`v4.4.0`) and verifies that `zephyr/VERSION` matches `EXPECTED_ZEPHYR_VERSION=4.4.0`.
+2. **Static Analysis (`cppcheck`)**: Scans `src/` under `--std=c++20 --enable=warning --error-exitcode=1`.
 3. **STM32 Cross-Compilation & `.config` Safety Verification (`nucleo_f446re`)**: Builds `build_nucleo/zephyr/zephyr.{elf,bin,hex,map}` with `-Wall -Wextra -Werror` and verifies that the resolved `build_nucleo/zephyr/.config` enforces `CONFIG_HEAP_MEM_POOL_SIZE=0`, `CONFIG_STACK_CANARIES=y`, `CONFIG_ARM_MPU=y`, and `CONFIG_HW_STACK_PROTECTION=y`.
-4. **Cortex-M4 QEMU Emulation & Runtime Assertions (`mps2/an386`)**: Runs the firmware in QEMU for `120 s` and asserts that `qemu_m4_report.md` contains the expected boot banner (`Command-Based RTOS Booting`), live fault injection (`BME280 emulator simulating disconnect!`), cache fallback recovery (`Falling back to Last-known-Good data`), and autonomous low-power transitions (`PM_STATE_SUSPEND_TO_IDLE`, `PM_STATE_SUSPEND_TO_RAM`).
-5. **Host Unit Tests & 100% Coverage Gate**: Compiles and executes all 9 GTest binaries via `ctest --output-on-failure` and runs `./scripts/check_coverage.sh` (`line=100%`, `branch=100%`).
-6. **Published Workflow Artifacts**:
+4. **QEMU Cortex-M4 Emulation Milestone Verification (`mps2/an386`)**: Boots the compiled firmware inside `qemu-system-arm` (`timeout 120s`) and asserts all 19 required runtime milestones in `qemu_m4_report.md`, including boot banner (`Command-Based RTOS Booting`), FCB 1,000-cycle endurance test, exponential-backoff retry and degraded cache fallback (`degraded=1`), `SAFE_HALT`, simulated STOP entry/wake (`STOP WAKE: TIMER`), and `QEMU_TEST_COMPLETE`.
+5. **Host Unit Tests & 100% Coverage Gate**: Compiles and executes all 9 GoogleTest binaries with `-Wall -Wextra --coverage -fprofile-update=atomic` and enforces `./scripts/check_coverage.sh` (`lines=100.0%`, `functions=100.0%`, `branches=100.0%`).
+6. **MISRA-C++ Static Analysis (`clang-tidy`)**: Runs `clang-tidy` over all `src/**/*.cpp` units using `.clang-tidy` (`WarningsAsErrors: '*'`), enforcing upstream equivalents of MISRA-C++ `M5-0-*` (narrowing/widening conversions), `M8-5-*` (variable/member initialization), and `M15-0-*` (exception safety and `noexcept` static initialization).
+7. **Memory & Undefined-Behavior Sanitizers (`ASan` + `UBSan`)**: Rebuilds and runs all 9 GoogleTest binaries via `ctest --output-on-failure` under `-fsanitize=address,undefined -fno-sanitize-recover=undefined`.
+8. **Published Workflow Artifacts**:
    - `QEMU-M4-Execution-Report` (`qemu_m4_report.md`)
    - `QEMU-Execution-Logs` (`zephyr.map`, `zephyr.dts`, and `.config` for both `build_nucleo` and `build_mps2`)
    - `Coverage-Dashboard` (`coverage_report/`)

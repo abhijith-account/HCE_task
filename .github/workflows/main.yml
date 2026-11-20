@@ -23,7 +23,7 @@ jobs:
     # CHANGE (optional but recommended): replace ":latest" with a fixed CI image tag/digest
     # whose bundled Zephyr SDK matches what Zephyr 4.4.0 requires
     # (see SDK_VERSION in the zephyr repo at tag v4.4.0).
-    container: zephyrprojectrtos/ci:latest
+    container: zephyrprojectrtos/ci@sha256:<paste-digest-from-run-157>
 
     steps:
       - name: Checkout repository
@@ -251,6 +251,18 @@ jobs:
           else
             echo "Coverage script not found. Skipping coverage enforcement."
           fi
+
+      - name: Run Host Tests under ASan + UBSan
+        env:
+          ASAN_OPTIONS: "detect_leaks=0"
+          UBSAN_OPTIONS: "print_stacktrace=1:halt_on_error=1"
+        run: |
+          mkdir -p tests/build_asan
+          cmake -S tests -B tests/build_asan \
+            -DCMAKE_CXX_FLAGS="-O1 -g -fsanitize=address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer" \
+            -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined"
+          cmake --build tests/build_asan -j$(nproc)
+          ctest --test-dir tests/build_asan --output-on-failure
 
       - name: Upload coverage report
         if: always()
