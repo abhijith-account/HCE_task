@@ -219,19 +219,22 @@ jobs:
           sed 's/-fprofile-update=atomic//g' \
             tests/build/compile_commands.json > tests/build/tidy_db/compile_commands.json
 
-          mapfile -t SRC_FILES < <(python3 -c 'import json; db = json.load(open("tests/build/tidy_db/compile_commands.json")); print("\n".join(sorted({e["file"] for e in db if "/src/" in e["file"] and e["file"].endswith(".cpp")})))')
-
-          if [ "${#SRC_FILES[@]}" -eq 0 ]; then
-            echo "::error::No C++ source files found in compile_commands.json"
-            exit 1
-          fi
-
-          echo "Running clang-tidy on ${#SRC_FILES[@]} source files..."
-          clang-tidy \
-            -p tests/build/tidy_db \
-            --config-file=.clang-tidy \
-            --extra-arg=-Wno-unknown-warning-option \
-            "${SRC_FILES[@]}"
+          python3 -c '
+          import json, subprocess, sys
+          db = json.load(open("tests/build/tidy_db/compile_commands.json"))
+          files = sorted({e["file"] for e in db if "/src/" in e["file"] and e["file"].endswith(".cpp")})
+          if not files:
+              print("::error::No C++ source files found in compile_commands.json", file=sys.stderr)
+              sys.exit(1)
+          print(f"Running clang-tidy on {len(files)} source files...", flush=True)
+          cmd = [
+              "clang-tidy",
+              "-p", "tests/build/tidy_db",
+              "--config-file=.clang-tidy",
+              "--extra-arg=-Wno-unknown-warning-option",
+              *files,
+          ]
+          sys.exit(subprocess.run(cmd).returncode)
 
       - name: Enforce coverage
         run: |
