@@ -87,7 +87,7 @@ result<int16_t> SbsBattery::fetchTemperatureTenthsWithRetry() {
         [](const TempReading& r) { return r.success; },
         [this]() { feedWatchdog(); },
         [this]() { atomic_inc(&stats.retries); },
-        [](uint32_t ms) { k_msleep(ms); });
+        [](uint32_t ms) { k_msleep(static_cast<int32_t>(ms)); });
 
     if (response.success) {
         atomic_inc(&stats.reads);
