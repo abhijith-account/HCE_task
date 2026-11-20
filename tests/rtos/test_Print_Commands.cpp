@@ -46,7 +46,8 @@ TEST_F(RTOSCommandsTestSuite, PrintBME280AndLPS22HBExecuteDirectly) {
 
     testing::internal::CaptureStdout();
     bme_cmd.execute();
-    std::string_view out_bme(testing::internal::GetCapturedStdout());
+    const auto raw_bme = testing::internal::GetCapturedStdout();
+    std::string_view out_bme(raw_bme);
     EXPECT_NE(out_bme.find("BME280 Temp ="), std::string_view::npos);
 
     LPS22HBData lps_data{25.0f, 1013.25f};
@@ -54,7 +55,8 @@ TEST_F(RTOSCommandsTestSuite, PrintBME280AndLPS22HBExecuteDirectly) {
 
     testing::internal::CaptureStdout();
     lps_cmd.execute();
-    std::string_view out_lps(testing::internal::GetCapturedStdout());
+    const auto raw_lps = testing::internal::GetCapturedStdout();
+    std::string_view out_lps(raw_lps);
     EXPECT_NE(out_lps.find("LPS22HB Temp ="), std::string_view::npos);
 }
 
