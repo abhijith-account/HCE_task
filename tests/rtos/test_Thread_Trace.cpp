@@ -7,6 +7,7 @@ extern "C" void sys_trace_thread_switched_in_user(void);
 extern "C" void sys_trace_thread_switched_out_user(void);
 extern atomic_t g_switch_hook_hits;
 extern "C" void trace_logger_thread(void *arg1, void *arg2, void *arg3);
+extern void test_poke_recent_invalid_trace_events(struct k_thread* invalid_thread) noexcept;
 
 namespace {
 
@@ -34,8 +35,6 @@ struct TraceEventMirror {          // same layout as TraceEvent in the .cpp
     struct k_thread* thread;
     uint8_t type;                  // 0 = SWITCH_IN, 1 = SWITCH_OUT
 };
-
-extern void test_poke_recent_invalid_trace_events(struct k_thread* invalid_thread) noexcept;
 
 bool pokeInvalidTraceEvents(struct k_thread* x) {
     (void)x;
