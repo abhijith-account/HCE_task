@@ -175,7 +175,8 @@ set(ALL_TEST_TARGETS
 )
 
 foreach(test_target IN LISTS ALL_TEST_TARGETS)
-    target_include_directories(${test_target} PRIVATE ${MOCK_DIR} ../include)
+    target_include_directories(${test_target} SYSTEM PRIVATE ${MOCK_DIR})
+    target_include_directories(${test_target} PRIVATE ../include)
     target_link_libraries(${test_target} PRIVATE GTest::gtest_main pthread)
     target_compile_options(${test_target} PRIVATE -Wall -Wextra -Wno-unused-parameter)
     if(ENABLE_COVERAGE)
