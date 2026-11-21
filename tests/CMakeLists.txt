@@ -2,6 +2,9 @@ cmake_minimum_required(VERSION 3.20.0)
 project(pm_tests)
 
 set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+option(ENABLE_COVERAGE "Enable gcov coverage instrumentation" ON)
 
 # Find Google Test on your host system
 find_package(GTest REQUIRED)
@@ -174,8 +177,11 @@ set(ALL_TEST_TARGETS
 foreach(test_target IN LISTS ALL_TEST_TARGETS)
     target_include_directories(${test_target} PRIVATE ${MOCK_DIR} ../include)
     target_link_libraries(${test_target} PRIVATE GTest::gtest_main pthread)
-    target_compile_options(${test_target} PRIVATE -Wall -Wextra --coverage -fprofile-update=atomic)
-    target_link_options(${test_target} PRIVATE --coverage)
+    target_compile_options(${test_target} PRIVATE -Wall -Wextra -Wno-unused-parameter)
+    if(ENABLE_COVERAGE)
+        target_compile_options(${test_target} PRIVATE --coverage -fprofile-update=atomic)
+        target_link_options(${test_target} PRIVATE --coverage)
+    endif()
     target_compile_definitions(${test_target} PRIVATE IS_TEST_ENVIRONMENT)
     add_test(NAME ${test_target} COMMAND ${test_target})
 endforeach()

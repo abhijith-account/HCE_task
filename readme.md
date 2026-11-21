@@ -1,5 +1,7 @@
 # HCE_task — Zephyr RTOS Medical-Device-Inspired Embedded Firmware Prototype (`medical_firmware`)
 
+[[https://github.com/abhijith-account/HCE_task/actions/workflows/main.yml/badge.svg]](https://github.com/abhijith-account/HCE_task/actions/workflows/main.yml)
+
 **Repository:** [abhijith-account/HCE_task](https://github.com/abhijith-account/HCE_task)
 **Target RTOS:** [Zephyr RTOS v4.4.0](https://github.com/zephyrproject-rtos/zephyr)
 **Language Standard:** C++20 (`CONFIG_STD_CPP20=y`) & C11
@@ -101,7 +103,7 @@ Managed in `src/Device_State_Machine+Watchdog.cpp` under `k_spinlock` protection
 Implemented across `src/Fault_Tolerant_I2C/` (`I2C_Recovery_Strategies.cpp`, `I2C_Fallback_Cache.cpp`, `I2C_Manager.cpp`), `include/I2C_Internal.h`, and `src/RTOS_Command_based_thread_system/Sensor_Commands.cpp`:
 1. **Stage 1 – Thread-Safe Bus Serialization, Atomic 16-Bit Framing & Exponential Backoff (`I2CScopedLock`, `RetryStrategy` & `execute_with_retry`)**: Every `I2CManager` API acquires a per-bus `k_mutex` (`I2CScopedLock`) to serialize transactions, fallback-cache updates, and 9-clock GPIO SCL recovery across `producer_tid`, `processor_tid`, and `bms_comm_tid`, while `I2CManager::writeWord()` emits a single 3-byte `[reg_addr, MSB, LSB]` frame via `i2c_write()` for 16-bit INA226 registers (`REG_CONFIG = 0x00`, `REG_CALIBRATION = 0x05`). Each transfer executes up to `MAX_I2C_ATTEMPTS = 3` attempts; on transient errors (`NACK`, `ARBITRATION_LOST`), `RetryStrategy::executeRecovery()` sleeps with doubling atomic backoff (`10 ms -> 20 ms -> 40 ms`, capped at `80 ms`) and resets to `10 ms` upon transaction recovery.
 2. **Stage 2 – Hardware 9-Clock SCL Bus Recovery & Register-Trace Verification (`BusResetStrategy` in `I2C_Recovery_Strategies.cpp`)**: Invoked on bus lockups (`-ETIMEDOUT -> TIMEOUT`, `-EBUSY -> BUS_BUSY`). Reconfigures `PB8` (`SCL`) as open-drain output and `PB9` (`SDA`) as pull-up input, bit-bangs 9 full `100 kHz` clock pulses followed by a physical `STOP` condition before restoring `AF4`, and invokes Zephyr's `i2c_recover_bus(i2c_dev)`. Host tests (`BusResetStrategyInvokesHardwareRecoverBus`) capture and assert all 22 `GPIOB->BSRR` transitions, `OTYPER`/`PUPDR` bitmasks, and `MODER` `AF4` restoration.
-3. **Stage 3 – Statically Synchronized Cache Fallback & Degraded-Aware BMS Safety Policy (`K_MUTEX_DEFINE`, `INA226_Driver.cpp` & `Smart_Battery_System.cpp`)**: Protected by a compile-time `K_MUTEX_DEFINE(cache_tracker_mutex)`, `I2CManager` queries `StaticPool<CacheEntry, 64>` via `i2c_internal::get_cached_value()` when all 3 hardware attempts fail, decaying `reliability_score` by `10` (`100 -> 50`) and returning `Result<T>::Degraded(val, fault, timestamp_ms, reliability_score)`. `INA226::Driver::decodeBigEndianWord()` and `SbsBattery::fetchI2cRegisterWithRetry()` preserve `degraded`, `timestamp_ms`, and `reliability_score` into `BmsCache`. When a reading is degraded, `SbsBattery::updateStateAndPublish()` freezes coulomb counting (`accumulated_uAh`) and OCV rest-resync (`rest_period_start_ms = 0`) while inflating Kalman process covariance $P$ by $100 / \text{reliability\_score}$, and `SbsBattery::processFSM()` enforces fail-safe asymmetry—allowing safety `CUTOFF` (`soc_pct < 10%` -> `SAFE_HALT`) on degraded data while blocking `CUTOFF` recovery (`soc_pct > 15%`) and full-charge NVS logging (`soc_pct >= 100%`) until live sensor telemetry returns.
+3. **Stage 3 – Statically Synchronized Cache Fallback & Degraded-Aware BMS Safety Policy (`K_MUTEX_DEFINE`, `INA226_Driver.cpp` & `Smart_Battery_System.cpp`)**: Protected by a compile-time `K_MUTEX_DEFINE(cache_tracker_mutex)`, `I2CManager` queries `StaticPool<CacheEntry, 64>` via `i2c_internal::get_cached_value()` when all 3 hardware attempts fail, decaying `reliability_score` by `10` (`100 -> 50`) and returning `Result<T>::Degraded(val, fault, timestamp_ms, reliability_score)`. `INA226::Driver::decodeBigEndianWord()` and `SbsBattery::fetchI2cRegisterWithRetry()` preserve `degraded`, `timestamp_ms`, and `reliability_score` into `BmsCache`. When a reading is degraded, `SbsBattery::updateStateAndPublish()` freezes coulomb counting (`accumulated_uAh`) and OCV rest-resync (`rest_period_start_ms = 0`) while inflating Kalman process covariance `P` by `100 / reliability_score`, and `SbsBattery::processFSM()` enforces fail-safe asymmetry—allowing safety `CUTOFF` (`soc_pct < 10%` -> `SAFE_HALT`) on degraded data while blocking `CUTOFF` recovery (`soc_pct > 15%`) and full-charge NVS logging (`soc_pct >= 100%`) until live sensor telemetry returns.
 4. **3-Strike Sensor Disconnect Escalation**: Once a sensor's cache entry expires or its reliability score drops below `50`, `SensorReadCmd::execute()` increments a per-sensor failure counter (`bme_failures`, `lps_failures`, `pav_failures`). Upon **3 consecutive uncached read failures**, it calls `SystemObjects::context().triggerFault("I2C Sensor Disconnected")`, prompting `producer_thread` to disable all sensors and lock the system in `SystemState::SAFE_HALT`.
 
 ### 4. Smart Battery Estimation, Disconnect Detection & BMS Watchdog (`SbsBattery`)
@@ -268,12 +270,14 @@ HCE_task/
 │   ├── test_state_machine.cpp        # Unit tests for DeviceContext transitions and watchdog supervision
 │   ├── test_static_memory.cpp        # Unit tests for StaticPool alignment, interior pointer, double-free, and stack monitor
 │   └── test_synchronization.cpp      # Unit tests for mutex, semaphore, workqueue, and heart-rate buffer
-├── CMakeLists.txt                    # Top-level Zephyr application build script
-├── Kconfig                           # Custom Kconfig symbols (LOG_PREEMPTION_DELAY, SOC_MPS2_AN386, LOG_EXECUTION_CYCLES)
-├── mps2_an386.overlay                # Devicetree overlay for QEMU Cortex-M4 (emulated I2C, ADC, RTC, 512 KB Flash)
-├── nucleo_f446re.overlay             # Devicetree overlay for STM32F446RE (clocks, USB CDC, I2C1, ADC1, sleep pinctrl)
-├── prj.conf                          # Base Zephyr kernel, C++20, MPU, FCB, logging, and peripheral configuration
-└── west.yml                          # West manifest pinned to zephyrproject-rtos v4.4.0
+├── .clang-tidy                      # MISRA-C++ subset static analysis rules (WarningsAsErrors: '*')
+├── CMakeLists.txt                   # Top-level Zephyr application build script
+├── Kconfig                          # Custom Kconfig symbols (LOG_PREEMPTION_DELAY, SOC_MPS2_AN386, LOG_EXECUTION_CYCLES)
+├── LICENSE                          # Project license
+├── mps2_an386.overlay               # Devicetree overlay for QEMU Cortex-M4 (emulated I2C, ADC, RTC, 512 KB Flash)
+├── nucleo_f446re.overlay            # Devicetree overlay for STM32F446RE (clocks, USB CDC, I2C1, ADC1, sleep pinctrl)
+├── prj.conf                         # Base Zephyr kernel, C++20, MPU, FCB, logging, and peripheral configuration
+└── west.yml                         # West manifest pinned to zephyrproject-rtos v4.4.0
 ```
 
 ## 6. Hardware Targets & Devicetree Configuration

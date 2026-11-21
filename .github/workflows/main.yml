@@ -13,6 +13,13 @@ on:
 
   workflow_dispatch:
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   # Zephyr version that west.yml must resolve to. Keep in sync with west.yml.
   EXPECTED_ZEPHYR_VERSION: "4.4.0"
@@ -20,7 +27,6 @@ env:
 jobs:
   build-test-qemu:
     runs-on: ubuntu-latest
-    # CHANGE (optional but recommended): replace ":latest" with a fixed CI image tag/digest
     # whose bundled Zephyr SDK matches what Zephyr 4.4.0 requires
     # (see SDK_VERSION in the zephyr repo at tag v4.4.0).
     container: zephyrprojectrtos/ci:v0.29.1@sha256:39abd5064c084749e368d3fea5923044832785e583d0d8d5a8d09478e7b2ec4d
@@ -38,8 +44,8 @@ jobs:
           SDK_DIR=$(ls -d /opt/toolchains/zephyr-sdk-* | head -n 1)
           echo "Using Zephyr SDK: $SDK_DIR"
           $SDK_DIR/setup.sh -c
-
-      # NEW: fail fast if west.yml does not resolve to the expected Zephyr version
+          
+      # Fail fast if west.yml does not resolve to the expected Zephyr version
       - name: Verify pinned Zephyr version
         run: |
           ZEPHYR_DIR="$(west topdir)/zephyr"
@@ -245,12 +251,12 @@ jobs:
           
       - name: Enforce coverage
         run: |
-          if [ -f ./scripts/check_coverage.sh ]; then
-            chmod +x ./scripts/check_coverage.sh
-            ./scripts/check_coverage.sh
-          else
-            echo "Coverage script not found. Skipping coverage enforcement."
+          if [ ! -f ./scripts/check_coverage.sh ]; then
+            echo "ERROR: ./scripts/check_coverage.sh not found."
+            exit 1
           fi
+          chmod +x ./scripts/check_coverage.sh
+          ./scripts/check_coverage.sh
 
       - name: Run Host Tests under ASan + UBSan
         env:
@@ -259,6 +265,7 @@ jobs:
         run: |
           mkdir -p tests/build_asan
           cmake -S tests -B tests/build_asan \
+            -DENABLE_COVERAGE=OFF \
             -DCMAKE_CXX_FLAGS="-O1 -g -fsanitize=address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer" \
             -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined"
           cmake --build tests/build_asan -j$(nproc)
