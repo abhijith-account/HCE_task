@@ -241,9 +241,11 @@ jobs:
           print(f"Running clang-tidy on {len(files)} source files...", flush=True)
           cmd = [
               "clang-tidy",
-              "--quiet",
               "-p", "tests/build/tidy_db",
               "--config-file=.clang-tidy",
+              "--header-filter=.*",
+              "--system-headers",
+              "--warnings-as-errors=",
               "--extra-arg=-Wno-unknown-warning-option",
               *files,
           ]

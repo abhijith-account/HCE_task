@@ -77,7 +77,7 @@ TEST_F(RTOSCommandsTestSuite, CalibrationReadFailure) {
 
 TEST_F(RTOSCommandsTestSuite, ComputeCmdBME280PrintsFailWhenQueueFull) {
 
-    for (int i = 0; i < QueueConfig::Depth; i++) {
+    for (size_t i = 0; i < QueueConfig::Depth; i++) {
         EXPECT_TRUE(enqueueCommand<PreemptionTestCmd>(LOGGER_Q, i));
     }
 

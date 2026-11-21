@@ -88,7 +88,7 @@ struct MockController {
     int stack_space_ret = 0;
     int stack_space_calls = 0;
 
-    struct rtc_time rtc_time_val = {0};
+    struct rtc_time rtc_time_val = {};
     int rtc_get_time_ret = 0;
     bool auto_clear_errors = false;
     

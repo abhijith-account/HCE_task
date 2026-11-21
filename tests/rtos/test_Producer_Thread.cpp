@@ -60,7 +60,7 @@ TEST_F(RTOSCommandsTestSuite, ProducerAlwaysSafeHalt) {
 
 TEST_F(RTOSCommandsTestSuite, ProducerThreadQueueFullSkipsActivity) {
 
-    for (int i = 0; i < QueueConfig::Depth; i++) {
+    for (size_t i = 0; i < QueueConfig::Depth; i++) {
     EXPECT_TRUE(enqueueCommand<PreemptionTestCmd>(PROCESSOR_Q, i));
     }
     test_iterations_remaining = 1;
@@ -71,7 +71,7 @@ TEST_F(RTOSCommandsTestSuite, ProducerThreadQueueFullSkipsActivity) {
 
 TEST_F(RTOSCommandsTestSuite, ProducerThreadLPSPartialEnqueue) {
 
-    for (int i = 0; i < QueueConfig::Depth - 2; i++) {
+    for (size_t i = 0; i < QueueConfig::Depth - 2; i++) {
     EXPECT_TRUE(enqueueCommand<PreemptionTestCmd>(PROCESSOR_Q, i));
     }
 
@@ -157,7 +157,7 @@ TEST_F(RTOSCommandsTestSuite, PowerObserverIntegration) {
 
 TEST_F(RTOSCommandsTestSuite, ProducerThreadLPSFirstEnqueueFails) {
 
-    for (int i = 0; i < QueueConfig::Depth - 1; i++) {
+    for (size_t i = 0; i < QueueConfig::Depth - 1; i++) {
         EXPECT_TRUE(enqueueCommand<PreemptionTestCmd>(PROCESSOR_Q, i));
     }
 

@@ -4,7 +4,7 @@
 #include "test_rtos_common.h"
 
 TEST_F(RTOSCommandsTestSuite, PrintMeasurementLoggerQueueFull) {
-    for (int i = 0; i < QueueConfig::Depth; i++) {
+    for (size_t i = 0; i < QueueConfig::Depth; i++) {
         ASSERT_TRUE(enqueueCommand<PreemptionTestCmd>(LOGGER_Q, i));
     }
     EXPECT_FALSE(printMeasurement(SensorID::PAV3015, 1.0f));
@@ -62,7 +62,7 @@ TEST_F(RTOSCommandsTestSuite, PrintBME280AndLPS22HBExecuteDirectly) {
 
 TEST_F(RTOSCommandsTestSuite, PrintLPS22HBMeasurementLoggerQueueFull) {
 
-    for (int i = 0; i < QueueConfig::Depth; i++) {
+    for (size_t i = 0; i < QueueConfig::Depth; i++) {
         ASSERT_TRUE(enqueueCommand<PreemptionTestCmd>(LOGGER_Q, i));
     }
 

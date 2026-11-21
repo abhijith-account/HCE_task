@@ -19,7 +19,7 @@ TEST_F(RTOSCommandsTestSuite, CommandDispatchAndPoolCycle) {
 }
 
 TEST_F(RTOSCommandsTestSuite, MessageQueueOverflowSafety) {
-    for (int i = 0; i < QueueConfig::Depth; i++) {
+    for (size_t i = 0; i < QueueConfig::Depth; i++) {
         EXPECT_TRUE(enqueueCommand<PreemptionTestCmd>(PROCESSOR_Q, i));
     }
 
@@ -53,7 +53,7 @@ TEST_F(RTOSCommandsTestSuite, MemoryPoolExhaustion) {
 }
 
 TEST_F(RTOSCommandsTestSuite, EnqueueRawFailure) {
-    for(int i = 0; i < QueueConfig::Depth; i++) {
+    for(size_t i = 0; i < QueueConfig::Depth; i++) {
         EXPECT_TRUE(enqueueCommand<PreemptionTestCmd>(PROCESSOR_Q, i));
     }
 

@@ -59,7 +59,7 @@ TEST_F(RTOSCommandsTestSuite, HardwareDataTripleAndWordFailures) {
 }
 
 TEST_F(RTOSCommandsTestSuite, SensorReadCmdComputeQueueFullLogsError) {
-    for (int i = 0; i < QueueConfig::Depth; i++) {
+    for (size_t i = 0; i < QueueConfig::Depth; i++) {
         ASSERT_TRUE(enqueueCommand<PreemptionTestCmd>(PROCESSOR_Q, i));
     }
     SensorReadCmd cmd(SensorID::BME280, SensorReg::BME280_DATA_START, ReadLength::Block);
