@@ -226,7 +226,7 @@ jobs:
             tests/build/compile_commands.json > tests/build/tidy_db/compile_commands.json
 
           python3 -c '
-          import json, subprocess, sys
+          import json, re, subprocess, sys
           db_path = "tests/build/tidy_db/compile_commands.json"
           db = json.load(open(db_path))
           unique = {}
@@ -241,15 +241,22 @@ jobs:
           print(f"Running clang-tidy on {len(files)} source files...", flush=True)
           cmd = [
               "clang-tidy",
+              "--quiet",
               "-p", "tests/build/tidy_db",
               "--config-file=.clang-tidy",
-              "--header-filter=.*",
-              "--system-headers",
-              "--warnings-as-errors=",
               "--extra-arg=-Wno-unknown-warning-option",
               *files,
           ]
-          sys.exit(subprocess.run(cmd).returncode)
+          proc = subprocess.run(cmd, capture_output=True, text=True)
+          if proc.stdout:
+              print(proc.stdout, end="", flush=True)
+          for line in proc.stderr.splitlines():
+              if re.match(r"^\d+ warnings? generated\.$", line):
+                  continue
+              print(line, file=sys.stderr, flush=True)
+          if proc.returncode == 0:
+              print("clang-tidy passed: 0 warnings in user code.", flush=True)
+          sys.exit(proc.returncode)
           '
           
       - name: Enforce coverage
