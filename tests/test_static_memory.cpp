@@ -65,6 +65,8 @@ class StaticMemoryTestSuite:public::testing::Test{
         }
 };
 
+extern void memory_monitor_thread(void);
+
 TEST_F(StaticMemoryTestSuite, ObserverRegistrationFailureResetsFlag) {
     struct DummyObs final : public IPowerObserver {
         void beforeSleep() override {}

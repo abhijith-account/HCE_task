@@ -445,17 +445,22 @@ TEST_F(PowerManagementTestSuite, ThreadRoutineHwSleepActiveNoWait) {
     drain_pm_wake_sem();
 }
 
+namespace pm_internal {
+extern uint32_t s_idle_entry_time_ms;
+extern bool s_in_idle_state;
+}
+
 TEST_F(PowerManagementTestSuite, ThreadRoutineIdleTimeoutExpiredNoWait) {
     virtual_uptime = 10000;
     run_thread_once = false;
     s_real_hw_sleep_active = false;
-    s_in_idle_state = true;
-    s_idle_entry_time_ms = 0;
+    pm_internal::s_in_idle_state = true;
+    pm_internal::s_idle_entry_time_ms = 0;
 
     k_sem_give(&pm_wake_sem);
     power_monitor_thread();
 
-    s_in_idle_state = false;
+    pm_internal::s_in_idle_state = false;
     drain_pm_wake_sem();
     SUCCEED();
 }
