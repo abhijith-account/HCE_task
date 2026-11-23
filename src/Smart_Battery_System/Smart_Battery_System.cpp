@@ -309,7 +309,9 @@ void SbsBattery::processFSM() {
 
         current_state.store(next_fsm_state);
         const BatteryFSM active_state = current_state.load();
-        PowerManager::getInstance().reportActivity();
+        if (active_state == BatteryFSM::CHARGING||active_state == BatteryFSM::IDLE||active_state == BatteryFSM::DISCHARGING) {
+            PowerManager::getInstance().reportActivity();
+        }
     }
 
     if (soc_pct >= 100U) {
