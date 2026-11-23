@@ -92,7 +92,7 @@ TEST_F(StateMachineTestSuite, FaultInjectionLatchesFault) {
     // triggerFault() latches FAULT (the WDT hook stops feeding in FAULT to force a
     // hardware reset); SAFE_HALT is only reached via an explicit FAULT->SAFE_HALT request.
     EXPECT_EQ(sys_context.getState(), SystemState::FAULT) << "triggerFault() did not latch the FAULT state!";
-    EXPECT_TRUE(output.find("CRITICAL FAULT: Simulated I2C Bus Hard-Lock. Forcing SAFE_HALT.") != std::string_view::npos) << "Expected critical fault log missing! Actual output:  " << output;
+    EXPECT_TRUE(output.find("CRITICAL FAULT: Simulated I2C Bus Hard-Lock. Forcing FAULT.") != std::string_view::npos) << "Expected critical fault log missing! Actual output:  " << output;
 }
 
 TEST_F(StateMachineTestSuite, RejectsIllegalTransitions) {
