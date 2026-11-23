@@ -81,7 +81,7 @@ class SyncTestSuite:public::testing::Test{
       hr_buffer.mutex.unlock();
    }
 };
-
+extern void print_status();
 TEST_F(SyncTestSuite, ObserverRegistrationFailureResetsFlag) {
     struct DummyObs final : public IPowerObserver {
         void beforeSleep() override {}
