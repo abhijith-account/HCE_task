@@ -3,6 +3,7 @@
 // updateStateAndPublish() (including the Kalman predict/update and its rest/active measurement noise).
 
 #include "test_battery_common.h"
+#include "Kalman_Filter.h"
 
 TEST_F(SmartBatteryTestSuite, CoulombCounter_AtRestDuration) {
     battery.seedOrResyncCoulombCounter(11000, 10, false);
@@ -126,4 +127,19 @@ TEST_F(SmartBatteryTestSuite, UpdateStateAndPublish_ReleasesMutexAndPreservesCom
     ASSERT_TRUE(battery.updateStateAndPublish(11000, 0, 250, 0, true, 80U, 2000));
     EXPECT_EQ(battery.last_valid_comm_time, 2000U);
     EXPECT_EQ(battery.consecutive_comm_failures, 1U);
+}
+
+TEST_F(SmartBatteryTestSuite, KalmanFilterGuardsZeroCapacityAndZeroDenom) {
+    float soc = 50.0f;
+    float p = 0.0f;
+
+    // Covers KalmanFilter::predict() capacity_mah <= 0.0f guard
+    KalmanFilter::predict(soc, p, 500.0f, 0.1f, 0.0f, 0.01f);
+    EXPECT_FLOAT_EQ(soc, 50.0f);
+    EXPECT_FLOAT_EQ(p, 0.0f);
+
+    // Covers KalmanFilter::update() denom <= 0.0f guard
+    KalmanFilter::update(soc, p, 80.0f, 0.0f);
+    EXPECT_FLOAT_EQ(soc, 50.0f);
+    EXPECT_FLOAT_EQ(p, 0.0f);
 }

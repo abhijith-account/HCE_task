@@ -50,3 +50,21 @@ TEST(BME280MathTest, PressureDivideByZero) {
     auto d = BME280Math::decode(0, c);
     EXPECT_FLOAT_EQ(d.pressure, 0.0f);
 }
+
+TEST(MathCoverage, LPS22HBAccumulateDegradedAndReliabilityBranches) {
+    LPS22HBData out{};
+
+    // Case 1: degraded pressure (60) + healthy temperature (100)
+    // Covers lps_data.degraded == true and (60 < 100) == true
+    EXPECT_FALSE(LPS22HBDriver::accumulate(SensorReg::LPS_P_DESC.reg, 0x3F0000ULL, out, true, 60U));
+    ASSERT_TRUE(LPS22HBDriver::accumulate(SensorReg::LPS_T_DESC.reg, 0x09C4ULL, out, false, 100U));
+    EXPECT_TRUE(out.degraded);
+    EXPECT_EQ(out.reliability_score, 60U);
+
+    // Case 2: healthy pressure (100) + degraded temperature (70)
+    // Covers lps_data.degraded == false, degraded == true, and (100 < 70) == false
+    EXPECT_FALSE(LPS22HBDriver::accumulate(SensorReg::LPS_P_DESC.reg, 0x3F0000ULL, out, false, 100U));
+    ASSERT_TRUE(LPS22HBDriver::accumulate(SensorReg::LPS_T_DESC.reg, 0x09C4ULL, out, true, 70U));
+    EXPECT_TRUE(out.degraded);
+    EXPECT_EQ(out.reliability_score, 70U);
+}
