@@ -278,7 +278,7 @@ TEST_F(SyncTestSuite, SafeHaltStateSkipsThreadWork) {
     const std::string out_disp = testing::internal::GetCapturedStdout();
     EXPECT_EQ(out_disp.find("Rendered Heart Rate:"), std::string::npos);
 }
-
+extern void print_status();
 TEST_F(SyncTestSuite, RedundantObserverRegistrationBranch) {
 
     print_status();
