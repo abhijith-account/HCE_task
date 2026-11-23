@@ -415,3 +415,22 @@ TEST_F(SmartBatteryTestSuite, BmsCommThread_ObserverRegistrationFailureEscalates
     PowerManager::getInstance().resetForTest();
     smart_battery = backup;
 }
+
+TEST_F(SmartBatteryTestSuite, BmsCommThread_LogsNegativeCelsiusTemperature) {
+    extern SbsBattery* smart_battery;
+    auto backup = smart_battery;
+    smart_battery = &battery;
+
+    const int32_t prev_adc_mv = g_adc_mock_mv_val;
+    g_adc_mock_mv_val = 2750; // ~ -8 C (sub-zero and within valid NTC LUT range)
+    test_iterations_remaining = 1;
+
+    testing::internal::CaptureStdout();
+    bms_comm_thread();
+    const std::string output = testing::internal::GetCapturedStdout();
+
+    EXPECT_NE(output.find("Temp: -"), std::string::npos);
+
+    g_adc_mock_mv_val = prev_adc_mv;
+    smart_battery = backup;
+}

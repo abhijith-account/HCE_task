@@ -7,6 +7,7 @@
 #include <thread>
 #include <chrono>
 #include "Static_Memory+MISRA_Compliance_Layer.h"
+#include "Power_Management_System.h"
 
 struct DummyPayload{
     uint32_t sensor_id;
@@ -63,6 +64,28 @@ class StaticMemoryTestSuite:public::testing::Test{
             sys_context.current_state = saved_state_;
         }
 };
+
+TEST_F(StaticMemoryTestSuite, ObserverRegistrationFailureResetsFlag) {
+    struct DummyObs final : public IPowerObserver {
+        void beforeSleep() override {}
+        void afterWakeup() override {}
+        void sleepAborted() override {}
+    };
+    DummyObs fillers[8];
+    PowerManager::getInstance().resetForTest();
+    for (auto& f : fillers) {
+        ASSERT_TRUE(PowerManager::getInstance().registerObserver(&f));
+    }
+
+    sys_context.current_state = SystemState::INIT;
+    run_thread_iterations = 0;
+    memory_monitor_thread();
+
+    PowerManager::getInstance().resetForTest();
+    run_thread_iterations = 0;
+    memory_monitor_thread();
+    SUCCEED();
+}
 
 TEST_F(StaticMemoryTestSuite, AllocationAndFreeRoundTrip){
     StaticPool<DummyPayload,4> pool;

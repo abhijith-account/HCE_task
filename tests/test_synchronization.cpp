@@ -82,6 +82,25 @@ class SyncTestSuite:public::testing::Test{
    }
 };
 
+TEST_F(SyncTestSuite, ObserverRegistrationFailureResetsFlag) {
+    struct DummyObs final : public IPowerObserver {
+        void beforeSleep() override {}
+        void afterWakeup() override {}
+        void sleepAborted() override {}
+    };
+    DummyObs fillers[8];
+    PowerManager::getInstance().resetForTest();
+    for (auto& f : fillers) {
+        ASSERT_TRUE(PowerManager::getInstance().registerObserver(&f));
+    }
+
+    print_status();
+
+    PowerManager::getInstance().resetForTest();
+    print_status();
+    SUCCEED();
+}
+
 TEST_F(SyncTestSuite, SemaphoreSignalAndWait){
     EXPECT_EQ(display_sem.take(K_NO_WAIT),-EBUSY);
 

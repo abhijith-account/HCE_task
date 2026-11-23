@@ -444,3 +444,18 @@ TEST_F(PowerManagementTestSuite, ThreadRoutineHwSleepActiveNoWait) {
     s_real_hw_sleep_active = false;
     drain_pm_wake_sem();
 }
+
+TEST_F(PowerManagementTestSuite, ThreadRoutineIdleTimeoutExpiredNoWait) {
+    virtual_uptime = 10000;
+    run_thread_once = false;
+    s_real_hw_sleep_active = false;
+    s_in_idle_state = true;
+    s_idle_entry_time_ms = 0;
+
+    k_sem_give(&pm_wake_sem);
+    power_monitor_thread();
+
+    s_in_idle_state = false;
+    drain_pm_wake_sem();
+    SUCCEED();
+}

@@ -370,3 +370,14 @@ TEST_F(SmartBatteryTestSuite, ProcessFSM_DegradedLowVoltageDoesNotForceIdle) {
     battery.processFSM();
     EXPECT_EQ(battery.getState(), BatteryFSM::CHARGING);
 }
+
+TEST_F(SmartBatteryTestSuite, ProcessFSM_ConsumesResetPendingAndHandlesZeroReliability) {
+    battery.soc_initialized = true;
+    battery.last_poll_time_ms = virtual_uptime;
+    virtual_uptime += 1000U;
+    ASSERT_TRUE(battery.updateStateAndPublish(11000, 0, 250, 0, true, 0U, 2000));
+
+    battery.fsm_reset_pending.store(true, std::memory_order_release);
+    battery.processFSM();
+    EXPECT_FALSE(battery.fsm_reset_pending.load(std::memory_order_acquire));
+}
