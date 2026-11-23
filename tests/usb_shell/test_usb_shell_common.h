@@ -66,7 +66,7 @@ extern std::vector<MockFcbEntry> mock_fcb_entries;
 extern size_t mock_fcb_iterator;
 
 extern UsbShell diag_shell;
-extern bool g_usb_connected;      // physical USB state, owned by the shell TU
+extern std::atomic<bool> g_usb_connected;          // physical USB state, owned by the shell TU
 extern atomic_t g_shell_alive;    // shell watchdog heartbeat, owned by the shell TU
 extern DeviceContext sys_context;
 extern uint32_t virtual_uptime;
