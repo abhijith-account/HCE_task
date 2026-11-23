@@ -195,6 +195,13 @@ void UsbShell::cmdStatus([[maybe_unused]] std::string_view args) noexcept {
     usb.transmit(json_stack_buf.data());
 }
 
+[[nodiscard]] bool parseUint32Token(std::string_view token, uint32_t& out_value) noexcept {
+    const auto* first = token.begin();
+    const auto* last  = token.end();
+    const auto [ptr, ec] = std::from_chars(first, last, out_value);
+    return ec == std::errc{} && ptr == last;
+}
+
 void UsbShell::cmdSetRate(std::string_view args) noexcept {
     const SystemState current_state = sys_ctx->getState();
     if (current_state == SystemState::SAFE_HALT || current_state == SystemState::FAULT) {
@@ -214,9 +221,9 @@ void UsbShell::cmdSetRate(std::string_view args) noexcept {
     const std::string_view device_str = trim(args.substr(0, separator_pos));
     const std::string_view rate_str = trim(args.substr(separator_pos + 1));
     
-    int device_id_in = 0;
-    int rate_in        = 0;
-    if (!parseIntToken(device_str, device_id_in) ||
+    uint32_t device_id_in = 0U;
+    int rate_in           = 0;
+    if (!parseUint32Token(device_str, device_id_in) ||
         !parseIntToken(rate_str, rate_in)) {
         usb.transmit(kSetRateUsageMsg);
         return;
@@ -228,21 +235,21 @@ void UsbShell::cmdSetRate(std::string_view args) noexcept {
     const auto rate = static_cast<uint8_t>(rate_in);
     auto& cfg = ConfigStore::getInstance();
     uint8_t slot = 0;
-    if (!cfg.findSlotByDeviceId(static_cast<uint32_t>(device_id_in), slot)) {
+    if (!cfg.findSlotByDeviceId(device_id_in, slot)) {
         std::array<char, SetRateErrMsgSize> msg{};
-        transmitFormatted(msg, kNotProvisionedMsg, "Error: Device ID %d not provisioned.\r\n", device_id_in);
+        transmitFormatted(msg, kNotProvisionedMsg, "Error: Device ID %u not provisioned.\r\n", static_cast<unsigned int>(device_id_in));
         return;
     }
     uint8_t threshold = 0;
     const bool haveThreshold = cfg.getAlarmThreshold(slot, threshold);
     if (haveThreshold && rate > threshold) {
         std::array<char, SetRateErrMsgSize> msg{};
-        transmitFormatted(msg, kThresholdFallbackMsg,"Error: Rate %u exceeds alarm threshold (%u) for device %d. Please reset the rate.\r\n",rate, threshold, device_id_in);
+        transmitFormatted(msg, kThresholdFallbackMsg, "Error: Rate %u exceeds alarm threshold (%u) for device %u. Please reset the rate.\r\n", rate, threshold, static_cast<unsigned int>(device_id_in));
         return;
     }
     if (cfg.setInfusionRate(slot, rate)) {
         std::array<char, SetRateMsgSize> msg{};
-        transmitFormatted(msg, kSetRateSuccessFallback,"Success: Device %d infusion rate set to %u%%\r\n", device_id_in, rate);
+        transmitFormatted(msg, kSetRateSuccessFallback, "Success: Device %u infusion rate set to %u%%\r\n", static_cast<unsigned int>(device_id_in), rate);
     } else {
         usb.transmit(kPersistFailMsg);
     }

@@ -124,6 +124,6 @@ public:
     void process();
     void dispatchCommand(std::string_view cmd);
 };
-extern bool g_usb_connected;
+extern std::atomic<bool> g_usb_connected;
 void shell_thread(void);
 

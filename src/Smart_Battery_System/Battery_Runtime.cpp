@@ -172,16 +172,21 @@ void bms_comm_thread(void) {
        auto cap = smart_battery->getCapacity();
 
        if (v.success && i.success && soc.success && temp.success && cap.success) {
-           int32_t temp_c_tenths = static_cast<int32_t>(temp.value.value) - Thermistor::KELVIN_OFFSET_TENTHS;
-           LOG_INF("BATTERY STATUS | V: %d mV | I: %d mA | SOC: %u %% | Temp: %d.%d C | Cap: %u mAh",
-                   (int)v.value.value, 
-                   (int)i.value.value, 
-                   (unsigned int)soc.value.value,
-                   temp_c_tenths / 10, std::abs(temp_c_tenths % 10), 
-                   (unsigned int)cap.value.value);
-       } else {
-           LOG_WRN("Battery cache invalid | V:%d I:%d SOC:%d T:%d Cap:%d",(int)v.success, (int)i.success, (int)soc.success,(int)temp.success, (int)cap.success);
-       }
+            const int32_t temp_c_tenths = static_cast<int32_t>(temp.value.value) - Thermistor::KELVIN_OFFSET_TENTHS;
+            const char* const temp_sign = (temp_c_tenths < 0) ? "-" : "";
+            const int32_t abs_temp_tenths = std::abs(temp_c_tenths);
+            LOG_INF("BATTERY STATUS | V: %d mV | I: %d mA | SOC: %u %% | Temp: %s%d.%d C | Cap: %u mAh",
+                    static_cast<int>(v.value.value),
+                    static_cast<int>(i.value.value),
+                    static_cast<unsigned int>(soc.value.value),
+                    temp_sign, abs_temp_tenths / 10, abs_temp_tenths % 10,
+                    static_cast<unsigned int>(cap.value.value));
+        } else {
+            LOG_WRN("Battery cache invalid | V:%d I:%d SOC:%d T:%d Cap:%d",
+                    static_cast<int>(v.success), static_cast<int>(i.success),
+                    static_cast<int>(soc.success), static_cast<int>(temp.success),
+                    static_cast<int>(cap.success));
+        }
 
        k_msleep(1000);
        

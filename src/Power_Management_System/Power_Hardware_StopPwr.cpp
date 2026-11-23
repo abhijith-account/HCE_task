@@ -99,14 +99,17 @@ HAL_StatusTypeDef stop_enter_wfi(uint32_t &out_pwr_csr_on_wake, uint32_t &out_ic
     const uint32_t primask = __get_PRIMASK();
     __disable_irq();
 
-    SET_BIT(SCB->SCR, SCB_SCR_SLEEPDEEP_Msk);
-    __DSB();
-    __ISB();
+    if ((atomic_get(&PowerManager::getInstance().wake_pending) == 0) &&
+        (atomic_get(&s_activity_pending) == 0)) {
+        SET_BIT(SCB->SCR, SCB_SCR_SLEEPDEEP_Msk);
+        __DSB();
+        __ISB();
 
-    stop_dbg_disable();
-    __ISB();
-    __WFI();
-    __ISB();
+        stop_dbg_disable();
+        __ISB();
+        __WFI();
+        __ISB();
+    }
 
     out_pwr_csr_on_wake = PWR->CSR;
     out_icsr_on_wake    = SCB->ICSR;
@@ -116,6 +119,7 @@ HAL_StatusTypeDef stop_enter_wfi(uint32_t &out_pwr_csr_on_wake, uint32_t &out_ic
 
     if (!primask) {
         __enable_irq();
+        __ISB();
     }
 
     return HAL_OK;

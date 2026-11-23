@@ -97,7 +97,8 @@ class ConfigStore {
             rc = flash_area_write(fcb_instance.fap, FCB_ENTRY_FA_DATA_OFF(loc) + sizeof(header), &value, sizeof(T));
             if (rc != 0) return false;
 
-            fcb_append_finish(&fcb_instance, &loc);
+            rc = fcb_append_finish(&fcb_instance, &loc);
+            if (rc != 0) return false;
             PowerManager::getInstance().reportActivity();
             return true;
         }
@@ -119,12 +120,14 @@ class ConfigStore {
             T temp_val{};
 
             // Walk through all records to find the most recent one for this key
+            // Walk through all records to find the most recent one for this key
             while (fcb_getnext(&fcb_instance, &loc) == 0) {
-                flash_area_read(fcb_instance.fap, FCB_ENTRY_FA_DATA_OFF(loc), &header, sizeof(header));
-                
-                if (header.key == key && header.length == sizeof(T)) {
-                    flash_area_read(fcb_instance.fap, FCB_ENTRY_FA_DATA_OFF(loc) + sizeof(header), &temp_val, sizeof(T));
-                    found = true;
+                if (flash_area_read(fcb_instance.fap, FCB_ENTRY_FA_DATA_OFF(loc), &header, sizeof(header)) == 0) {
+                    if (header.key == key && header.length == sizeof(T)) {
+                        if (flash_area_read(fcb_instance.fap, FCB_ENTRY_FA_DATA_OFF(loc) + sizeof(header), &temp_val, sizeof(T)) == 0) {
+                            found = true;
+                        }
+                    }
                 }
             }
 

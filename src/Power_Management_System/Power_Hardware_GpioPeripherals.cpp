@@ -69,16 +69,13 @@ static inline uint32_t held_pin_pull(GPIO_TypeDef* gpio, int pin, uint32_t level
     return 0U;
 }
 
-static uint32_t s_stop_prev_ahb2enr = 0;
-
-uint16_t s_stop_od_af_mask[8]  = {};
+uint16_t s_stop_od_af_mask[8] = {};
 uint16_t s_stop_od_low_mask[8] = {};
 uint32_t s_stop_applied_moder[8] = {};
 uint32_t s_stop_applied_pupdr[8] = {};
 
 void gpio_save_and_set_all_analog(GpioSnapshot &snap, uint32_t &prev_ahb1enr) {
     prev_ahb1enr = RCC->AHB1ENR;
-    s_stop_prev_ahb2enr = RCC->AHB2ENR;
 
     __HAL_RCC_GPIOA_CLK_ENABLE();
     __HAL_RCC_GPIOB_CLK_ENABLE();
@@ -190,7 +187,6 @@ void gpio_restore_after_wake(const GpioSnapshot &snap, uint32_t prev_ahb1enr) {
     }
 
     RCC->AHB1ENR = prev_ahb1enr;
-    RCC->AHB2ENR = s_stop_prev_ahb2enr;
     __DSB();
 }
 
@@ -241,6 +237,7 @@ void adc_save_and_disable(AdcSnapshot &snap) {
 }
 
 void adc_restore_after_wake(const AdcSnapshot &snap) {
+    const uint32_t prev_apb2enr = RCC->APB2ENR;
     __HAL_RCC_ADC1_CLK_ENABLE();
 #ifdef __HAL_RCC_ADC2_CLK_ENABLE
     __HAL_RCC_ADC2_CLK_ENABLE();
@@ -262,6 +259,8 @@ void adc_restore_after_wake(const AdcSnapshot &snap) {
     ADC3->CR2 = snap.cr2_3;
 #endif
     __DSB();
+    RCC->APB2ENR = prev_apb2enr;
+    __DSB();
 }
 
 // ---- DAC: output buffers keep drawing current in STOP ----
@@ -281,9 +280,13 @@ void dac_save_and_disable(uint32_t &prev_cr) {
 
 void dac_restore_after_wake(uint32_t prev_cr) {
 #ifdef DAC
+    const uint32_t prev_apb1enr = RCC->APB1ENR;
     SET_BIT(RCC->APB1ENR, RCC_APB1ENR_DACEN);
     __DSB();
     DAC->CR = prev_cr;
+    __DSB();
+    RCC->APB1ENR = prev_apb1enr;
+    __DSB();
 #else
     static_cast<void>(prev_cr);
 #endif

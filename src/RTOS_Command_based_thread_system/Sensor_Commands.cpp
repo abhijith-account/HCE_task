@@ -160,11 +160,9 @@ void ComputeCmd::execute() noexcept {
         }
         case SensorID::LPS22HB: {
             LPS22HBData result{};
-            if (LPS22HBDriver::accumulate(reg_addr, raw_data, result)) {
-                result.degraded = is_degraded;
-                result.reliability_score = reliability_score;
+            if (LPS22HBDriver::accumulate(reg_addr, raw_data, result, is_degraded, reliability_score)) {
                 result.timestamp_ms = timestamp_ms;
-                (void)printLPS22HBMeasurement(result);
+                static_cast<void>(printLPS22HBMeasurement(result));
             }
             break;
         }

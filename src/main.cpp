@@ -28,18 +28,16 @@ static void usb_status_cb(enum usb_dc_status_code cb_status, const uint8_t *para
     switch (cb_status) {
         case USB_DC_DISCONNECTED:
         case USB_DC_SUSPEND:
-            if (g_usb_connected) {
+            if (g_usb_connected.exchange(false, std::memory_order_acq_rel)) {
                 LOG_WRN("USB Hardware Event: Cable Disconnected");
-                g_usb_connected = false;
-                
+
                 // Immediately trigger the fault when the physical cable is pulled
                 sys_context.triggerFault("USB CDC Cable Disconnected");
             }
             break;
         case USB_DC_CONFIGURED:
-            if (!g_usb_connected) {
+            if (!g_usb_connected.exchange(true, std::memory_order_acq_rel)) {
                 LOG_INF("USB Hardware Event: Cable Connected & Configured");
-                g_usb_connected = true;
             }
             break;
         default:
@@ -63,7 +61,7 @@ int main(void){
 
             while (!dtr && timeout > 0) {
                 // If the hardware callback fired and marked us unplugged, skip the wait
-                if (!g_usb_connected) break; 
+                if (!g_usb_connected.load(std::memory_order_acquire)) break; 
                 
                 int ret = uart_line_ctrl_get(console_dev, UART_LINE_CTRL_DTR, &dtr);
                 if (ret == -ENOTSUP || ret == -ENOSYS) break; 

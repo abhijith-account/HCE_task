@@ -61,11 +61,11 @@ void clock_downscale_for_idle(ClockSnapshot &snap, [[maybe_unused]] uint32_t hcl
     uint32_t timeout = 100000;
     while (!__HAL_RCC_GET_FLAG(RCC_FLAG_HSIRDY) && --timeout) {}
 
-    MODIFY_REG(RCC->CFGR,RCC_CFGR_HPRE | RCC_CFGR_PPRE1 | RCC_CFGR_PPRE2,hpre | RCC_CFGR_PPRE1_DIV1 | RCC_CFGR_PPRE2_DIV1);
-
     __HAL_RCC_SYSCLK_CONFIG(RCC_SYSCLKSOURCE_HSI);
     timeout = 100000;
     while (__HAL_RCC_GET_SYSCLK_SOURCE() != RCC_SYSCLKSOURCE_STATUS_HSI && --timeout) {}
+
+    MODIFY_REG(RCC->CFGR,RCC_CFGR_HPRE | RCC_CFGR_PPRE1 | RCC_CFGR_PPRE2,hpre | RCC_CFGR_PPRE1_DIV1 | RCC_CFGR_PPRE2_DIV1);
 
 #ifdef CONFIG_SYS_CLOCK_TICKS_PER_SEC
     uint32_t new_load = (hclk_hz / CONFIG_SYS_CLOCK_TICKS_PER_SEC) - 1U;

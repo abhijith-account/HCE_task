@@ -43,6 +43,10 @@ bool clear_rtc_alarm_a_pending() {
     uint32_t prev_demcr = CoreDebug->DEMCR;
     uint32_t prev_dwt   = DWT->CTRL;
 
+    __HAL_RCC_PWR_CLK_ENABLE();
+    SET_BIT(PWR->CR, PWR_CR_DBP);
+    __DSB();
+
     __HAL_RTC_WRITEPROTECTION_DISABLE(&s_rtc_hal);
     __HAL_RTC_ALARM_CLEAR_FLAG(&s_rtc_hal, RTC_FLAG_ALRAF);   // clear RTC Alarm A flag
 
@@ -91,9 +95,9 @@ int set_rtc_alarm(const struct device* rtc_dev, uint32_t interval_us, void* user
         return -EIO;
     }
 
-    uint32_t seconds_to_add = (interval_us + 999999U) / 1000000U;
-    if (seconds_to_add == 0) {
-        seconds_to_add = 1;
+    uint32_t seconds_to_add = (interval_us / 1000000U) + ((interval_us % 1000000U) != 0U ? 1U : 0U);
+    if (seconds_to_add == 0U) {
+        seconds_to_add = 1U;
     }
 
     struct rtc_time alarm = now;
@@ -104,12 +108,15 @@ int set_rtc_alarm(const struct device* rtc_dev, uint32_t interval_us, void* user
     s_last_rtc_now = now;
     s_last_rtc_alarm = alarm;
 
-    rtc_alarm_set_callback(
+    ret = rtc_alarm_set_callback(
         rtc_dev,
         0,
         PowerManager::rtc_alarm_handler,
         user_data
     );
+    if (ret != 0) {
+        return ret;
+    }
 
     uint16_t mask =
         RTC_ALARM_TIME_MASK_SECOND |

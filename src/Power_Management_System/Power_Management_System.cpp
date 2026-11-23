@@ -377,7 +377,8 @@ void power_monitor_thread() {
                 wait_timeout = K_NO_WAIT;
             }
         } else {
-            uint32_t active_elapsed = current_time - pwr_manager.getLastActivityTime();
+            const uint32_t last_activity = pwr_manager.getLastActivityTime();
+            const uint32_t active_elapsed = k_uptime_get_32() - last_activity;
             if (active_elapsed < ACTIVE_TIMEOUT_MS) {
                 wait_timeout = K_MSEC(ACTIVE_TIMEOUT_MS - active_elapsed);
             } else {

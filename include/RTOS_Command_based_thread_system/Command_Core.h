@@ -1,6 +1,7 @@
 #pragma once
 
 #include <zephyr/kernel.h>
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <new>
@@ -41,11 +42,19 @@ public:
 };
 
 struct QueueStats {
-    uint32_t commandsCreated = 0;
-    uint32_t commandsDropped = 0;
-    uint32_t loggerQueueFull = 0;
-    uint32_t processorPeakDepth = 0;
-    uint32_t loggerPeakDepth = 0;
+    std::atomic<uint32_t> commandsCreated{0U};
+    std::atomic<uint32_t> commandsDropped{0U};
+    std::atomic<uint32_t> loggerQueueFull{0U};
+    std::atomic<uint32_t> processorPeakDepth{0U};
+    std::atomic<uint32_t> loggerPeakDepth{0U};
+
+    void reset() noexcept {
+        commandsCreated = 0U;
+        commandsDropped = 0U;
+        loggerQueueFull = 0U;
+        processorPeakDepth = 0U;
+        loggerPeakDepth = 0U;
+    }
 };
 extern QueueStats g_queueStats;
 

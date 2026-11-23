@@ -42,5 +42,6 @@ namespace LPS22HBDriver {
     /* Pressure and temperature arrive as two separate reads. Feed each raw
      * value in; returns true (and fills `out`) once a pressure followed by a
      * temperature has been received. */
-    [[nodiscard]] bool accumulate(uint8_t reg, uint64_t raw, LPS22HBData& out) noexcept;
+    [[nodiscard]] bool accumulate(uint8_t reg, uint64_t raw, LPS22HBData& out,
+                                  bool degraded = false, uint8_t reliability = 100U) noexcept;
 }

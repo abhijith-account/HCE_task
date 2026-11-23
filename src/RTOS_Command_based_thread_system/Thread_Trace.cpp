@@ -1,6 +1,7 @@
 #include <zephyr/kernel.h>
 #include <zephyr/sys/atomic.h>
 #include <zephyr/logging/log.h>
+#include <atomic>
 #include "Threads.h"
 #include "Thread_Common.h"
 
@@ -21,7 +22,7 @@ struct TraceEvent {
 };
 
 static TraceEvent g_trace_buffer[TRACE_BUFFER_SIZE];
-static volatile uint32_t g_trace_head = 0;
+static std::atomic<uint32_t> g_trace_head{0U};
 static uint32_t g_trace_tail = 0;
 atomic_t g_switch_hook_hits = ATOMIC_INIT(0);
 
@@ -45,13 +46,14 @@ extern "C" {
             return;
         }
 
-        const uint32_t slot = g_trace_head & TRACE_BUFFER_MASK;
-        
+        const uint32_t head = g_trace_head.load(std::memory_order_relaxed);
+        const uint32_t slot = head & TRACE_BUFFER_MASK;
+
         g_trace_buffer[slot].timestamp = k_cycle_get_32();
         g_trace_buffer[slot].thread = thread;
         g_trace_buffer[slot].type = type;
-        
-        g_trace_head = g_trace_head + 1;
+
+        g_trace_head.store(head + 1U, std::memory_order_release);
     }
 
     void sys_trace_thread_switched_in_user(void) {
@@ -83,7 +85,7 @@ extern "C" void trace_logger_thread(void *arg1, void *arg2, void *arg3) {
             k_msleep(1000);
         }
         
-        uint32_t current_head = g_trace_head;
+        const uint32_t current_head = g_trace_head.load(std::memory_order_acquire);
 
         if (current_head - g_trace_tail > TRACE_BUFFER_SIZE) {
             uint32_t skipped = (current_head - g_trace_tail) - TRACE_BUFFER_SIZE;
@@ -91,14 +93,14 @@ extern "C" void trace_logger_thread(void *arg1, void *arg2, void *arg3) {
             LOG_WRN("Trace buffer overflow: skipped %u stale events", skipped);
         }
 
-        while (g_trace_tail != g_trace_head) {
+        while (g_trace_tail != g_trace_head.load(std::memory_order_acquire)) {
             uint32_t wrapped_idx = g_trace_tail & TRACE_BUFFER_MASK;
             TraceEvent event{};
 
             unsigned int key = irq_lock();
-            if (g_trace_head - g_trace_tail > TRACE_BUFFER_SIZE) {
+            if (g_trace_head.load(std::memory_order_relaxed) - g_trace_tail > TRACE_BUFFER_SIZE) {
                 irq_unlock(key);
-                break; 
+                break;
             }
             event = g_trace_buffer[wrapped_idx];
             irq_unlock(key);
@@ -114,23 +116,18 @@ extern "C" void trace_logger_thread(void *arg1, void *arg2, void *arg3) {
             }
 
             if (t_name != nullptr) {
-                uint32_t timestamp_us = k_cyc_to_us_floor32(event.timestamp);
-                int t_idx = static_cast<int>(t_enum);
+                const int t_idx = static_cast<int>(t_enum);
 
                 if (event.type == TraceType::SWITCH_OUT) {
-                    // Record the time the thread was suspended
-                    thread_out_times[t_idx] = timestamp_us;
-                } 
+                    thread_out_times[t_idx] = event.timestamp;
+                }
                 else if (event.type == TraceType::SWITCH_IN) {
-                    // Calculate how long the thread was preempted/blocked
-                    uint32_t blocked_duration = timestamp_us - thread_out_times[t_idx];
-                    
-                    if (thread_out_times[t_idx] > 0) {
-                        // Define our known, expected thread suspensions
-                        bool is_fast_i2c_wait = (blocked_duration < 1000);
-                        bool is_normal_500ms_sleep = (blocked_duration >= 490000 && blocked_duration <= 510000);
+                    const uint32_t blocked_duration = k_cyc_to_us_floor32(event.timestamp - thread_out_times[t_idx]);
 
-                        // If the delay is NOT expected, it is a real preemption!
+                    if (thread_out_times[t_idx] > 0U) {
+                        const bool is_fast_i2c_wait = (blocked_duration < 1000U);
+                        const bool is_normal_500ms_sleep = (blocked_duration >= 490000U && blocked_duration <= 510000U);
+
                         if (!is_fast_i2c_wait && !is_normal_500ms_sleep) {
                             LOG_INF("[%s] Preemption delay: %u us", t_name, blocked_duration);
                         }
@@ -149,7 +146,7 @@ K_THREAD_DEFINE(trace_tid, 1024, trace_logger_thread, NULL, NULL, NULL, K_LOWEST
 
 #ifdef IS_TEST_ENVIRONMENT
 void test_poke_recent_invalid_trace_events(struct k_thread* invalid_thread) noexcept {
-    const uint32_t head = g_trace_head;
+    const uint32_t head = g_trace_head.load(std::memory_order_relaxed);
     const uint32_t slot1 = (head - 4U) % TRACE_BUFFER_SIZE;
     const uint32_t slot3 = (head - 2U) % TRACE_BUFFER_SIZE;
     g_trace_buffer[slot1].type = static_cast<TraceType>(2U);

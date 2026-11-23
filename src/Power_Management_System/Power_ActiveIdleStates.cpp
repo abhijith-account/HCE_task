@@ -121,7 +121,8 @@ bool ActiveState::enter(PowerManager& pm) {
 }
 
 IPowerState& ActiveState::execute(PowerManager& pm) {
-    uint32_t elapsed = k_uptime_get_32() - pm.getLastActivityTime();
+    const uint32_t last_activity = pm.getLastActivityTime();
+    const uint32_t elapsed = k_uptime_get_32() - last_activity;
     if (elapsed >= ACTIVE_TIMEOUT_MS) {
         return IdleState::getInstance();
     }
@@ -160,9 +161,7 @@ bool IdleState::enter(PowerManager& pm) {
     // Let this line out before the UART is suspended and the log/background threads are parked.
     pm_log_flush();
 
-    s_idle_entry_time_ms = k_uptime_get_32();
-    s_in_idle_state = true;
-    suspend_background_threads();
+suspend_background_threads();
 #ifdef CONFIG_BOARD_MPS2_AN386
     if (!pm_device_suspend_tolerant(pm.getUartDev(), "UART")) {
         resume_background_threads();
@@ -191,6 +190,9 @@ bool IdleState::enter(PowerManager& pm) {
     if (pm.getAdcDev()) {
         int rc = pm_device_action_run(pm.getAdcDev(), PM_DEVICE_ACTION_SUSPEND);
         if (rc != 0 && rc != -EALREADY) {
+            if (pm.getUartDev()) {
+                (void)pm_device_action_run(pm.getUartDev(), PM_DEVICE_ACTION_RESUME);
+            }
             LOG_ERR("ADC suspend failed: %d", rc);
             resume_background_threads();
             return false;
@@ -199,12 +201,21 @@ bool IdleState::enter(PowerManager& pm) {
     if (pm.getI2cDev()) {
         int rc = pm_device_action_run(pm.getI2cDev(), PM_DEVICE_ACTION_SUSPEND);
         if (rc != 0 && rc != -EALREADY) {
+            if (pm.getAdcDev()) {
+                (void)pm_device_action_run(pm.getAdcDev(), PM_DEVICE_ACTION_RESUME);
+            }
+            if (pm.getUartDev()) {
+                (void)pm_device_action_run(pm.getUartDev(), PM_DEVICE_ACTION_RESUME);
+            }
             LOG_ERR("I2C suspend failed: %d", rc);
             resume_background_threads();
             return false;
         }
     }
 #endif
+
+    s_idle_entry_time_ms = k_uptime_get_32();
+    s_in_idle_state = true;
 
 #ifndef CONFIG_BOARD_MPS2_AN386
     __HAL_RCC_ADC1_CLK_DISABLE();

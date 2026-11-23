@@ -156,12 +156,14 @@ bool StopState::enter(PowerManager& pm) {
     LOG_INF("MPS2/QEMU: entering simulated STOP state");
     if (!pm_device_suspend_tolerant(pm.getUartDev(), "UART")) {
         resume_background_threads();
+        pm.notifySleepAborted();
         pm_policy_state_lock_put(PM_STATE_SUSPEND_TO_IDLE, PM_ALL_SUBSTATES);
         return false;
     }
     if (!pm_device_suspend_tolerant(pm.getAdcDev(), "ADC")) {
         (void)pm_device_resume_tolerant(pm.getUartDev(), "UART");
         resume_background_threads();
+        pm.notifySleepAborted();
         pm_policy_state_lock_put(PM_STATE_SUSPEND_TO_IDLE, PM_ALL_SUBSTATES);
         return false;
     }
@@ -169,6 +171,7 @@ bool StopState::enter(PowerManager& pm) {
         (void)pm_device_resume_tolerant(pm.getAdcDev(), "ADC");
         (void)pm_device_resume_tolerant(pm.getUartDev(), "UART");
         resume_background_threads();
+        pm.notifySleepAborted();
         pm_policy_state_lock_put(PM_STATE_SUSPEND_TO_IDLE, PM_ALL_SUBSTATES);
         return false;
     }
@@ -204,6 +207,7 @@ bool StopState::enter(PowerManager& pm) {
         LOG_ERR("Failed to set RTC alarm (err: %d). Aborting STOP entry.", err);
         pm.reportPmFailure();
         resume_background_threads();
+        pm.notifySleepAborted();
         pm_policy_state_lock_put(PM_STATE_SUSPEND_TO_IDLE, PM_ALL_SUBSTATES);
         return false;
     }
@@ -219,7 +223,12 @@ bool StopState::enter(PowerManager& pm) {
         int rc = pm_device_action_run(pm.getAdcDev(), PM_DEVICE_ACTION_SUSPEND);
         if (rc != 0 && rc != -EALREADY) {
             LOG_ERR("ADC suspend failed: %d", rc);
+            clear_rtc_alarm(pm.getRtcDev());
+#ifdef CONFIG_USB_DEVICE_STACK
+            k_work_reschedule(&usb_reconnect_work, K_MSEC(USB_RECONNECT_DELAY_MS));
+#endif
             resume_background_threads();
+            pm.notifySleepAborted();
             pm_policy_state_lock_put(PM_STATE_SUSPEND_TO_IDLE, PM_ALL_SUBSTATES);
             return false;
         }
@@ -235,7 +244,12 @@ bool StopState::enter(PowerManager& pm) {
             if (pm.getAdcDev()) {
                 pm_device_action_run(pm.getAdcDev(), PM_DEVICE_ACTION_RESUME);
             }
+            clear_rtc_alarm(pm.getRtcDev());
+#ifdef CONFIG_USB_DEVICE_STACK
+            k_work_reschedule(&usb_reconnect_work, K_MSEC(USB_RECONNECT_DELAY_MS));
+#endif
             resume_background_threads();
+            pm.notifySleepAborted();
             pm_policy_state_lock_put(PM_STATE_SUSPEND_TO_IDLE, PM_ALL_SUBSTATES);
             return false;
         }
@@ -251,7 +265,12 @@ bool StopState::enter(PowerManager& pm) {
             if (pm.getAdcDev()) {
                 pm_device_action_run(pm.getAdcDev(), PM_DEVICE_ACTION_RESUME);
             }
+            clear_rtc_alarm(pm.getRtcDev());
+#ifdef CONFIG_USB_DEVICE_STACK
+            k_work_reschedule(&usb_reconnect_work, K_MSEC(USB_RECONNECT_DELAY_MS));
+#endif
             resume_background_threads();
+            pm.notifySleepAborted();
             pm_policy_state_lock_put(PM_STATE_SUSPEND_TO_IDLE, PM_ALL_SUBSTATES);
             return false;
         }
@@ -342,6 +361,11 @@ IPowerState& StopState::execute(PowerManager& pm) {
 
 #else
     if (!s_real_hw_sleep_active) {
+        if (pm.consumeWakePending()) {
+            s_stop_wake_reason = StopWakeReason::WAKE_RTC;
+            s_elapsed_sleep_time_us = STOP_TOTAL_TIME_US;
+            return ActiveState::getInstance();
+        }
         return *this;
     }
 
@@ -379,12 +403,15 @@ IPowerState& StopState::execute(PowerManager& pm) {
 
         EXTI->IMR = (1U << 17);
         EXTI->EMR = 0U;
-        __HAL_GPIO_EXTI_CLEAR_FLAG(0xFFFFFFFFU);   // EXTI->PR, write-1-to-clear
+        __HAL_GPIO_EXTI_CLEAR_FLAG(~(1U << 17));
 
         for (int i = 0; i < 8; ++i) {
-            NVIC->ICPR[i] = 0xFFFFFFFFU;
+            uint32_t mask = 0xFFFFFFFFU;
+            if (i == (static_cast<int>(RTC_Alarm_IRQn) / 32)) {
+                mask &= ~(1U << (static_cast<uint32_t>(RTC_Alarm_IRQn) % 32U));
+            }
+            NVIC->ICPR[i] = mask;
         }
-
         __DSB();
         __ISB();
 
@@ -426,10 +453,8 @@ IPowerState& StopState::execute(PowerManager& pm) {
             }
 
             __HAL_PWR_VOLTAGESCALING_CONFIG(PWR_REGULATOR_VOLTAGE_SCALE3);
-            {
-                uint32_t vos_timeout = 100000;
-                while (!__HAL_PWR_GET_FLAG(PWR_FLAG_VOSRDY) && --vos_timeout) { }
-            }
+            __DSB();
+            
             MODIFY_REG(RCC->CFGR,
                        RCC_CFGR_HPRE | RCC_CFGR_PPRE1 | RCC_CFGR_PPRE2,
                        RCC_CFGR_HPRE_DIV16 | RCC_CFGR_PPRE1_DIV1 | RCC_CFGR_PPRE2_DIV1);
@@ -669,7 +694,7 @@ void StopState::exit(PowerManager& pm) {
         LOG_WRN("STOP was NOT a real STOP: a debugger was attached (C_DEBUGEN=1). ""Power-cycle with SWD disconnected, then re-measure.");
     }
 
-    LOG_INF("Full mid-STOP service: %u cycles (~%u us @1MHz)",s_last_full_wake_cycles, s_last_full_wake_cycles / 4U);
+    LOG_INF("Full mid-STOP service: %u cycles (~%u us @1MHz)",s_last_full_wake_cycles, s_last_full_wake_cycles);
     
     LOG_INF("STOP total WFI wake count: %u", static_cast<unsigned int>(s_wfi_wake_count));
 

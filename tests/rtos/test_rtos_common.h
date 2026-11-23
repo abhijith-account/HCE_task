@@ -91,7 +91,7 @@ protected:
     sys_context = DeviceContext();
     drainAndDestroy(PROCESSOR_Q);
     drainAndDestroy(LOGGER_Q);
-    g_queueStats = QueueStats{};
+    g_queueStats.reset();
     exec_index = 0;
     execution_order.fill(0);
 

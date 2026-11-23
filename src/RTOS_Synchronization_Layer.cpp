@@ -103,7 +103,9 @@ namespace {
 
     void ensure_sync_observer_registered() {
         if (atomic_cas(&g_syncObserverRegistered, 0, 1)) {
-            PowerManager::getInstance().registerObserver(&g_syncPowerObserver);
+            if (!PowerManager::getInstance().registerObserver(&g_syncPowerObserver)) {
+                atomic_set(&g_syncObserverRegistered, 0);
+            }
         }
     }
 }
@@ -196,5 +198,5 @@ void display_consumer_thread(void){
 
 extern const k_tid_t hr_prod_tid;
 extern const k_tid_t disp_cons_tid;
-K_THREAD_DEFINE(hr_prod_tid,256,heart_rate_producer_thread,NULL,NULL,NULL,8,0,0);
+K_THREAD_DEFINE(hr_prod_tid,1024,heart_rate_producer_thread,NULL,NULL,NULL,8,0,0);
 K_THREAD_DEFINE(disp_cons_tid,1024,display_consumer_thread,NULL,NULL,NULL,9,0,0);

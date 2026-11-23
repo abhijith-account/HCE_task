@@ -105,7 +105,7 @@ constexpr bool     ACTIVE_BURN_HEAVY     = false;
 
 // ---- globals defined elsewhere ----
 extern DeviceContext sys_context;   // application-owned
-extern bool g_usb_connected;        // application-owned
+extern std::atomic<bool> g_usb_connected;                // application-owned
 #ifdef IS_TEST_ENVIRONMENT
 extern bool g_force_init_fail;        // weak, defined in Power_Management_System.cpp
 extern bool g_force_idle_enter_fail;  // weak, defined in Power_Management_System.cpp

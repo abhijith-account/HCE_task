@@ -33,17 +33,22 @@ bool initDevice(I2CManager& i2c) noexcept {
     return res.isOk();
 }
 
-bool accumulate(uint8_t reg, uint64_t raw, LPS22HBData& out) noexcept {
+bool accumulate(uint8_t reg, uint64_t raw, LPS22HBData& out,
+                bool degraded, uint8_t reliability) noexcept {
     static LPS22HBData lps_data{};
     static bool has_pressure = false;
 
     if (reg == SensorReg::LPS_P_DESC.reg) {
         lps_data.pressure = LPS22HBMath::decodePressure(raw);
+        lps_data.degraded = degraded;
+        lps_data.reliability_score = reliability;
         has_pressure = true;
     } else if (reg == SensorReg::LPS_T_DESC.reg) {
         lps_data.temperature = LPS22HBMath::decodeTemperature(raw);
         if (has_pressure) {
             out = lps_data;
+            out.degraded = lps_data.degraded || degraded;
+            out.reliability_score = (lps_data.reliability_score < reliability) ? lps_data.reliability_score : reliability;
             has_pressure = false;
             return true;
         }

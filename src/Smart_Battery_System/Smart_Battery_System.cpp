@@ -34,7 +34,7 @@ SbsBattery::SbsBattery(I2CManager* i2c_bus, DeviceContext* context, WatchdogFeed
       consecutive_mutex_failures(0U),
       cache{}, stats{}, soc_initialized(false), accumulated_uAh(0), last_poll_time_ms(0U),
       consecutive_jump_rejects(0U), rest_period_start_ms(0U),
-      kf_soc_pct(0.0f), kf_p_covariance(1.0f) {}
+      kf_soc_pct(0.0f), kf_p_covariance(1.0f) {k_mutex_init(&cache_mutex);}
 
 void SbsBattery::setWatchdogFeedHook(WatchdogFeedHook hook) {
     watchdog_feed_hook.store((hook != nullptr) ? hook : daly_watchdog_feed_hook);
@@ -117,7 +117,8 @@ bool SbsBattery::updateStateAndPublish(uint16_t pack_mv, int32_t current_ma, int
         }
         /* Degraded fallback policy: freeze coulomb integration and rest-resync timer on cached I2C data,
          * and inflate Kalman error covariance P inversely with reliability_score. */
-        const float reliability_scale = 100.0f / static_cast<float>(reliability_score);
+        const uint8_t safe_score = (reliability_score > 0U) ? reliability_score : static_cast<uint8_t>(1U);
+        const float reliability_scale = 100.0f / static_cast<float>(safe_score);
         kf_p_covariance += BatteryLimits::KF_PROCESS_NOISE * reliability_scale;
         rest_period_start_ms = 0U;
         last_poll_time_ms = now;
@@ -254,7 +255,11 @@ result<MilliAmpHours> SbsBattery::getCapacity() const {
 }
 
 void SbsBattery::processFSM() {
+    if (fsm_reset_pending.exchange(false, std::memory_order_acquire)) {
+        FsmClassifier::reset();
+    }
     const BmsCache snapshot = getCacheSnapshot();
+    
     if (!isCacheValid(snapshot)) {
         return;
     }
@@ -304,9 +309,7 @@ void SbsBattery::processFSM() {
 
         current_state.store(next_fsm_state);
         const BatteryFSM active_state = current_state.load();
-        if (active_state == BatteryFSM::CHARGING || active_state == BatteryFSM::CUTOFF || active_state == BatteryFSM::IDLE || active_state == BatteryFSM::DISCHARGING) {
-            PowerManager::getInstance().reportActivity();
-        }
+        PowerManager::getInstance().reportActivity();
     }
 
     if (soc_pct >= 100U) {

@@ -17,7 +17,7 @@ K_MSGQ_DEFINE(logger_queue, sizeof(ICommand*), QueueConfig::Depth, QueueConfig::
 void* allocateCommandMemory() noexcept {
     void* const mem = g_commandPool.allocate();
     if (!mem) {
-        g_queueStats.commandsDropped++;
+        g_queueStats.commandsDropped.fetch_add(1U, std::memory_order_relaxed);
         LOG_ERR("Memory pool exhausted. Dropping command.");
     }
     return mem;
@@ -25,18 +25,20 @@ void* allocateCommandMemory() noexcept {
 
 bool enqueueCommandRaw(k_msgq* queue, ICommand* cmd) noexcept {
     if (k_msgq_put(queue, &cmd, K_NO_WAIT) != 0) {
-        g_queueStats.commandsDropped++;
+        g_queueStats.commandsDropped.fetch_add(1U, std::memory_order_relaxed);
         return false;
     }
 
-    const uint32_t used = QueueConfig::Depth - k_msgq_num_free_get(queue);
-    if (queue == PROCESSOR_Q && used > g_queueStats.processorPeakDepth) {
+    const unsigned int key = irq_lock();
+    const uint32_t used = static_cast<uint32_t>(QueueConfig::Depth) - k_msgq_num_free_get(queue);
+    if (queue == PROCESSOR_Q && used > g_queueStats.processorPeakDepth.load(std::memory_order_relaxed)) {
         g_queueStats.processorPeakDepth = used;
-    } else if (queue == LOGGER_Q && used > g_queueStats.loggerPeakDepth) {
+    } else if (queue == LOGGER_Q && used > g_queueStats.loggerPeakDepth.load(std::memory_order_relaxed)) {
         g_queueStats.loggerPeakDepth = used;
     }
+    irq_unlock(key);
 
-    g_queueStats.commandsCreated++;
+    g_queueStats.commandsCreated.fetch_add(1U, std::memory_order_relaxed);
     return true;
 }
 

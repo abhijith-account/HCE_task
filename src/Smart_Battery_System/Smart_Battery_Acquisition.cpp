@@ -38,7 +38,6 @@ namespace {
 }
 
 bool SbsBattery::init() {
-    k_mutex_init(&cache_mutex);
     const bool ina_ok = ina226.init();
     if (!ina_ok) LOG_ERR("INA226 init failed");
     const bool therm_ok = Thermistor::init();
@@ -105,7 +104,8 @@ void SbsBattery::pollHardwareAndUpdateCache() {
         return;
     }
 
-    const uint32_t pack_mv_32 = static_cast<uint32_t>(voltage_raw.value) + (static_cast<uint32_t>(voltage_raw.value) / 4U);
+    const uint32_t raw_bus_u32 = static_cast<uint32_t>(static_cast<uint16_t>(voltage_raw.value));
+    const uint32_t pack_mv_32 = raw_bus_u32 + (raw_bus_u32 / 4U);
     const BmsCache snapshot = getCacheSnapshot();
     const bool was_connected = snapshot.valid && (snapshot.voltage.value >= BatteryLimits::MIN_VALID_VOLTAGE_MV);
 
@@ -145,7 +145,7 @@ void SbsBattery::pollHardwareAndUpdateCache() {
             current_state.store(BatteryFSM::IDLE);
             soc_initialized = false;
             consecutive_jump_rejects = 0U;
-            FsmClassifier::reset();
+            fsm_reset_pending = true;
             publishError(CommFault::MUTEX_TIMEOUT);
             feedWatchdog();
             return;
@@ -170,7 +170,7 @@ void SbsBattery::pollHardwareAndUpdateCache() {
         current_state.store(BatteryFSM::IDLE);
         soc_initialized = false;
         consecutive_jump_rejects = 0U;
-        FsmClassifier::reset(); // clear stale direction bias so a fresh connection starts clean
+        fsm_reset_pending = true; // clear stale direction bias so a fresh connection starts clean
         feedWatchdog();
         return;
     }
@@ -218,7 +218,9 @@ void SbsBattery::pollHardwareAndUpdateCache() {
     const int64_t oldest_sample_ts = std::min(voltage_raw.timestamp_ms,
                                               std::min(shunt_raw.timestamp_ms, current_raw.timestamp_ms));
 
-    if (!sample_degraded && snapshot.timestamp_ms != 0 && (snapshot.valid || snapshot.last_error == CommFault::VALIDATION_ERROR) && was_connected) {
+    if (!sample_degraded && snapshot.timestamp_ms != 0 &&
+        (snapshot.valid || snapshot.last_error == CommFault::VALIDATION_ERROR) &&
+        (snapshot.voltage.value >= BatteryLimits::MIN_VALID_VOLTAGE_MV)) {
         const int32_t v_delta = absolute(static_cast<int32_t>(pack_mv) - static_cast<int32_t>(snapshot.voltage.value));
         const int32_t c_delta = absolute(current_ma - snapshot.current.value);
         const int32_t prev_temp_tenths_c = static_cast<int32_t>(snapshot.temperature.value) - Thermistor::KELVIN_OFFSET_TENTHS;

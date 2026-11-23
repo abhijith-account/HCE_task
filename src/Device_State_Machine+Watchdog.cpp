@@ -28,39 +28,50 @@ bool WatchdogTimer::init(uint32_t timeout_ms){
         .flags = WDT_FLAG_RESET_SOC
     };
 
-    channel_id = wdt_install_timeout(wdt_dev, &wdt_config);
-    if (channel_id < 0){
-        LOG_ERR("Watchdog timeout install failed: %d", channel_id);
+    const int installed_ch = wdt_install_timeout(wdt_dev, &wdt_config);
+    if (installed_ch < 0){
+        LOG_ERR("Watchdog timeout install failed: %d", installed_ch);
         return false;
     }
 
     const int setup_rc = wdt_setup(wdt_dev, WDT_OPT_PAUSE_HALTED_BY_DBG | WDT_OPT_PAUSE_IN_SLEEP);
     if (setup_rc != 0){
         LOG_ERR("Watchdog setup failed: %d", setup_rc);
-        channel_id = -1;
         return false;
     }
+
+    const k_spinlock_key_t key = k_spin_lock(&wdt_access_lock);
+    channel_id = installed_ch;
+    k_spin_unlock(&wdt_access_lock, key);
 
     LOG_INF("Watchdog initialized with timeout: %u ms", timeout_ms);
     return true;
 }
 
 void WatchdogTimer::feed(){
-    if (channel_id >= 0)
+    const k_spinlock_key_t key = k_spin_lock(&wdt_access_lock);
+    const int ch = channel_id;
+    if (ch >= 0)
     {
-        const k_spinlock_key_t key = k_spin_lock(&wdt_access_lock);
-        const int rc = wdt_feed(wdt_dev, channel_id);
+        const int rc = wdt_feed(wdt_dev, ch);
         k_spin_unlock(&wdt_access_lock, key);
-        
+
         if (rc != 0)
         {
             LOG_ERR("Watchdog feed failed: %d", rc);
         }
     }
+    else
+    {
+        k_spin_unlock(&wdt_access_lock, key);
+    }
 }
 
 bool WatchdogTimer::isInitialized() const{
-    return channel_id >= 0;
+    const k_spinlock_key_t key = k_spin_lock(&wdt_access_lock);
+    const bool ready = (channel_id >= 0);
+    k_spin_unlock(&wdt_access_lock, key);
+    return ready;
 }
 
 DeviceContext::DeviceContext() noexcept : current_state(SystemState::INIT), wdt{} {}
@@ -97,27 +108,27 @@ bool DeviceContext::requestTransition(SystemState next_state){
     
     if (!isLegalTransition(previous_state, next_state))
     {
-        LOG_ERR("Illegal state transition rejected: %d->%d", static_cast<int>(previous_state), static_cast<int>(next_state));
         current_state = SystemState::SAFE_HALT;
         k_spin_unlock(&device_state_lock, key);
+        LOG_ERR("Illegal state transition rejected: %d->%d", static_cast<int>(previous_state), static_cast<int>(next_state));
         PowerManager::getInstance().reportActivity();
         return false;
     }
-    
+
     current_state = next_state;
-    LOG_INF("System transitioned :%d->%d", static_cast<int>(previous_state), static_cast<int>(current_state));
     k_spin_unlock(&device_state_lock, key);
-    
+    LOG_INF("System transitioned :%d->%d", static_cast<int>(previous_state), static_cast<int>(next_state));
+
     PowerManager::getInstance().reportActivity();
     return true;
 }
 
 void DeviceContext::triggerFault(const char* reason){
-    const k_spinlock_key_t key = k_spin_lock(&device_state_lock);
     const char* const fault_reason = (reason != nullptr) ? reason : "unspecified fault";
-    LOG_ERR("CRITICAL FAULT: %s. Forcing SAFE_HALT.", fault_reason);
+    const k_spinlock_key_t key = k_spin_lock(&device_state_lock);
     current_state = SystemState::FAULT;
     k_spin_unlock(&device_state_lock, key);
+    LOG_ERR("CRITICAL FAULT: %s. Forcing FAULT.", fault_reason);
 }
 
 bool DeviceContext::initWatchdog(uint32_t timeout_ms){

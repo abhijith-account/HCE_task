@@ -67,6 +67,7 @@ private:
 
     BmsCache cache{};
     std::atomic<bool> cache_requires_live_refresh{false};
+    std::atomic<bool> fsm_reset_pending{false};
     AtomicCommStatistics stats{};
 
     bool soc_initialized{false};

@@ -15,7 +15,7 @@
 
 LOG_MODULE_REGISTER(USB_CLI, LOG_LEVEL_INF);
 
-bool g_usb_connected = false;
+std::atomic<bool> g_usb_connected{false};
 
 UsbCdcFacade::UsbCdcFacade() noexcept : dev(DEVICE_DT_GET(DT_ALIAS(cdc_acm_uart0))) {
     __ASSERT(dev != nullptr, "CDC ACM device missing from devicetree");
@@ -41,7 +41,7 @@ bool UsbCdcFacade::init() {
 }
 
 bool UsbCdcFacade::isConnected() {
-    if (!g_usb_connected) {
+    if (!g_usb_connected.load(std::memory_order_acquire)) {
         if (dtr_ready) {
             uart_irq_rx_disable(dev);
             dtr_ready = false;
@@ -143,9 +143,11 @@ void UsbCdcFacade::uartInterruptHandler(const device* dev, void* user_data) {
 }
 
 bool UsbCdcFacade::readLine(CommandBuffer& out_line) noexcept {
+    const unsigned int key = irq_lock();
     const std::size_t head = rx_head.load(std::memory_order_acquire);
-    std::size_t tail = rx_tail.load(std::memory_order_relaxed);
+    const std::size_t tail = rx_tail.load(std::memory_order_relaxed);
     if (head == tail) {
+        irq_unlock(key);
         return false;
     }
     std::size_t temp_tail = tail;
@@ -157,7 +159,7 @@ bool UsbCdcFacade::readLine(CommandBuffer& out_line) noexcept {
         if (c == CR || c == LF) {
             found_eol = true;
             temp_tail = (temp_tail + 1) % RX_RING_BUF_SIZE;
-            
+
             if (c == CR && temp_tail != head && rx_buffer[temp_tail] == LF) {
                 temp_tail = (temp_tail + 1) % RX_RING_BUF_SIZE;
             }
@@ -171,9 +173,11 @@ bool UsbCdcFacade::readLine(CommandBuffer& out_line) noexcept {
         temp_tail = (temp_tail + 1) % RX_RING_BUF_SIZE;
     }
     if (!found_eol) {
+        irq_unlock(key);
         return false;
     }
     rx_tail.store(temp_tail, std::memory_order_release);
+    irq_unlock(key);
     if (overlong) {
         LOG_WRN("USB CLI command exceeded %zu bytes, discarded", MAX_CMD_LEN - 1);
         out_line[0] = '\0';

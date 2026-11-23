@@ -75,10 +75,12 @@ namespace {
         atomic_t g_memoryObserverRegistered = ATOMIC_INIT(0);
 
         void ensure_memory_observer_registered() {
-            if (atomic_cas(&g_memoryObserverRegistered, 0, 1)) {
-                PowerManager::getInstance().registerObserver(&g_memoryPowerObserver);
+        if (atomic_cas(&g_memoryObserverRegistered, 0, 1)) {
+            if (!PowerManager::getInstance().registerObserver(&g_memoryPowerObserver)) {
+                atomic_set(&g_memoryObserverRegistered, 0);
             }
         }
+    }
 }
 
 void memory_monitor_thread(void){
