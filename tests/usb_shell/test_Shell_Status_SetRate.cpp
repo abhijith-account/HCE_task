@@ -82,7 +82,11 @@ TEST_F(UsbShellTestSuite,SetRateVariants){
     mock_tx_index=0; shell.dispatchCommand("set_rate 1001 0");
     EXPECT_NE(std::string(mock_tx_buffer.data(),mock_tx_index).find("Rate must be between 1 and 100"),std::string_view::npos);
 
-    mock_tx_index=0; shell.dispatchCommand("set_rate 2147483648 50");
+    mock_tx_index=0; shell.dispatchCommand("set_rate 4294967296 50");
+    EXPECT_NE(std::string(mock_tx_buffer.data(),mock_tx_index).find("Usage"),std::string_view::npos);
+    mock_tx_index=0; shell.dispatchCommand("set_rate -1 50");
+    EXPECT_NE(std::string(mock_tx_buffer.data(),mock_tx_index).find("Usage"),std::string_view::npos);
+    mock_tx_index=0; shell.dispatchCommand("set_rate 12x 50");
     EXPECT_NE(std::string(mock_tx_buffer.data(),mock_tx_index).find("Usage"),std::string_view::npos);
     mock_tx_index=0; shell.dispatchCommand("set_rate 1001 2147483648");
     EXPECT_NE(std::string(mock_tx_buffer.data(),mock_tx_index).find("Usage"),std::string_view::npos);
