@@ -5,10 +5,12 @@
 #include "test_battery_common.h"
 
 TEST_F(SmartBatteryTestSuite, ProcessFSM_AllBranches) {
-    battery.cache.voltage.value = 10000;
+    battery.cache.voltage.value = 11500;
+    battery.cache.temperature.value = 2981; // 25.0 C
     battery.cache.soc.value = 50;
 
-    battery.cache.voltage.value = 0; battery.processFSM(); battery.cache.voltage.value = 10000;
+    battery.cache.voltage.value = 0; battery.processFSM(); battery.cache.voltage.value = 11500;
+    battery.cache.temperature.value = 2981; // 25.0 C
 
     battery.cache.shunt_voltage.value = 0;
     battery.current_state.store(BatteryFSM::CHARGING);
@@ -33,7 +35,8 @@ TEST_F(SmartBatteryTestSuite, FSM_DeepCoverage) {
     battery.processFSM();
 
     battery.cache.valid = true;
-    battery.cache.voltage.value = 10000;
+    battery.cache.voltage.value = 11500;
+    battery.cache.temperature.value = 2981; // 25.0 C
     battery.cache.soc.value = 100;
     battery.full_charge_logged.store(false);
     battery.processFSM();
@@ -44,21 +47,24 @@ TEST_F(SmartBatteryTestSuite, FSM_DeepCoverage) {
 
     battery.cache.soc.value = 50;
 
-    battery.cache.voltage.value = 0; battery.processFSM(); battery.cache.voltage.value = 10000;
+    battery.cache.voltage.value = 0; battery.processFSM(); battery.cache.voltage.value = 11500;
+    battery.cache.temperature.value = 2981; // 25.0 C
 
     battery.cache.shunt_voltage.value = 50000;
     battery.current_state.store(BatteryFSM::IDLE);
     battery.processFSM();
     EXPECT_EQ(battery.getState(), BatteryFSM::CHARGING);
 
-    battery.cache.voltage.value = 0; battery.processFSM(); battery.cache.voltage.value = 10000;
+    battery.cache.voltage.value = 0; battery.processFSM(); battery.cache.voltage.value = 11500;
+    battery.cache.temperature.value = 2981; // 25.0 C
 
     battery.cache.shunt_voltage.value = 0;
     battery.current_state.store(BatteryFSM::CHARGING);
     battery.processFSM();
     EXPECT_EQ(battery.getState(), BatteryFSM::IDLE);
 
-    battery.cache.voltage.value = 0; battery.processFSM(); battery.cache.voltage.value = 10000;
+    battery.cache.voltage.value = 0; battery.processFSM(); battery.cache.voltage.value = 11500;
+    battery.cache.temperature.value = 2981; // 25.0 C
 
     battery.cache.shunt_voltage.value = -50000;
     battery.current_state.store(BatteryFSM::IDLE);
@@ -82,7 +88,8 @@ TEST_F(SmartBatteryTestSuite, FSM_DeepCoverage) {
     sys_context.requestTransition(SystemState::RUNNING);
     battery.processFSM();
 
-    battery.cache.voltage.value = 0; battery.processFSM(); battery.cache.voltage.value = 10000;
+    battery.cache.voltage.value = 0; battery.processFSM(); battery.cache.voltage.value = 11500;
+    battery.cache.temperature.value = 2981; // 25.0 C
 
     battery.cache.shunt_voltage.value = 0;
     battery.cache.soc.value = BatteryLimits::REENABLE_SOC_PCT + 1;
@@ -93,7 +100,8 @@ TEST_F(SmartBatteryTestSuite, FSM_DeepCoverage) {
 }
 
 TEST_F(SmartBatteryTestSuite, ProcessFSM_MidBandsAndChargingRecovery) {
-    battery.cache.voltage.value = 10000;
+    battery.cache.voltage.value = 11500;
+    battery.cache.temperature.value = 2981; // 25.0 C
     battery.cache.valid = true;
     battery.cache.last_error = CommFault::NONE;
     battery.cache.timestamp_ms = virtual_uptime;
@@ -122,7 +130,8 @@ TEST_F(SmartBatteryTestSuite, ProcessFSM_CutoffTrigger_NullContextSkipsFaultCall
     DeviceContext* backup_ctx = battery.sys_context;
     battery.sys_context = nullptr;
 
-    battery.cache.voltage.value = 10000;
+    battery.cache.voltage.value = 11500;
+    battery.cache.temperature.value = 2981; // 25.0 C
     battery.cache.valid = true;
     battery.cache.last_error = CommFault::NONE;
     battery.cache.timestamp_ms = virtual_uptime;
@@ -140,7 +149,8 @@ TEST_F(SmartBatteryTestSuite, ProcessFSM_ReenableCheck_NullContextSkipsRecovery)
     DeviceContext* backup_ctx = battery.sys_context;
     battery.sys_context = nullptr;
 
-    battery.cache.voltage.value = 10000;
+    battery.cache.voltage.value = 11500;
+    battery.cache.temperature.value = 2981; // 25.0 C
     battery.cache.valid = true;
     battery.cache.last_error = CommFault::NONE;
     battery.cache.timestamp_ms = virtual_uptime;
@@ -170,7 +180,8 @@ TEST_F(SmartBatteryTestSuite, ProcessFSM_CacheFailureReason_BothBranches) {
 }
 
 TEST_F(SmartBatteryTestSuite, ProcessFSM_Reenable_SysContextNonNull_WrongState_Direct) {
-    battery.cache.voltage.value = 10000;
+    battery.cache.voltage.value = 11500;
+    battery.cache.temperature.value = 2981; // 25.0 C
     battery.cache.valid = true;
     battery.cache.last_error = CommFault::NONE;
     battery.cache.timestamp_ms = virtual_uptime;
@@ -223,7 +234,8 @@ TEST_F(SmartBatteryTestSuite, ProcessFSM_FullChargeAndRecoveryBranches) {
     battery.cache.valid = true;
     battery.cache.last_error = CommFault::NONE;
     battery.cache.timestamp_ms = virtual_uptime;
-    battery.cache.voltage.value = 10000;
+    battery.cache.voltage.value = 11500;
+    battery.cache.temperature.value = 2981; // 25.0 C
     battery.cache.shunt_voltage.value = 0;
 
     // 1. Full Charge compare_exchange_strong failure branch (full_charge_logged already true)
@@ -269,7 +281,8 @@ TEST_F(SmartBatteryTestSuite, ProcessFSM_HysteresisTransitions) {
         battery.cache.voltage.value = 0;      // forces EMA reset
         battery.processFSM();
 
-        battery.cache.voltage.value = 10000;
+        battery.cache.voltage.value = 11500;
+        battery.cache.temperature.value = 2981; // 25.0 C
         battery.cache.shunt_voltage.value = shunt_uv;
         battery.current_state.store(start);
         battery.processFSM();
@@ -292,7 +305,8 @@ TEST_F(SmartBatteryTestSuite, ProcessFSM_ActiveStateReload_ConcurrentCutoff) {
     battery.cache.valid = true;
     battery.cache.last_error = CommFault::NONE;
     battery.cache.timestamp_ms = virtual_uptime;
-    battery.cache.voltage.value = 10000;
+    battery.cache.voltage.value = 11500;
+    battery.cache.temperature.value = 2981; // 25.0 C
     battery.cache.shunt_voltage.value = 0;
     battery.cache.soc.value = 50;
     battery.current_state.store(BatteryFSM::IDLE);
@@ -323,7 +337,8 @@ TEST_F(SmartBatteryTestSuite, ProcessFSM_DegradedPolicyAllowsCutoffButBlocksReco
     battery.cache.reliability_score = 80U;
     battery.cache.last_error = CommFault::NONE;
     battery.cache.timestamp_ms = virtual_uptime;
-    battery.cache.voltage.value = 10000;
+    battery.cache.voltage.value = 11500;
+    battery.cache.temperature.value = 2981; // 25.0 C
 
     // 0. Degraded shunt sample must NOT change the IDLE/CHARGING/DISCHARGING classifier
     battery.current_state.store(BatteryFSM::IDLE);
