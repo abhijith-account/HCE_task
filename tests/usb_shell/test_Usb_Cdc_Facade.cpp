@@ -132,6 +132,7 @@ TEST_F(UsbShellTestSuite,RingBufferAndOverflow){
     inject_mock_uart_data(std::string_view(arr_X.data(), arr_X.size()));
     EXPECT_GT(local.overflow_count.load(),0u);
     EXPECT_GT(local.dropped_bytes.load(),0u);
+    EXPECT_FALSE(local.readLine(cmd)); // drains deferred rx_flush_requested
 
     inject_mock_uart_data("B");
 
@@ -140,6 +141,7 @@ TEST_F(UsbShellTestSuite,RingBufferAndOverflow){
     std::array<char, 300> arr_Y; arr_Y.fill('Y');
     inject_mock_uart_data(std::string_view(arr_Y.data(), arr_Y.size()));
     EXPECT_NE(testing::internal::GetCapturedStdout().find("USB RX overflow"),std::string_view::npos);
+    EXPECT_FALSE(local.readLine(cmd)); // drains deferred rx_flush_requested before next case
 
     local.overflow_logged.store(true);
     local.rx_tail.store(100); local.rx_head.store(99);
