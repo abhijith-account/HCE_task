@@ -337,7 +337,7 @@ IPowerState& StopState::execute(PowerManager& pm) {
     }
 
     int rc = k_sem_take(&stop_wake_sem, K_MSEC(100));
-
+    sys_context.feedWatchdog();
     if (rc == 0) {
         if (atomic_cas(&s_activity_pending, 1, 0)) {
             s_stop_wake_reason = StopWakeReason::WAKE_ACTIVITY;
