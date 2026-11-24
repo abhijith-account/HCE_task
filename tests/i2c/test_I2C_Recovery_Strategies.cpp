@@ -202,5 +202,9 @@ TEST_F(I2CFaultRecoveryTestSuite, BusResetLogsEnosysAndFailureAndSleepLockEdgeCa
         PowerManager::getInstance().notifyBeforeSleep();
     } // ~I2CManager() calls detachManager() while locked_manager == &temp
     PowerManager::getInstance().notifyAfterWakeup();
+
+    // Covers I2C_Manager.cpp line 101 (beforeSleep when active_manager == nullptr)
+    PowerManager::getInstance().notifyBeforeSleep();
+    PowerManager::getInstance().notifyAfterWakeup();
     SUCCEED();
 }
