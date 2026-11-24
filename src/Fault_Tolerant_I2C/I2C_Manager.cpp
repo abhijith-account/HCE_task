@@ -76,11 +76,11 @@ namespace {
 
     class I2CPowerObserver final : public IPowerObserver {
     private:
-        atomic_t is_sleeping{};
+        atomic_t is_sleeping{ATOMIC_INIT(0)};
         std::atomic<I2CManager*> active_manager{nullptr};
         I2CManager* locked_manager{nullptr};
     public:
-        I2CPowerObserver() noexcept { atomic_set(&is_sleeping, 0); }
+        constexpr I2CPowerObserver() noexcept = default;
 
         void attachManager(I2CManager* mgr) noexcept {
             active_manager.store(mgr, std::memory_order_release);
@@ -119,7 +119,7 @@ namespace {
         bool isSleeping() const noexcept { return atomic_get(&is_sleeping) != 0; }
     };
 
-    I2CPowerObserver g_i2cPowerObserver;
+    constinit I2CPowerObserver g_i2cPowerObserver;
 
     K_MUTEX_DEFINE(g_i2c_observer_registration_mutex);
 
