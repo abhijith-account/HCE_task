@@ -47,6 +47,15 @@ static void usb_status_cb(enum usb_dc_status_code cb_status, const uint8_t *para
 
 int main(void){
     printk("BOOT\n");
+    
+    if (!sys_context.initWatchdog(30000U)) {
+        LOG_ERR("CRITICAL: Watchdog initialization failed; halting.");
+        sys_context.triggerFault("Watchdog init failed");
+        for (;;) {
+            k_sleep(K_FOREVER);
+        }
+    }
+    
     const struct device *const console_dev  =  DEVICE_DT_GET(DT_CHOSEN(zephyr_console));
     
     if (device_is_ready(console_dev)) {
