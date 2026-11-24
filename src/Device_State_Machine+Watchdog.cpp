@@ -35,9 +35,9 @@ bool WatchdogTimer::init(uint32_t timeout_ms){
     }
 
 #ifdef CONFIG_BOARD_MPS2_AN386
-    const uint8_t wdt_options = 0U;
+    constexpr uint8_t wdt_options = 0U;
 #else
-    const uint8_t wdt_options = WDT_OPT_PAUSE_HALTED_BY_DBG;
+    constexpr uint8_t wdt_options = WDT_OPT_PAUSE_HALTED_BY_DBG;
 #endif
     const int setup_rc = wdt_setup(wdt_dev, wdt_options);
     if (setup_rc != 0){

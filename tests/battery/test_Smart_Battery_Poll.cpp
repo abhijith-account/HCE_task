@@ -457,3 +457,12 @@ TEST_F(SmartBatteryTestSuite, Disconnect_MutexFailureDoesNotExposeStaleCache) {
     EXPECT_EQ(live_snap.last_error, CommFault::NONE);
     EXPECT_EQ(live_snap.voltage.value, 10000U);
 }
+
+TEST_F(SmartBatteryTestSuite, PollHardware_DeeplyDischargedPackLogsWarningWhenNotPreviouslyConnected) {
+    // Fresh battery (was_connected == false) with 5000 mV in [MIN_VALID_VOLTAGE_MV=4000, PACK_MIN_VOLTAGE_MV=8700)
+    g_i2c_mock_v_val = 4000; // 4000 * 1.25 = 5000 mV
+    g_i2c_mock_i_val = 0;
+    g_adc_mock_mv_val = 1650;
+    battery.pollHardwareAndUpdateCache();
+    SUCCEED();
+}

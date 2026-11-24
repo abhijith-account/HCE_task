@@ -255,3 +255,21 @@ TEST_F(PowerManagementTestSuite, SimulatedStopTimerHandlerCoverage) {
     // Verify the handler successfully executed by checking its side effect
     EXPECT_EQ(atomic_get(&pm.wake_pending), 1);
 }
+
+TEST_F(PowerManagementTestSuite, FlashLockRefusesStopTransitionAndEntry) {
+    PowerManager& pm = PowerManager::getInstance();
+    pm.init(dummy_rtc, dummy_i2c, dummy_uart, dummy_usb, dummy_adc, &sys_context);
+
+    pm.acquireFlashLock();
+    EXPECT_TRUE(pm.isFlashBusy());
+
+    // Covers Power_Management_System.cpp lines 245-247
+    pm.transitionTo(StopState::getInstance());
+    EXPECT_EQ(std::string_view(pm.current_state->getName()), std::string_view("PM_STATE_ACTIVE"));
+
+    // Covers Power_StopState.cpp lines 119-121
+    EXPECT_FALSE(StopState::getInstance().enter(pm));
+
+    pm.releaseFlashLock();
+    EXPECT_FALSE(pm.isFlashBusy());
+}

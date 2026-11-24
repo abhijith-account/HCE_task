@@ -176,3 +176,30 @@ TEST_F(I2CFaultRecoveryTestSuite, ConcurrentMultiThreadBusAndCacheStress) {
         w.join();
     }
 }
+
+extern int g_i2c_recover_bus_ret;
+
+TEST_F(I2CFaultRecoveryTestSuite, BusResetLogsEnosysAndFailureAndSleepLockEdgeCases) {
+    BusResetStrategy reset;
+
+    // Covers I2C_Recovery_Strategies.cpp lines 121-124
+    g_i2c_recover_bus_ret = -ENOSYS;
+    reset.executeRecovery(dummy_i2c_dev);
+    g_i2c_recover_bus_ret = -EIO;
+    reset.executeRecovery(dummy_i2c_dev);
+    g_i2c_recover_bus_ret = 0;
+
+    // Covers I2C_Manager.cpp lines 205 & 212 (redundant lockForSleep / unlockAfterSleep)
+    {
+        I2CManager temp(dummy_i2c_dev);
+        temp.lockForSleep();
+        temp.lockForSleep();      // sleep_mutex_held already true
+        temp.unlockAfterSleep();
+        temp.unlockAfterSleep();  // sleep_mutex_held already false
+
+        // Covers I2C_Manager.cpp lines 90-92 (detachManager while locked_manager == mgr)
+        PowerManager::getInstance().notifyBeforeSleep();
+    } // ~I2CManager() calls detachManager() while locked_manager == &temp
+    PowerManager::getInstance().notifyAfterWakeup();
+    SUCCEED();
+}

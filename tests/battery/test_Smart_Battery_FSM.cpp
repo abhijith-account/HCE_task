@@ -396,3 +396,45 @@ TEST_F(SmartBatteryTestSuite, ProcessFSM_ConsumesResetPendingAndHandlesZeroRelia
     battery.processFSM();
     EXPECT_FALSE(battery.fsm_reset_pending.load(std::memory_order_acquire));
 }
+
+TEST_F(SmartBatteryTestSuite, ProcessFSM_VoltageAndTemperatureCutoffAndHysteresisBranches) {
+    battery.cache.valid = true;
+    battery.cache.timestamp_ms = virtual_uptime;
+    battery.cache.shunt_voltage.value = 0;
+    battery.cache.soc.value = 50U;
+
+    // 1. Degraded low voltage (< 4000 mV): covers pack_mv >= MIN_VALID_VOLTAGE_MV false branch (line 285)
+    battery.cache.degraded = true;
+    battery.cache.voltage.value = 3000U;
+    battery.cache.temperature.value = 2981U; // 25.0 C
+    battery.processFSM();
+
+    // 2. Live voltage cutoff (4000 <= 8900 <= 9000): covers voltage_cutoff true (lines 285, 290)
+    battery.cache.degraded = false;
+    battery.cache.voltage.value = 8900U;
+    battery.processFSM();
+    EXPECT_EQ(battery.getState(), BatteryFSM::CUTOFF);
+
+    // 3. Over-temperature cutoff (65.0 C > 60.0 C): covers temp > MAX_SAFE_TEMP_TENTHS_C (lines 287, 290)
+    battery.current_state.store(BatteryFSM::IDLE);
+    battery.cache.voltage.value = 11500U;
+    battery.cache.temperature.value = 3381U; // 65.0 C
+    battery.processFSM();
+    EXPECT_EQ(battery.getState(), BatteryFSM::CUTOFF);
+
+    // 4. Under-temperature cutoff (-5.0 C < 0.0 C): covers temp < MIN_SAFE_TEMP_TENTHS_C (lines 287, 290)
+    battery.current_state.store(BatteryFSM::IDLE);
+    battery.cache.temperature.value = 2681U; // -5.0 C
+    battery.processFSM();
+    EXPECT_EQ(battery.getState(), BatteryFSM::CUTOFF);
+
+    // 5. High-temp hysteresis band (59.0 C: no cutoff, but > 57.0 C so temp_recovered == false -> lines 339, 342)
+    battery.cache.temperature.value = 3321U; // 59.0 C
+    battery.processFSM();
+    EXPECT_EQ(battery.getState(), BatteryFSM::CUTOFF);
+
+    // 6. Low-temp hysteresis band (1.0 C: no cutoff, but < 3.0 C so temp_recovered == false -> lines 339, 342)
+    battery.cache.temperature.value = 2741U; // 1.0 C
+    battery.processFSM();
+    EXPECT_EQ(battery.getState(), BatteryFSM::CUTOFF);
+}
