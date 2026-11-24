@@ -437,4 +437,9 @@ TEST_F(SmartBatteryTestSuite, ProcessFSM_VoltageAndTemperatureCutoffAndHysteresi
     battery.cache.temperature.value = 2741U; // 1.0 C
     battery.processFSM();
     EXPECT_EQ(battery.getState(), BatteryFSM::CUTOFF);
+    
+    battery.cache.temperature.value = 2981U; // 25.0 C
+    battery.cache.voltage.value = 9300U;
+    battery.processFSM();
+    EXPECT_EQ(battery.getState(), BatteryFSM::CUTOFF);
 }

@@ -11,6 +11,12 @@ LOG_MODULE_REGISTER(DEVICE_STATE, LOG_LEVEL_INF);
 static struct k_spinlock device_state_lock;
 static struct k_spinlock wdt_access_lock;
 
+#ifdef CONFIG_BOARD_MPS2_AN386
+constexpr uint8_t kWdtOptions = 0U;
+#else
+constexpr uint8_t kWdtOptions = WDT_OPT_PAUSE_HALTED_BY_DBG;
+#endif
+
 WatchdogTimer::WatchdogTimer() : wdt_dev(DEVICE_DT_GET_OR_NULL(DT_ALIAS(watchdog0))), channel_id(-1) {}
 
 bool WatchdogTimer::init(uint32_t timeout_ms){
@@ -34,12 +40,7 @@ bool WatchdogTimer::init(uint32_t timeout_ms){
         return false;
     }
 
-#ifdef CONFIG_BOARD_MPS2_AN386
-    constexpr uint8_t wdt_options = 0U;
-#else
-    constexpr uint8_t wdt_options = WDT_OPT_PAUSE_HALTED_BY_DBG;
-#endif
-    const int setup_rc = wdt_setup(wdt_dev, wdt_options);
+    const int setup_rc = wdt_setup(wdt_dev, kWdtOptions);
     if (setup_rc != 0){
         LOG_ERR("Watchdog setup failed: %d", setup_rc);
         return false;
