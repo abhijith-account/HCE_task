@@ -114,7 +114,7 @@ jobs:
           grep -q "^CONFIG_HW_STACK_PROTECTION=y$" build_nucleo/zephyr/.config
 
           echo "===== VERIFYING ZERO HEAP SYMBOLS IN ELF ====="
-          if nm build_nucleo/zephyr/zephyr.elf | grep -E ' (malloc|_Znwj)'; then
+          if nm build_nucleo/zephyr/zephyr.elf | grep -E ' (malloc|calloc|realloc|k_malloc|_Znwj|_Znaj|_ZnwjRKSt9nothrow_t|_ZnajRKSt9nothrow_t)$'; then
             echo "::error::Dynamic heap allocation symbol detected in zephyr.elf!"
             exit 1
           fi
