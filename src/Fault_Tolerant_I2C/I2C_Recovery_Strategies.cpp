@@ -117,7 +117,12 @@ void BusResetStrategy::executeRecovery(const device* i2c_dev) {
     k_busy_wait(5);
     port->MODER = (port->MODER & ~((3U << 16) | (3U << 18))) | (2U << 16) | (2U << 18);
 #endif
-    (void)i2c_recover_bus(i2c_dev);
+    const int rc = i2c_recover_bus(i2c_dev);
+    if (rc == -ENOSYS) {
+        LOG_WRN("Zephyr i2c_recover_bus unsupported (-ENOSYS); relying on manual PB8/PB9 recovery");
+    } else if (rc != 0) {
+        LOG_ERR("Zephyr i2c_recover_bus failed: %d", rc);
+    }
 }
 
 void FailSafeStrategy::executeRecovery(const device*) {

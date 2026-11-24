@@ -72,8 +72,18 @@ private:
     RetryStrategy retry_strategy;
     BusResetStrategy reset_strategy;
     FailSafeStrategy failsafe_strategy;
+    bool sleep_mutex_held{false};
 public:
     explicit I2CManager(const device* dev);
+    ~I2CManager();
+    I2CManager(const I2CManager&) = delete;
+    I2CManager& operator=(const I2CManager&) = delete;
+    I2CManager(I2CManager&&) = delete;
+    I2CManager& operator=(I2CManager&&) = delete;
+
+    void lockForSleep() noexcept;
+    void unlockAfterSleep() noexcept;
+    
     Result<uint8_t> readRegister(uint16_t sensor_addr, uint8_t reg_addr);
     Result<bool> writeRegister(uint16_t sensor_addr, uint8_t reg_addr, uint8_t val);
     Result<uint16_t> readWord(uint16_t sensor_addr, uint8_t reg_addr);

@@ -12,6 +12,11 @@ struct BatteryLimits {
     static constexpr uint32_t CACHE_STALE_MS = 3000U;
     static constexpr uint16_t PACK_MIN_VOLTAGE_MV = 8700U;
     static constexpr uint16_t PACK_MAX_VOLTAGE_MV = 12600U;
+    static constexpr uint16_t PACK_CUTOFF_VOLTAGE_MV = 9000U;     // 3.00 V/cell direct cutoff (3S)
+    static constexpr uint16_t PACK_REENABLE_VOLTAGE_MV = 9600U;   // 3.20 V/cell recovery hysteresis (3S)
+    static constexpr int16_t  MIN_SAFE_TEMP_TENTHS_C = 0;         // 0.0 C under-temperature cutoff
+    static constexpr int16_t  MAX_SAFE_TEMP_TENTHS_C = 600;       // 60.0 C over-temperature cutoff (use 450 for 45.0 C)
+    static constexpr int16_t  TEMP_HYSTERESIS_TENTHS_C = 30;      // 3.0 C thermal recovery hysteresis
     static constexpr uint32_t NOMINAL_CAPACITY_MAH = 2000U;
     static constexpr uint32_t MAX_CHARGE_CURRENT_MA = 800U;
     static constexpr uint32_t MAX_DISCHARGE_CURRENT_MA = 800U;

@@ -242,6 +242,11 @@ void PowerManager::reportPmFailure() {
 void PowerManager::transitionTo(IPowerState& next_state) {
     if (current_state == &next_state) return;
 
+    if ((&next_state == &StopState::getInstance()) && isFlashBusy()) {
+        LOG_WRN("Refusing STOP transition: flash operation in progress.");
+        return;
+    }
+
     IPowerState* old_state = current_state;
 
     // Tell the state hooks where we are heading: their exit logs name the destination, and
@@ -338,6 +343,7 @@ void PowerManager::resetForTest() {
     consecutive_pm_failures = 0;
     atomic_set(&wake_pending, 0);
     atomic_set(&s_activity_pending, 0);
+    flash_lock_count.store(0U, std::memory_order_release);
 
     k_mutex_lock(&pm_observer_mutex, K_FOREVER);
     observer_count = 0;

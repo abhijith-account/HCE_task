@@ -116,6 +116,10 @@ StopState& StopState::getInstance() {
 }
 
 bool StopState::enter(PowerManager& pm) {
+    if (pm.isFlashBusy()) {
+        LOG_WRN("Aborting STOP entry: flash operation in progress.");
+        return false;
+    }
     LOG_WRN("Preparing for Deep Sleep (PM_STATE_SUSPEND_TO_RAM): %u s total, wake every %u s",static_cast<unsigned int>(STOP_TOTAL_TIME_US / 1000000U),static_cast<unsigned int>(STOP_WAKE_INTERVAL_US / 1000000U));
 
     s_stop_wake_reason = StopWakeReason::WAKE_NONE;

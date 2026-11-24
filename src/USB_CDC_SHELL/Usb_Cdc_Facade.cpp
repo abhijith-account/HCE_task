@@ -93,20 +93,25 @@ void UsbCdcFacade::uartInterruptHandler(const device* dev, void* user_data) {
         bool discard_rest_of_burst = false;
         uint8_t c=0U;
         while (uart_fifo_read(dev, &c, 1) == 1) {
+            if (discard_rest_of_burst || self->rx_flush_requested.load(std::memory_order_acquire)) {
+                self->dropped_bytes.fetch_add(1, std::memory_order_relaxed);
+                continue;
+            }
+
             if (c == '\b' || c == 0x7F) {
                 const std::size_t head = self->rx_head.load(std::memory_order_relaxed);
                 const std::size_t tail = self->rx_tail.load(std::memory_order_acquire);
-                
+
                 if (head != tail) {
                     uart_poll_out(dev, '\b');
                     uart_poll_out(dev, ' ');
                     uart_poll_out(dev, '\b');
-                    
+
                     self->rx_head.store((head + RX_RING_BUF_SIZE - 1) % RX_RING_BUF_SIZE, std::memory_order_release);
                 }
                 continue;
             }
-            
+
             if (c == '\r' || c == '\n') {
                 uart_poll_out(dev, '\r');
                 uart_poll_out(dev, '\n');
@@ -114,10 +119,6 @@ void UsbCdcFacade::uartInterruptHandler(const device* dev, void* user_data) {
                 uart_poll_out(dev, c);
             }
 
-            if (discard_rest_of_burst) {
-                self->dropped_bytes.fetch_add(1, std::memory_order_relaxed);
-                continue;
-            }
             const std::size_t head = self->rx_head.load(std::memory_order_relaxed);
             const std::size_t tail = self->rx_tail.load(std::memory_order_acquire);
             const std::size_t next_head = (head + 1) % RX_RING_BUF_SIZE;
@@ -129,13 +130,12 @@ void UsbCdcFacade::uartInterruptHandler(const device* dev, void* user_data) {
                     self->dropped_bytes.store(0, std::memory_order_relaxed);
                 }
             } else {
-                const std::size_t buffered = (head + RX_RING_BUF_SIZE - tail) % RX_RING_BUF_SIZE;
-                self->rx_tail.store(head, std::memory_order_release);
-                self->dropped_bytes.fetch_add(buffered + 1, std::memory_order_relaxed);
+                self->rx_flush_requested.store(true, std::memory_order_release);
+                self->dropped_bytes.fetch_add(1, std::memory_order_relaxed);
                 self->overflow_count.fetch_add(1, std::memory_order_relaxed);
                 discard_rest_of_burst = true;
                 if (!self->overflow_logged.exchange(true, std::memory_order_relaxed)) {
-                    LOG_WRN("USB RX overflow - input buffer flushed");
+                    LOG_WRN("USB RX overflow - input buffer flush requested");
                 }
             }
         }
@@ -146,6 +146,13 @@ bool UsbCdcFacade::readLine(CommandBuffer& out_line) noexcept {
     const unsigned int key = irq_lock();
     const std::size_t head = rx_head.load(std::memory_order_acquire);
     const std::size_t tail = rx_tail.load(std::memory_order_relaxed);
+    if (rx_flush_requested.exchange(false, std::memory_order_acquire)) {
+        const std::size_t buffered = (head + RX_RING_BUF_SIZE - tail) % RX_RING_BUF_SIZE;
+        rx_tail.store(head, std::memory_order_release);
+        dropped_bytes.fetch_add(buffered, std::memory_order_relaxed);
+        irq_unlock(key);
+        return false;
+    }
     if (head == tail) {
         irq_unlock(key);
         return false;

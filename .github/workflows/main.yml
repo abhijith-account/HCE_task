@@ -113,6 +113,12 @@ jobs:
           grep -q "^CONFIG_ARM_MPU=y$" build_nucleo/zephyr/.config
           grep -q "^CONFIG_HW_STACK_PROTECTION=y$" build_nucleo/zephyr/.config
 
+          echo "===== VERIFYING ZERO HEAP SYMBOLS IN ELF ====="
+          if nm build_nucleo/zephyr/zephyr.elf | grep -E ' (malloc|_Znwj)'; then
+            echo "::error::Dynamic heap allocation symbol detected in zephyr.elf!"
+            exit 1
+          fi
+
           echo ""
           echo "===== NUCLEO BUILD IMAGE ====="
           ls -lh build_nucleo/zephyr/zephyr.elf
@@ -152,6 +158,7 @@ jobs:
 
           echo "Verifying QEMU runtime milestones in qemu_m4_report.md..."
           for milestone in \
+            "Watchdog initialized" \
             "Command-Based RTOS Booting" \
             "FCB Configuration Store Mounted Successfully" \
             "1,000 Write-Cycle Endurance Test passed" \

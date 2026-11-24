@@ -24,10 +24,6 @@ const struct device *i2c_hardware = DEVICE_DT_GET(DT_NODELABEL(i2c1));
 #endif
 #endif
 
-#ifndef IS_TEST_ENVIRONMENT
-I2CManager i2c_manager(i2c_hardware);
-#endif
-
 namespace {
     constexpr uint8_t MAX_I2C_ATTEMPTS = 3U;
 
@@ -81,11 +77,45 @@ namespace {
     class I2CPowerObserver final : public IPowerObserver {
     private:
         atomic_t is_sleeping{};
+        std::atomic<I2CManager*> active_manager{nullptr};
+        I2CManager* locked_manager{nullptr};
     public:
         I2CPowerObserver() noexcept { atomic_set(&is_sleeping, 0); }
-        void beforeSleep() override { atomic_set(&is_sleeping, 1); }
-        void afterWakeup() override { atomic_set(&is_sleeping, 0); }
-        void sleepAborted() override { atomic_set(&is_sleeping, 0); }
+
+        void attachManager(I2CManager* mgr) noexcept {
+            active_manager.store(mgr, std::memory_order_release);
+        }
+
+        void detachManager(I2CManager* mgr) noexcept {
+            if (locked_manager == mgr) {
+                locked_manager->unlockAfterSleep();
+                locked_manager = nullptr;
+            }
+            I2CManager* expected = mgr;
+            (void)active_manager.compare_exchange_strong(expected, nullptr, std::memory_order_acq_rel);
+        }
+
+        void beforeSleep() override {
+            atomic_set(&is_sleeping, 1);
+            I2CManager* const mgr = active_manager.load(std::memory_order_acquire);
+            if (mgr != nullptr) {
+                mgr->lockForSleep();
+                locked_manager = mgr;
+            }
+        }
+
+        void afterWakeup() override {
+            if (locked_manager != nullptr) {
+                locked_manager->unlockAfterSleep();
+                locked_manager = nullptr;
+            }
+            atomic_set(&is_sleeping, 0);
+        }
+
+        void sleepAborted() override {
+            afterWakeup();
+        }
+
         bool isSleeping() const noexcept { return atomic_get(&is_sleeping) != 0; }
     };
 
@@ -164,7 +194,30 @@ namespace {
 
 I2CManager::I2CManager(const device* i2c_dev) : i2c_dev(i2c_dev) {
     (void)k_mutex_init(&bus_mutex);
+    g_i2cPowerObserver.attachManager(this);
 }
+
+I2CManager::~I2CManager() {
+    g_i2cPowerObserver.detachManager(this);
+}
+
+void I2CManager::lockForSleep() noexcept {
+    if (!sleep_mutex_held) {
+        (void)k_mutex_lock(&bus_mutex, K_FOREVER);
+        sleep_mutex_held = true;
+    }
+}
+
+void I2CManager::unlockAfterSleep() noexcept {
+    if (sleep_mutex_held) {
+        sleep_mutex_held = false;
+        (void)k_mutex_unlock(&bus_mutex);
+    }
+}
+
+#ifndef IS_TEST_ENVIRONMENT
+I2CManager i2c_manager(i2c_hardware);
+#endif
 
 Result<uint8_t> I2CManager::readRegister(uint16_t sensor_addr, uint8_t reg_addr) {
     I2CScopedLock lock(&bus_mutex);
@@ -316,8 +369,10 @@ Result<uint64_t> I2CManager::read64Bit(uint16_t sensor_addr, uint8_t reg_addr) {
     }
     return Result<uint64_t>::Err(fault);
 }
+
 #ifdef IS_TEST_ENVIRONMENT
 void resetI2CObserverRegistrationForTests() noexcept {
+    g_i2cPowerObserver.afterWakeup();
     k_mutex_lock(&g_i2c_observer_registration_mutex, K_FOREVER);
     g_i2cObserverRegistered = false;
     k_mutex_unlock(&g_i2c_observer_registration_mutex);

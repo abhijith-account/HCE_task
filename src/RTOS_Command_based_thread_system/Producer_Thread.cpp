@@ -56,9 +56,13 @@ extern "C" void producer_thread(void *arg1, void *arg2, void *arg3) {
                LOG_ERR("[%s] Failed to initialize BME280. Retrying...", LogTags::PRODUCER);
            } else {
                g_bme280_initialized = true;
-               SystemObjects::context().requestTransition(SystemState::RUNNING);
                k_msleep(20);
            }
+       }
+
+       if (g_bme280_initialized &&
+           (SystemObjects::context().getState() == SystemState::INIT)) {
+           static_cast<void>(SystemObjects::context().requestTransition(SystemState::RUNNING));
        }
 
        if (!g_lps22hb_initialized) {

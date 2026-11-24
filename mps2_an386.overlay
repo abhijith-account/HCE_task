@@ -123,3 +123,7 @@
 &uart1 {
         status = "okay";
 };
+
+&wdog0 {
+    status = "okay";
+};

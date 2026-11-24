@@ -276,12 +276,22 @@ void SbsBattery::processFSM() {
 
     const int32_t shunt_uv = snapshot.shunt_voltage.value;
     const uint8_t soc_pct = snapshot.soc.value;
+    const uint16_t pack_mv = snapshot.voltage.value;
+    const int32_t temp_tenths_c =
+        static_cast<int32_t>(snapshot.temperature.value) - Thermistor::KELVIN_OFFSET_TENTHS;
     const BatteryFSM current_fsm_state = current_state.load();
 
-    if (soc_pct < BatteryLimits::CUTOFF_SOC_PCT) {
+    const bool soc_cutoff = (soc_pct < BatteryLimits::CUTOFF_SOC_PCT);
+    const bool voltage_cutoff = (pack_mv >= BatteryLimits::MIN_VALID_VOLTAGE_MV) &&
+                                (pack_mv <= BatteryLimits::PACK_CUTOFF_VOLTAGE_MV);
+    const bool temp_cutoff = (temp_tenths_c > BatteryLimits::MAX_SAFE_TEMP_TENTHS_C) ||
+                             (temp_tenths_c < BatteryLimits::MIN_SAFE_TEMP_TENTHS_C);
+
+    if (soc_cutoff || voltage_cutoff || temp_cutoff) {
         if (current_fsm_state != BatteryFSM::CUTOFF) {
             if (sys_context != nullptr) {
-                LOG_WRN("Battery Critically Low. Requesting SAFE_HALT state.");
+                LOG_WRN("Battery safety cutoff (SoC=%u%%, V=%u mV, T=%d.%d C). Requesting SAFE_HALT.",
+                        soc_pct, pack_mv, temp_tenths_c / 10, absolute(temp_tenths_c % 10));
                 sys_context->requestTransition(SystemState::SAFE_HALT);
             }
             current_state.store(BatteryFSM::CUTOFF);
@@ -325,10 +335,16 @@ void SbsBattery::processFSM() {
         full_charge_logged.store(false);
     }
 
-    if (soc_pct > BatteryLimits::REENABLE_SOC_PCT) {
+    const bool temp_recovered =
+        (temp_tenths_c <= (BatteryLimits::MAX_SAFE_TEMP_TENTHS_C - BatteryLimits::TEMP_HYSTERESIS_TENTHS_C)) &&
+        (temp_tenths_c >= (BatteryLimits::MIN_SAFE_TEMP_TENTHS_C + BatteryLimits::TEMP_HYSTERESIS_TENTHS_C));
+
+    if ((soc_pct > BatteryLimits::REENABLE_SOC_PCT) &&
+        (pack_mv >= BatteryLimits::PACK_REENABLE_VOLTAGE_MV) &&
+        temp_recovered) {
         if (current_fsm_state == BatteryFSM::CUTOFF) {
             if (sys_context != nullptr && sys_context->getState() == SystemState::SAFE_HALT) {
-                LOG_INF("Battery recovered to %u%%. System safe to restart.", soc_pct);
+                LOG_INF("Battery recovered (SoC=%u%%, V=%u mV). System safe to restart.", soc_pct, pack_mv);
                 sys_context->requestTransition(SystemState::INIT);
                 current_state.store((shunt_uv > BatteryLimits::IDLE_SHUNT_UV_THRESHOLD) ? BatteryFSM::CHARGING : BatteryFSM::IDLE);
                 FsmClassifier::reset();

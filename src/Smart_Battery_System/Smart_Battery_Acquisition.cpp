@@ -129,11 +129,10 @@ void SbsBattery::pollHardwareAndUpdateCache() {
                 is_disconnected = true;
             }
 
-        } else {
-
-            if (pack_mv_32 < BatteryLimits::PACK_MIN_VOLTAGE_MV) {
-                is_disconnected = true;
-            }
+        } else if ((pack_mv_32 >= BatteryLimits::MIN_VALID_VOLTAGE_MV) &&
+                   (pack_mv_32 < BatteryLimits::PACK_MIN_VOLTAGE_MV)) {
+            LOG_WRN("Deeply discharged pack detected (%u mV); treating as connected and critically low.",
+                    static_cast<unsigned int>(pack_mv_32));
         }
     }
 

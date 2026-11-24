@@ -13,6 +13,8 @@
 #include "Power_Management_System.h"
 #include <cstdio>
 
+std::atomic<bool> rx_flush_requested{false};
+
 constexpr std::size_t RX_RING_BUF_SIZE  = 256;
 constexpr std::size_t MAX_CMD_LEN       = 128;
 constexpr std::size_t StatusBufferSize  = 512;

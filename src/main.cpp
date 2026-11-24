@@ -27,13 +27,12 @@ LOG_MODULE_REGISTER(MAIN_OS, LOG_LEVEL_INF);
 static void usb_status_cb(enum usb_dc_status_code cb_status, const uint8_t *param) {
     switch (cb_status) {
         case USB_DC_DISCONNECTED:
-        case USB_DC_SUSPEND:
             if (g_usb_connected.exchange(false, std::memory_order_acq_rel)) {
                 LOG_WRN("USB Hardware Event: Cable Disconnected");
-
-                // Immediately trigger the fault when the physical cable is pulled
-                sys_context.triggerFault("USB CDC Cable Disconnected");
             }
+            break;
+        case USB_DC_SUSPEND:
+            LOG_INF("USB Hardware Event: Bus Suspended");
             break;
         case USB_DC_CONFIGURED:
             if (!g_usb_connected.exchange(true, std::memory_order_acq_rel)) {

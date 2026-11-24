@@ -1,5 +1,6 @@
 #pragma once
 
+#include <zephyr/kernel.h>
 #include <zephyr/fs/fcb.h>
 #include <zephyr/pm/policy.h>
 #include "Power_Management_System.h"
@@ -32,13 +33,14 @@ namespace InfusionDeviceConfig {
 class FlashPowerGuard {
 public:
     FlashPowerGuard() {
+        PowerManager::getInstance().acquireFlashLock();
         pm_policy_state_lock_get(PM_STATE_SUSPEND_TO_RAM, PM_ALL_SUBSTATES);
     }
     ~FlashPowerGuard() {
         pm_policy_state_lock_put(PM_STATE_SUSPEND_TO_RAM, PM_ALL_SUBSTATES);
+        PowerManager::getInstance().releaseFlashLock();
     }
 };
-
 struct FcbRecordHeader {
     ConfigKey key;
     uint16_t length;
@@ -46,8 +48,21 @@ struct FcbRecordHeader {
 
 class ConfigStore {
     private:
+        struct MutexGuard {
+            struct k_mutex& mtx;
+            explicit MutexGuard(struct k_mutex& m) noexcept : mtx(m) {
+                k_mutex_lock(&mtx, K_FOREVER);
+            }
+            ~MutexGuard() noexcept {
+                k_mutex_unlock(&mtx);
+            }
+            MutexGuard(const MutexGuard&) = delete;
+            MutexGuard& operator=(const MutexGuard&) = delete;
+        };
+
         struct fcb fcb_instance{};
         struct flash_sector fcb_sectors[2]{}; // Sectors 6 and 7
+        mutable struct k_mutex fcb_mutex{};
         bool initialized{false};
 
         static ConfigStore instance;
@@ -70,35 +85,39 @@ class ConfigStore {
         bool set(ConfigKey key, const T& value) {
             static_assert(std::is_trivially_copyable<T>::value, "Config data must be trivially copyable");
 
-            if (!initialized){
-                return false;
-            }
+            {
+                MutexGuard lock(fcb_mutex);
+                if (!initialized) {
+                    return false;
+                }
 
-            FlashPowerGuard pm_guard;
+                FlashPowerGuard pm_guard;
 
-            struct fcb_entry loc{};
-            int rc = fcb_append(&fcb_instance, sizeof(FcbRecordHeader) + sizeof(T), &loc);
-            if (rc == -ENOSPC) {
-                // Flash area full: rotate (erase oldest sector) and retry once.
-                rc = fcb_rotate(&fcb_instance);
+                struct fcb_entry loc{};
+                int rc = fcb_append(&fcb_instance, sizeof(FcbRecordHeader) + sizeof(T), &loc);
+                if (rc == -ENOSPC) {
+                    // Flash area full: rotate (erase oldest sector) and retry once.
+                    rc = fcb_rotate(&fcb_instance);
+                    if (rc != 0) {
+                        return false;
+                    }
+                    rc = fcb_append(&fcb_instance, sizeof(FcbRecordHeader) + sizeof(T), &loc);
+                }
                 if (rc != 0) {
                     return false;
                 }
-                rc = fcb_append(&fcb_instance, sizeof(FcbRecordHeader) + sizeof(T), &loc);
+
+                FcbRecordHeader header = { key, sizeof(T) };
+                rc = flash_area_write(fcb_instance.fap, FCB_ENTRY_FA_DATA_OFF(loc), &header, sizeof(header));
+                if (rc != 0) return false;
+
+                rc = flash_area_write(fcb_instance.fap, FCB_ENTRY_FA_DATA_OFF(loc) + sizeof(header), &value, sizeof(T));
+                if (rc != 0) return false;
+
+                rc = fcb_append_finish(&fcb_instance, &loc);
+                if (rc != 0) return false;
             }
-            if (rc != 0) {
-                return false;
-            }
 
-            FcbRecordHeader header = { key, sizeof(T) };
-            rc = flash_area_write(fcb_instance.fap, FCB_ENTRY_FA_DATA_OFF(loc), &header, sizeof(header));
-            if (rc != 0) return false;
-
-            rc = flash_area_write(fcb_instance.fap, FCB_ENTRY_FA_DATA_OFF(loc) + sizeof(header), &value, sizeof(T));
-            if (rc != 0) return false;
-
-            rc = fcb_append_finish(&fcb_instance, &loc);
-            if (rc != 0) return false;
             PowerManager::getInstance().reportActivity();
             return true;
         }
@@ -107,9 +126,12 @@ class ConfigStore {
         bool get(ConfigKey key, T& out_value) {
             static_assert(std::is_trivially_copyable<T>::value, "Config data must be trivially copyable.");
 
-            if (!initialized){
+            MutexGuard lock(fcb_mutex);
+            if (!initialized) {
                 return false;
             }
+
+            FlashPowerGuard pm_guard;
 
             struct fcb_entry loc{};
             loc.fe_sector = nullptr;
@@ -119,7 +141,6 @@ class ConfigStore {
             FcbRecordHeader header{};
             T temp_val{};
 
-            // Walk through all records to find the most recent one for this key
             // Walk through all records to find the most recent one for this key
             while (fcb_getnext(&fcb_instance, &loc) == 0) {
                 if (flash_area_read(fcb_instance.fap, FCB_ENTRY_FA_DATA_OFF(loc), &header, sizeof(header)) == 0) {

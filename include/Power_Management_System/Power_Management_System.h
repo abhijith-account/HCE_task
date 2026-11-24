@@ -102,6 +102,16 @@ public:
 
     // Static callback for RTC API
     static void rtc_alarm_handler(const struct device* dev, uint16_t id, void* user_data);
+    
+    void acquireFlashLock() noexcept {
+    flash_lock_count.fetch_add(1U, std::memory_order_acq_rel);
+    }
+    void releaseFlashLock() noexcept {
+        flash_lock_count.fetch_sub(1U, std::memory_order_acq_rel);
+    }
+    [[nodiscard]] bool isFlashBusy() const noexcept {
+        return flash_lock_count.load(std::memory_order_acquire) > 0U;
+    }
 
 #ifdef IS_TEST_ENVIRONMENT
     void resetForTest();
@@ -137,6 +147,7 @@ private:
     uint32_t consecutive_pm_failures{0U};
 
     std::atomic<uint32_t> last_activity_time{0U};
+    std::atomic<uint32_t> flash_lock_count{0U};
 };
 
 
