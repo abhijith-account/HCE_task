@@ -11,7 +11,12 @@ LOG_MODULE_REGISTER(DEVICE_STATE, LOG_LEVEL_INF);
 static struct k_spinlock device_state_lock;
 static struct k_spinlock wdt_access_lock;
 
-WatchdogTimer::WatchdogTimer() : wdt_dev(DEVICE_DT_GET_OR_NULL(DT_ALIAS(watchdog0))), channel_id(-1) {}
+#ifdef CONFIG_BOARD_MPS2_AN386
+    const uint8_t wdt_options = 0U;
+#else
+    const uint8_t wdt_options = WDT_OPT_PAUSE_HALTED_BY_DBG;
+#endif
+    const int setup_rc = wdt_setup(wdt_dev, wdt_options);
 
 bool WatchdogTimer::init(uint32_t timeout_ms){
     if (!device_is_ready(wdt_dev)){
@@ -172,7 +177,6 @@ extern "C" void daly_watchdog_feed_hook(void){
     const uint32_t now = k_uptime_get_32();
     
     if (now - last_health_check < 1000){
-        sys_context.feedWatchdog();
         return;
     }
     
