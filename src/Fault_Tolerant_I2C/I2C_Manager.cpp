@@ -73,41 +73,41 @@ namespace {
         }
         return -EIO;
     }
+    constinit std::atomic<I2CManager*> g_i2c_active_manager{nullptr};
+    constinit I2CManager* g_i2c_locked_manager{nullptr};
+
+    void attach_i2c_manager(I2CManager* mgr) noexcept {
+        g_i2c_active_manager.store(mgr, std::memory_order_release);
+    }
+
+    void detach_i2c_manager(I2CManager* mgr) noexcept {
+        if (g_i2c_locked_manager == mgr) {
+            g_i2c_locked_manager->unlockAfterSleep();
+            g_i2c_locked_manager = nullptr;
+        }
+        I2CManager* expected = mgr;
+        (void)g_i2c_active_manager.compare_exchange_strong(expected, nullptr, std::memory_order_acq_rel);
+    }
 
     class I2CPowerObserver final : public IPowerObserver {
     private:
         atomic_t is_sleeping{ATOMIC_INIT(0)};
-        std::atomic<I2CManager*> active_manager{nullptr};
-        I2CManager* locked_manager{nullptr};
     public:
         constexpr I2CPowerObserver() noexcept = default;
 
-        void attachManager(I2CManager* mgr) noexcept {
-            active_manager.store(mgr, std::memory_order_release);
-        }
-
-        void detachManager(I2CManager* mgr) noexcept {
-            if (locked_manager == mgr) {
-                locked_manager->unlockAfterSleep();
-                locked_manager = nullptr;
-            }
-            I2CManager* expected = mgr;
-            (void)active_manager.compare_exchange_strong(expected, nullptr, std::memory_order_acq_rel);
-        }
-
         void beforeSleep() override {
             atomic_set(&is_sleeping, 1);
-            I2CManager* const mgr = active_manager.load(std::memory_order_acquire);
+            I2CManager* const mgr = g_i2c_active_manager.load(std::memory_order_acquire);
             if (mgr != nullptr) {
                 mgr->lockForSleep();
-                locked_manager = mgr;
+                g_i2c_locked_manager = mgr;
             }
         }
 
         void afterWakeup() override {
-            if (locked_manager != nullptr) {
-                locked_manager->unlockAfterSleep();
-                locked_manager = nullptr;
+            if (g_i2c_locked_manager != nullptr) {
+                g_i2c_locked_manager->unlockAfterSleep();
+                g_i2c_locked_manager = nullptr;
             }
             atomic_set(&is_sleeping, 0);
         }
@@ -194,11 +194,11 @@ namespace {
 
 I2CManager::I2CManager(const device* i2c_dev) : i2c_dev(i2c_dev) {
     (void)k_mutex_init(&bus_mutex);
-    g_i2cPowerObserver.attachManager(this);
+    attach_i2c_manager(this);
 }
 
 I2CManager::~I2CManager() {
-    g_i2cPowerObserver.detachManager(this);
+    detach_i2c_manager(this);
 }
 
 void I2CManager::lockForSleep() noexcept {
