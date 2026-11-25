@@ -361,6 +361,10 @@ TEST_F(PowerManagementTestSuite, ThreadRoutineActiveTimeoutElseBlock) {
         k_sem_give(&pm_wake_sem);
     });
 
+    power_monitor_thread();
+    advancer.join();
+}
+
 // ---------------------------------------------------------------------------
 // power_monitor_thread(): `if (s_in_idle_state)` branch (both inner outcomes)
 // ---------------------------------------------------------------------------
