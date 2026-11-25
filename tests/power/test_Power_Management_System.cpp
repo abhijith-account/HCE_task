@@ -322,22 +322,22 @@ TEST_F(PowerManagementTestSuite, ThreadRoutineIdleStateTimeoutEdges) {
     // processFSM() execution and the thread's native current_time check.
     std::thread FsmAdvancer([]() {
         for (int i = 0; i < 50; i++) {
-            run_thread_once = true; // Keep the loop alive
-            
+            __atomic_store_n(&run_thread_once, true, __ATOMIC_RELEASE); // Keep the loop alive
+
             virtual_uptime = 35000; // Trigger Active -> Idle
             std::this_thread::sleep_for(std::chrono::microseconds(50));
-            
+
             // Race Window: Let processFSM see elapsed < 5000
-            virtual_uptime = 39999; 
+            virtual_uptime = 39999;
             std::this_thread::sleep_for(std::chrono::microseconds(50));
-            
+
             // Immediately jump to >= 5000 so the loop fallback captures K_MSEC(10)
-            virtual_uptime = 45000; 
+            virtual_uptime = 45000;
             k_sem_give(&pm_wake_sem);
         }
-        
+
         // Terminate cleanly
-        run_thread_once = false;
+        __atomic_store_n(&run_thread_once, false, __ATOMIC_RELEASE);
         k_sem_give(&pm_wake_sem);
     });
     

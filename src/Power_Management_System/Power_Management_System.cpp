@@ -16,7 +16,7 @@ K_SEM_DEFINE(stop_wake_sem, 0, 1);
     extern bool run_thread_once;
     __attribute__((weak)) bool g_force_init_fail = false;
     __attribute__((weak)) bool g_force_idle_enter_fail = false;
-    #define THREAD_LOOP_CONDITION (run_thread_once ? (run_thread_once = false, true) : false)
+    #define THREAD_LOOP_CONDITION __atomic_exchange_n(&run_thread_once, false, __ATOMIC_ACQ_REL)
 #else
     #define THREAD_LOOP_CONDITION true
 #endif
