@@ -19,7 +19,7 @@ __attribute__((weak)) const device* i2c_hardware = nullptr;
 
 __attribute__((weak)) bool atomic_cas(atomic_t *target, atomic_val_t old_value, atomic_val_t new_value) { return target->compare_exchange_strong(old_value, new_value); }
 
-uint32_t virtual_uptime = 0;
+MockAtomicU32 virtual_uptime{0U};
 
 void (*g_sim_timer_cb)(struct k_timer*) = nullptr;
 

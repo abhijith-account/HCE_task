@@ -27,7 +27,6 @@ extern int g_i2c_force_errno;
 extern int g_i2c_call_counter;
 extern int g_i2c_fail_on_call_n;
 extern int g_i2c_fail_on_call_errno;
-extern uint32_t virtual_uptime;
 extern DeviceContext sys_context;
 extern int g_adc_sequence_init_dt_errno;
 extern int test_iterations_remaining;

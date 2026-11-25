@@ -69,7 +69,6 @@ extern UsbShell diag_shell;
 extern std::atomic<bool> g_usb_connected;          // physical USB state, owned by the shell TU
 extern atomic_t g_shell_alive;    // shell watchdog heartbeat, owned by the shell TU
 extern DeviceContext sys_context;
-extern uint32_t virtual_uptime;
 extern bool test_parseIntToken(std::string_view token, int& out_value) noexcept;
 extern std::string_view test_trim(std::string_view s) noexcept;
 extern bool run_thread_once;
