@@ -18,7 +18,6 @@ extern int g_i2c_bus_recovery_attempts;
 extern uint8_t mock_read_data[8];
 extern const device* mock_dev;
 extern bool g_device_ready_override;
-extern uint32_t virtual_uptime;
 extern int g_i2c_force_errno;
 extern void test_update_cache(uint32_t key, uint64_t value, bool calibrated);
 extern bool test_get_cached_value(uint32_t key, uint64_t* out_val, uint32_t max_age_ms);

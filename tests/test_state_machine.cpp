@@ -282,7 +282,6 @@ TEST_F(StateMachineTestSuite, IsLegalTransitionBranches)
                                        SystemState::INIT));
 }
 
-extern uint32_t virtual_uptime;
 extern DeviceContext sys_context; // Targets the global instance used by the hook
 
 TEST_F(StateMachineTestSuite, DalyWatchdogFeedHookComprehensive) {
