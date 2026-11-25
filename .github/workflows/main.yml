@@ -298,7 +298,7 @@ jobs:
             -DCMAKE_CXX_FLAGS="-O1 -g -fsanitize=thread -fno-omit-frame-pointer" \
             -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=thread"
           cmake --build tests/build_tsan -j$(nproc)
-          setarch $(uname -m) -R ctest --test-dir tests/build_tsan --output-on-failure
+          ctest --test-dir tests/build_tsan --output-on-failure
       
       - name: Upload coverage report
         if: always()
