@@ -107,11 +107,15 @@ static inline int k_mutex_lock(struct k_mutex *mutex, int timeout) {
 static inline int k_mutex_unlock(struct k_mutex *mutex) {
     if (mutex != nullptr) {
         const uintptr_t self = static_cast<uintptr_t>(pthread_self()) | static_cast<uintptr_t>(1U);
-        if (__atomic_load_n(&mutex->owner, __ATOMIC_RELAXED) == self) {
-            if (--mutex->lock_count <= 0) {
-                mutex->lock_count = 0;
+        const uintptr_t cur = __atomic_load_n(&mutex->owner, __ATOMIC_RELAXED);
+        if (cur == self) {
+            if (__atomic_sub_fetch(&mutex->lock_count, 1, __ATOMIC_RELAXED) <= 0) {
+                __atomic_store_n(&mutex->lock_count, 0, __ATOMIC_RELAXED);
                 __atomic_store_n(&mutex->owner, static_cast<uintptr_t>(0U), __ATOMIC_RELEASE);
             }
+        } else if (cur != 0U) {
+            __atomic_store_n(&mutex->lock_count, 0, __ATOMIC_RELAXED);
+            __atomic_store_n(&mutex->owner, static_cast<uintptr_t>(0U), __ATOMIC_RELEASE);
         }
     }
     return 0;
