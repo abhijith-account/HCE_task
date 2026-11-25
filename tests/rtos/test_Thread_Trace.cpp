@@ -26,9 +26,7 @@ public:
     }
 };
 
-
-void setUptimeMs(uint32_t ms) { virtual_uptime = ms; }
-
+void setUptimeMs(uint32_t ms) { __atomic_store_n(&virtual_uptime, ms, __ATOMIC_RELAXED); }
 
 struct TraceEventMirror {          // same layout as TraceEvent in the .cpp
     uint32_t timestamp;
