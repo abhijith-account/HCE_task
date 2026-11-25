@@ -23,7 +23,8 @@ void RaceForFirstInit(Fn get_instance, int num_threads = 64) {
     for (auto& t : threads) t.join();
 }
 
-#ifdef PM_TEST_CAN_PATCH_CODE
+#if defined(PM_TEST_CAN_PATCH_CODE) && !defined(__SANITIZE_THREAD__)
+// A function-local static's thread-safe-init guard has a branch that is only
 // A function-local static's thread-safe-init guard has a branch that is only
 // taken when __cxa_guard_acquire() returns 0, i.e. "another thread finished
 // constructing the object while I was waiting".  A multi-thread first-use race
@@ -69,7 +70,7 @@ public:
         RaceForFirstInit([] { return &ActiveState::getInstance(); });
         RaceForFirstInit([] { return &IdleState::getInstance(); });
         RaceForFirstInit([] { return &StopState::getInstance(); });
-#ifdef PM_TEST_CAN_PATCH_CODE
+#if defined(PM_TEST_CAN_PATCH_CODE) && !defined(__SANITIZE_THREAD__)
         CoverGuardContendedPath("GVZN12PowerManager11getInstance", [] { return &PowerManager::getInstance(); });
         CoverGuardContendedPath("GVZN11ActiveState11getInstance",  [] { return &ActiveState::getInstance(); });
         CoverGuardContendedPath("GVZN9IdleState11getInstance",     [] { return &IdleState::getInstance(); });
