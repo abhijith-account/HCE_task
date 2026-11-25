@@ -105,9 +105,30 @@ __attribute__((weak)) int i2c_reg_read_byte(const struct device *dev, uint16_t d
 __attribute__((weak)) int i2c_reg_write_byte(const struct device *dev, uint16_t dev_addr, uint8_t reg_addr, uint8_t value) { ++g_i2c_call_counter; if (g_i2c_force_errno != 0) { return g_i2c_force_errno; } if (g_i2c_fail_on_call_n != 0 && g_i2c_call_counter >= g_i2c_fail_on_call_n) { return g_i2c_fail_on_call_errno; } return 0; }
 __attribute__((weak)) int i2c_burst_read(const struct device *dev, uint16_t dev_addr, uint8_t start_addr, uint8_t *buf, uint32_t num_bytes) { ++g_i2c_call_counter; if (g_i2c_force_errno != 0) { return g_i2c_force_errno; } if (g_i2c_fail_on_call_n != 0 && g_i2c_call_counter >= g_i2c_fail_on_call_n) { return g_i2c_fail_on_call_errno; } if (buf && num_bytes > 0) { memset(buf, 0, num_bytes); } return 0; }
 __attribute__((weak)) int i2c_recover_bus(const struct device *dev) { (void)dev; ++g_i2c_bus_recovery_attempts; return g_i2c_recover_bus_ret; }
-__attribute__((weak)) int k_sem_init(struct k_sem *sem, unsigned int initial, unsigned int limit) { sem->count = initial; sem->limit = limit; return 0; }
-__attribute__((weak)) void k_sem_give(struct k_sem *sem) { if (sem->count < sem->limit) { sem->count++; } }
-__attribute__((weak)) int k_sem_take(struct k_sem *sem, k_timeout_t timeout) { if (sem->count > 0) { sem->count--; return 0; } return -EBUSY; }
+__attribute__((weak)) int k_sem_init(struct k_sem *sem, unsigned int initial, unsigned int limit) {
+        __atomic_store_n(&sem->limit, limit, __ATOMIC_RELAXED);
+        __atomic_store_n(&sem->count, initial, __ATOMIC_RELEASE);
+        return 0;
+    }
+    __attribute__((weak)) void k_sem_give(struct k_sem *sem) {
+        const unsigned int limit = __atomic_load_n(&sem->limit, __ATOMIC_RELAXED);
+        unsigned int cur = __atomic_load_n(&sem->count, __ATOMIC_RELAXED);
+        while (cur < limit) {
+            if (__atomic_compare_exchange_n(&sem->count, &cur, cur + 1U, false, __ATOMIC_RELEASE, __ATOMIC_RELAXED)) {
+                break;
+            }
+        }
+    }
+    __attribute__((weak)) int k_sem_take(struct k_sem *sem, k_timeout_t timeout) {
+        (void)timeout;
+        unsigned int cur = __atomic_load_n(&sem->count, __ATOMIC_RELAXED);
+        while (cur > 0U) {
+            if (__atomic_compare_exchange_n(&sem->count, &cur, cur - 1U, false, __ATOMIC_ACQUIRE, __ATOMIC_RELAXED)) {
+                return 0;
+            }
+        }
+        return -EBUSY;
+    }
 __attribute__((weak)) int adc_read(const struct device *dev, const struct adc_sequence *sequence) { return g_adc_read_force_errno; }
 __attribute__((weak)) int adc_raw_to_millivolts_dt(const struct adc_dt_spec *spec, int32_t *val) { if (val) *val = 2500; return 0; }
 __attribute__((weak)) int fcb_init(int f_area_id, struct fcb *fcb) { return 0; }
