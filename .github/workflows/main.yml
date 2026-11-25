@@ -305,7 +305,7 @@ jobs:
             build_nucleo/zephyr/zephyr.hex
             build_nucleo/zephyr/zephyr.bin
 
-host-tsan:
+  host-tsan:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
