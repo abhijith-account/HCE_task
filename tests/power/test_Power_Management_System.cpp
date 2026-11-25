@@ -347,22 +347,19 @@ TEST_F(PowerManagementTestSuite, ThreadRoutineIdleStateTimeoutEdges) {
 
 TEST_F(PowerManagementTestSuite, ThreadRoutineActiveTimeoutElseBlock) {
     g_force_idle_enter_fail = true; // Prevent FSM from zeroing the active timer
-    virtual_uptime = 0; 
-    run_thread_once = true;
-    
+    PowerManager::getInstance().last_activity_time.store(0U);
+    virtual_uptime = 1;
+    __atomic_store_n(&run_thread_once, true, __ATOMIC_RELEASE);
+
     std::thread advancer([]() {
-        // Wait for power_monitor_thread to finish initialization
-        while (PowerManager::getInstance().current_state == nullptr) {
+        // Wait for power_monitor_thread to initialize last_activity_time
+        while (PowerManager::getInstance().last_activity_time.load() == 0U) {
             std::this_thread::yield();
         }
         // Advance time rapidly so active_elapsed gracefully exceeds 30000ms
         virtual_uptime = 40000;
         k_sem_give(&pm_wake_sem);
     });
-    
-    power_monitor_thread(); 
-    advancer.join();
-}
 
 // ---------------------------------------------------------------------------
 // power_monitor_thread(): `if (s_in_idle_state)` branch (both inner outcomes)
