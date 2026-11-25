@@ -45,8 +45,38 @@ static inline uint32_t k_cycle_get_32(void) { return virtual_uptime.load() * 100
 static inline uint32_t k_cyc_to_us_floor32(uint32_t t) { return t; }
 static inline int k_msleep(int ms) { virtual_uptime += static_cast<uint32_t>(ms); sched_yield(); return 0; }
 bool k_is_in_isr(void);
-static inline unsigned int irq_lock(void) { return 0; }
-static inline void irq_unlock(unsigned int key) { (void)key; }
+struct MockIrqLock {
+    uintptr_t owner;
+    int lock_count;
+};
+extern struct MockIrqLock g_mock_irq_lock;
+
+static inline unsigned int irq_lock(void) {
+    const uintptr_t self = static_cast<uintptr_t>(pthread_self()) | static_cast<uintptr_t>(1U);
+    if (__atomic_load_n(&g_mock_irq_lock.owner, __ATOMIC_RELAXED) == self) {
+        __atomic_add_fetch(&g_mock_irq_lock.lock_count, 1, __ATOMIC_RELAXED);
+        return 1U;
+    }
+    uintptr_t expected = 0U;
+    while (!__atomic_compare_exchange_n(&g_mock_irq_lock.owner, &expected, self, false,
+                                        __ATOMIC_ACQUIRE, __ATOMIC_RELAXED)) {
+        expected = 0U;
+        sched_yield();
+    }
+    __atomic_store_n(&g_mock_irq_lock.lock_count, 1, __ATOMIC_RELAXED);
+    return 0U;
+}
+
+static inline void irq_unlock(unsigned int key) {
+    (void)key;
+    const uintptr_t self = static_cast<uintptr_t>(pthread_self()) | static_cast<uintptr_t>(1U);
+    if (__atomic_load_n(&g_mock_irq_lock.owner, __ATOMIC_RELAXED) == self) {
+        if (__atomic_sub_fetch(&g_mock_irq_lock.lock_count, 1, __ATOMIC_RELAXED) <= 0) {
+            __atomic_store_n(&g_mock_irq_lock.lock_count, 0, __ATOMIC_RELAXED);
+            __atomic_store_n(&g_mock_irq_lock.owner, static_cast<uintptr_t>(0U), __ATOMIC_RELEASE);
+        }
+    }
+}
 
 struct k_mutex {
     int locked;
