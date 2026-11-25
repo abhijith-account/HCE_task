@@ -282,10 +282,23 @@ void SbsBattery::processFSM() {
     const BatteryFSM current_fsm_state = current_state.load();
 
     const bool soc_cutoff = (soc_pct < BatteryLimits::CUTOFF_SOC_PCT);
-    const bool voltage_cutoff = (pack_mv >= BatteryLimits::MIN_VALID_VOLTAGE_MV) &&
-                                (pack_mv <= BatteryLimits::PACK_CUTOFF_VOLTAGE_MV);
+    const bool low_voltage_sample = (pack_mv >= BatteryLimits::MIN_VALID_VOLTAGE_MV) &&
+                                    (pack_mv <= BatteryLimits::PACK_CUTOFF_VOLTAGE_MV);
+    if (low_voltage_sample) {
+        if (consecutive_low_voltage_samples < BatteryLimits::VOLTAGE_CUTOFF_DEBOUNCE_SAMPLES) {
+            ++consecutive_low_voltage_samples;
+        }
+    } else {
+        consecutive_low_voltage_samples = 0U;
+    }
+    const bool voltage_cutoff = (consecutive_low_voltage_samples >= BatteryLimits::VOLTAGE_CUTOFF_DEBOUNCE_SAMPLES);
+
+    const bool is_charging = (shunt_uv > BatteryLimits::IDLE_SHUNT_UV_THRESHOLD);
+    const int16_t min_safe_temp = is_charging
+        ? BatteryLimits::MIN_SAFE_TEMP_TENTHS_C
+        : BatteryLimits::MIN_SAFE_DISCHARGE_TEMP_TENTHS_C;
     const bool temp_cutoff = (temp_tenths_c > BatteryLimits::MAX_SAFE_TEMP_TENTHS_C) ||
-                             (temp_tenths_c < BatteryLimits::MIN_SAFE_TEMP_TENTHS_C);
+                             (temp_tenths_c < min_safe_temp);
 
     if (soc_cutoff || voltage_cutoff || temp_cutoff) {
         if (current_fsm_state != BatteryFSM::CUTOFF) {
@@ -337,7 +350,7 @@ void SbsBattery::processFSM() {
 
     const bool temp_recovered =
         (temp_tenths_c <= (BatteryLimits::MAX_SAFE_TEMP_TENTHS_C - BatteryLimits::TEMP_HYSTERESIS_TENTHS_C)) &&
-        (temp_tenths_c >= (BatteryLimits::MIN_SAFE_TEMP_TENTHS_C + BatteryLimits::TEMP_HYSTERESIS_TENTHS_C));
+        (temp_tenths_c >= (min_safe_temp + BatteryLimits::TEMP_HYSTERESIS_TENTHS_C));
 
     if ((soc_pct > BatteryLimits::REENABLE_SOC_PCT) &&
         (pack_mv >= BatteryLimits::PACK_REENABLE_VOLTAGE_MV) &&

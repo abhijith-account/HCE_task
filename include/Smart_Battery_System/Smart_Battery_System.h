@@ -74,6 +74,7 @@ private:
     int64_t accumulated_uAh{0};
     uint32_t last_poll_time_ms{0U};
     uint8_t consecutive_jump_rejects{0U};
+    uint8_t consecutive_low_voltage_samples{0U};
     uint32_t rest_period_start_ms{0U};
 
     result<int16_t> fetchBusVoltageRawWithRetry();

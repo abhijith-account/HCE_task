@@ -409,35 +409,58 @@ TEST_F(SmartBatteryTestSuite, ProcessFSM_VoltageAndTemperatureCutoffAndHysteresi
     battery.cache.temperature.value = 2981U; // 25.0 C
     battery.processFSM();
 
-    // 2. Live voltage cutoff (4000 <= 8900 <= 9000): covers voltage_cutoff true (lines 285, 290)
+    // 2. Debounced live voltage cutoff (requires 3 consecutive samples <= 9000 mV)
     battery.cache.degraded = false;
     battery.cache.voltage.value = 8900U;
     battery.processFSM();
+    EXPECT_NE(battery.getState(), BatteryFSM::CUTOFF);
+    battery.processFSM();
+    EXPECT_NE(battery.getState(), BatteryFSM::CUTOFF);
+    battery.processFSM();
+    EXPECT_EQ(battery.getState(), BatteryFSM::CUTOFF);
+    battery.processFSM(); // 4th sample saturates debounce counter (covers < threshold false branch)
     EXPECT_EQ(battery.getState(), BatteryFSM::CUTOFF);
 
-    // 3. Over-temperature cutoff (65.0 C > 60.0 C): covers temp > MAX_SAFE_TEMP_TENTHS_C (lines 287, 290)
+    // 3. Over-temperature cutoff (65.0 C > 60.0 C) and voltage debounce reset
     battery.current_state.store(BatteryFSM::IDLE);
     battery.cache.voltage.value = 11500U;
     battery.cache.temperature.value = 3381U; // 65.0 C
     battery.processFSM();
     EXPECT_EQ(battery.getState(), BatteryFSM::CUTOFF);
 
-    // 4. Under-temperature cutoff (-5.0 C < 0.0 C): covers temp < MIN_SAFE_TEMP_TENTHS_C (lines 287, 290)
+    // 4a. Discharge/idle at -5.0 C is allowed (discharge limit is -20.0 C)
     battery.current_state.store(BatteryFSM::IDLE);
+    battery.cache.shunt_voltage.value = 0;
+    battery.cache.temperature.value = 2681U; // -5.0 C
+    battery.processFSM();
+    EXPECT_NE(battery.getState(), BatteryFSM::CUTOFF);
+
+    // 4b. Discharge/idle under-temperature cutoff (-25.0 C < -20.0 C)
+    battery.cache.temperature.value = 2481U; // -25.0 C
+    battery.processFSM();
+    EXPECT_EQ(battery.getState(), BatteryFSM::CUTOFF);
+
+    // 4c. Charge under-temperature cutoff (-5.0 C < 0.0 C while charging)
+    battery.current_state.store(BatteryFSM::IDLE);
+    battery.cache.shunt_voltage.value = 500; // > IDLE_SHUNT_UV_THRESHOLD (150 uV)
     battery.cache.temperature.value = 2681U; // -5.0 C
     battery.processFSM();
     EXPECT_EQ(battery.getState(), BatteryFSM::CUTOFF);
 
-    // 5. High-temp hysteresis band (59.0 C: no cutoff, but > 57.0 C so temp_recovered == false -> lines 339, 342)
+    // 5. High-temp hysteresis band (59.0 C: no cutoff, but > 57.0 C so temp_recovered == false)
+    battery.cache.shunt_voltage.value = 0;
     battery.cache.temperature.value = 3321U; // 59.0 C
     battery.processFSM();
     EXPECT_EQ(battery.getState(), BatteryFSM::CUTOFF);
 
-    // 6. Low-temp hysteresis band (1.0 C: no cutoff, but < 3.0 C so temp_recovered == false -> lines 339, 342)
+    // 6. Low-temp hysteresis band while charging (1.0 C: no cutoff, but < 3.0 C so temp_recovered == false)
+    battery.cache.shunt_voltage.value = 500;
     battery.cache.temperature.value = 2741U; // 1.0 C
     battery.processFSM();
     EXPECT_EQ(battery.getState(), BatteryFSM::CUTOFF);
-    
+
+    // 7. Voltage hysteresis band (9300 mV: above 9000 mV cutoff, below 9600 mV re-enable)
+    battery.cache.shunt_voltage.value = 0;
     battery.cache.temperature.value = 2981U; // 25.0 C
     battery.cache.voltage.value = 9300U;
     battery.processFSM();
