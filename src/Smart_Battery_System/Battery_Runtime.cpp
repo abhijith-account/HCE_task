@@ -7,7 +7,7 @@
 
 #ifdef IS_TEST_ENVIRONMENT
     __attribute__((weak)) int test_iterations_remaining = 0;
-    #define THREAD_LOOP_CONDITION (test_iterations_remaining > 0 ? (test_iterations_remaining--, true) : false)
+    #define THREAD_LOOP_CONDITION (__atomic_load_n(&test_iterations_remaining, __ATOMIC_ACQUIRE) > 0 ? (__atomic_sub_fetch(&test_iterations_remaining, 1, __ATOMIC_ACQ_REL), true) : false)
 #else
     #define THREAD_LOOP_CONDITION true
 #endif

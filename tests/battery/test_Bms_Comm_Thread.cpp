@@ -347,7 +347,7 @@ TEST_F(SmartBatteryTestSuite, BmsCommThread_MainLoopWaitConditions_ThreadDriven)
     settle();
 
     while (!finished.load()) {
-        test_iterations_remaining = 0;
+        __atomic_store_n(&test_iterations_remaining, 0, __ATOMIC_RELEASE);
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
     worker.join();
