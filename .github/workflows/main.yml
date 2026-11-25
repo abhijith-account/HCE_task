@@ -288,7 +288,19 @@ jobs:
           cmake --build tests/build_asan -j$(nproc)
           ctest --test-dir tests/build_asan --output-on-failure
 
-      - name: Upload coverage report
+    - name: Run Host Tests under ThreadSanitizer (TSan)
+      env:
+        TSAN_OPTIONS: "halt_on_error=1:second_deadlock_stack=1"
+      run: |
+        mkdir -p tests/build_tsan
+        cmake -S tests -B tests/build_tsan \
+          -DENABLE_COVERAGE=OFF \
+          -DCMAKE_CXX_FLAGS="-O1 -g -fsanitize=thread -fno-omit-frame-pointer" \
+          -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=thread"
+        cmake --build tests/build_tsan -j$(nproc)
+        setarch $(uname -m) -R ctest --test-dir tests/build_tsan --output-on-failure
+
+    - name: Upload coverage report
         if: always()
         uses: actions/upload-artifact@v7
         with:
