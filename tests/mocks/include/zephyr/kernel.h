@@ -22,16 +22,28 @@ typedef int32_t k_timeout_t;
 #define K_LOWEST_APPLICATION_THREAD_PRIO 15
 
 #ifdef __cplusplus
+struct MockAtomicU32 {
+    uint32_t value;
+    uint32_t load() const noexcept { return __atomic_load_n(&value, __ATOMIC_RELAXED); }
+    void store(uint32_t v) noexcept { __atomic_store_n(&value, v, __ATOMIC_RELAXED); }
+    operator uint32_t() const noexcept { return load(); }
+    MockAtomicU32& operator=(uint32_t v) noexcept { store(v); return *this; }
+    MockAtomicU32& operator+=(uint32_t d) noexcept { __atomic_add_fetch(&value, d, __ATOMIC_RELAXED); return *this; }
+    MockAtomicU32& operator-=(uint32_t d) noexcept { __atomic_sub_fetch(&value, d, __ATOMIC_RELAXED); return *this; }
+    uint32_t operator++() noexcept { return __atomic_add_fetch(&value, 1U, __ATOMIC_RELAXED); }
+    uint32_t operator++(int) noexcept { return __atomic_fetch_add(&value, 1U, __ATOMIC_RELAXED); }
+};
+extern MockAtomicU32 virtual_uptime;
 extern "C" {
+#else
+extern uint32_t virtual_uptime;
 #endif
 
-extern uint32_t virtual_uptime;
-
-static inline int64_t k_uptime_get(void) { return static_cast<int64_t>(__atomic_load_n(&virtual_uptime, __ATOMIC_RELAXED)); }
-static inline uint32_t k_uptime_get_32(void) { return __atomic_load_n(&virtual_uptime, __ATOMIC_RELAXED); }
-static inline uint32_t k_cycle_get_32(void) { return __atomic_load_n(&virtual_uptime, __ATOMIC_RELAXED) * 1000U; }
+static inline int64_t k_uptime_get(void) { return static_cast<int64_t>(virtual_uptime.load()); }
+static inline uint32_t k_uptime_get_32(void) { return virtual_uptime.load(); }
+static inline uint32_t k_cycle_get_32(void) { return virtual_uptime.load() * 1000U; }
 static inline uint32_t k_cyc_to_us_floor32(uint32_t t) { return t; }
-static inline int k_msleep(int ms) { __atomic_add_fetch(&virtual_uptime, (uint32_t)ms, __ATOMIC_RELAXED); sched_yield(); return 0; }
+static inline int k_msleep(int ms) { virtual_uptime += static_cast<uint32_t>(ms); sched_yield(); return 0; }
 bool k_is_in_isr(void);
 static inline unsigned int irq_lock(void) { return 0; }
 static inline void irq_unlock(unsigned int key) { (void)key; }
