@@ -6,7 +6,7 @@
 
 #include "test_power_common.h"
 
-#if defined(__linux__) && defined(__LP64__) && (defined(__x86_64__) || defined(__aarch64__))
+#if defined(__linux__) && defined(__x86_64__) && !defined(__SANITIZE_THREAD__)
 #define PM_TEST_CAN_PATCH_CODE 1
 #include <dlfcn.h>
 #include <elf.h>
